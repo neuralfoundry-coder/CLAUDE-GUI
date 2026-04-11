@@ -5,6 +5,7 @@ import type { ClaudeServerMessage } from '@/types/websocket';
 import { sessionsApi, type SessionHistoryMessage } from '@/lib/api-client';
 import { HtmlStreamExtractor } from '@/lib/claude/html-stream-extractor';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
+import { useArtifactStore } from '@/stores/use-artifact-store';
 
 export interface ChatMessage {
   id: string;
@@ -24,6 +25,8 @@ export interface SessionStats {
   cacheReadTokens: number;
   costUsd: number;
   lastUpdated: number | null;
+  lastContextTokens: number | null;
+  contextWindow: number | null;
 }
 
 function emptyStats(sessionId: string): SessionStats {
@@ -37,6 +40,8 @@ function emptyStats(sessionId: string): SessionStats {
     cacheReadTokens: 0,
     costUsd: 0,
     lastUpdated: null,
+    lastContextTokens: null,
+    contextWindow: null,
   };
 }
 
@@ -69,6 +74,16 @@ interface SdkSystemMessage {
   model?: string;
 }
 
+interface SdkModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  webSearchRequests?: number;
+  costUSD?: number;
+  contextWindow?: number;
+}
+
 interface SdkResultMessage {
   type: 'result';
   subtype?: string;
@@ -82,6 +97,25 @@ interface SdkResultMessage {
     output_tokens?: number;
     cache_read_input_tokens?: number;
   };
+  modelUsage?: Record<string, SdkModelUsage>;
+}
+
+function pickModelUsage(
+  modelUsage: Record<string, SdkModelUsage> | undefined,
+  preferredModel: string | null,
+): SdkModelUsage | null {
+  if (!modelUsage) return null;
+  if (preferredModel && modelUsage[preferredModel]) return modelUsage[preferredModel];
+  let best: SdkModelUsage | null = null;
+  let bestWindow = 0;
+  for (const usage of Object.values(modelUsage)) {
+    const window = usage.contextWindow ?? 0;
+    if (window >= bestWindow) {
+      best = usage;
+      bestWindow = window;
+    }
+  }
+  return best;
 }
 
 interface ClaudeState {
@@ -129,6 +163,18 @@ function nextId(prefix: string): string {
 
 let currentExtractor: HtmlStreamExtractor | null = null;
 
+async function fetchHtmlFile(filePath: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: { content?: unknown }; content?: unknown };
+    const content = json?.data?.content ?? json?.content;
+    return typeof content === 'string' ? content : null;
+  } catch {
+    return null;
+  }
+}
+
 function ensureExtractor(streamId: string): HtmlStreamExtractor {
   if (currentExtractor) return currentExtractor;
   const live = useLivePreviewStore.getState();
@@ -137,7 +183,20 @@ function ensureExtractor(streamId: string): HtmlStreamExtractor {
     onChunk: (html, meta) => {
       useLivePreviewStore.getState().appendChunk(html, meta.renderable);
     },
+    onWritePath: (filePath) => {
+      useLivePreviewStore.getState().setGeneratedFilePath(filePath);
+    },
+    onNeedBaseline: (filePath, apply) => {
+      void fetchHtmlFile(filePath).then((content) => {
+        if (content) apply(content);
+      });
+    },
   });
+  // Seed the extractor with the previous render so Edit/MultiEdit in a
+  // follow-up stream can patch the last known full HTML instead of
+  // overwriting it with only the replacement snippet.
+  const existing = useLivePreviewStore.getState().buffer;
+  if (existing) currentExtractor.seedBaseline(existing);
   return currentExtractor;
 }
 
@@ -201,11 +260,13 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           for (const tool of tools) {
             extractor.feedToolUse(tool);
           }
+          let newAssistantMessageId: string | null = null;
           set((s) => {
             const nextMessages = [...s.messages];
             if (text) {
+              newAssistantMessageId = nextId('a');
               nextMessages.push({
-                id: nextId('a'),
+                id: newAssistantMessageId,
                 role: 'assistant',
                 content: text,
                 timestamp: Date.now(),
@@ -225,6 +286,11 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
               activeSessionId: asst.session_id ?? s.activeSessionId,
             };
           });
+          if (text && newAssistantMessageId) {
+            useArtifactStore
+              .getState()
+              .extractFromMessage(newAssistantMessageId, asst.session_id ?? null, text);
+          }
           return;
         }
 
@@ -245,10 +311,31 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         return;
       }
 
+      case 'auto_decision': {
+        const label =
+          msg.decision === 'allow'
+            ? `Auto-allowed ${msg.tool} (persistent rule)`
+            : `Auto-denied ${msg.tool} (persistent rule)`;
+        set((s) => ({
+          messages: [
+            ...s.messages,
+            {
+              id: nextId('ad'),
+              role: 'system',
+              content: label,
+              timestamp: Date.now(),
+              toolName: msg.tool,
+            },
+          ],
+        }));
+        return;
+      }
+
       case 'result': {
         const m = msg as { data: SdkResultMessage };
         const data = m.data;
         finalizeExtractor();
+        useArtifactStore.getState().flushPendingOpen();
         set((s) => {
           const nextMessages = [...s.messages];
           if (data.subtype === 'success' && typeof data.result === 'string' && data.result.trim()) {
@@ -261,6 +348,12 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           const nextStats = { ...s.sessionStats };
           if (sid) {
             const prev = nextStats[sid] ?? emptyStats(sid);
+            const mu = pickModelUsage(data.modelUsage, prev.model);
+            const ctxTokens = mu
+              ? (mu.inputTokens ?? 0) +
+                (mu.cacheReadInputTokens ?? 0) +
+                (mu.cacheCreationInputTokens ?? 0)
+              : null;
             nextStats[sid] = {
               ...prev,
               numTurns: data.num_turns ?? prev.numTurns,
@@ -271,6 +364,8 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
                 prev.cacheReadTokens + (data.usage?.cache_read_input_tokens ?? 0),
               costUsd: prev.costUsd + (data.total_cost_usd ?? 0),
               lastUpdated: Date.now(),
+              lastContextTokens: ctxTokens ?? prev.lastContextTokens,
+              contextWindow: mu?.contextWindow ?? prev.contextWindow,
             };
           }
           return {
@@ -334,6 +429,12 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         timestamp: m.timestamp,
         toolName: m.toolName,
       }));
+      const artifactStore = useArtifactStore.getState();
+      for (const m of messages) {
+        if (m.role === 'assistant' && m.content) {
+          artifactStore.extractFromMessage(m.id, id, m.content, { silent: true });
+        }
+      }
       set((s) => {
         const prev = s.sessionStats[id] ?? emptyStats(id);
         return {

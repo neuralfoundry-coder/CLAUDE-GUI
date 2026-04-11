@@ -138,6 +138,11 @@
 
 - `@xterm/xterm` v5 기반의 완전한 터미널 에뮬레이션을 제공해야 한다.
 - WebSocket `/ws/terminal`을 통해 서버의 `node-pty` 세션과 연결한다.
+- 프레이밍 규칙은 프레임 타입으로 명확히 구분한다:
+  - **PTY → 클라이언트**: 쉘 출력은 **바이너리 프레임**(`ArrayBuffer`)으로 전송된다. xterm.js가 UTF-8을 내부에서 디코딩한다.
+  - **제어 메시지 (양방향)**: `exit`, `error`, `resize`, `input`, `pause`, `resume`은 **텍스트 JSON 프레임**으로 전송된다.
+- 출력 내용이 우연히 `{`로 시작해도(`cat package.json` 등) 제어 프레임으로 오인되지 않는다.
+- 터미널 파이프라인은 Claude 채팅 입력과 완전히 분리되어야 한다. `/ws/terminal`과 `/ws/claude`는 심볼 수준에서도 교차 의존이 없어야 한다.
 
 ### FR-402: ANSI 이스케이프 코드 렌더링
 
@@ -147,6 +152,7 @@
 ### FR-403: GPU 가속 렌더링
 
 - xterm.js WebGL 애드온을 활용하여 GPU 가속 렌더링을 적용해야 한다.
+- WebGL 컨텍스트가 실패하면 canvas 렌더러로 자동 폴백한다.
 - 대량의 터미널 출력(로그 스트리밍 등)에서도 부드러운 렌더링을 유지한다.
 
 ### FR-404: 리사이즈 동기화
@@ -154,6 +160,8 @@
 - 터미널 패널 크기가 변경되면 PTY의 `cols`/`rows`를 동기화해야 한다.
 - xterm.js `fit` 애드온을 사용하여 자동 리사이즈를 수행한다.
 - 리사이즈 이벤트는 WebSocket을 통해 `{ type: "resize", cols, rows }` 형태로 서버에 전송한다.
+- PTY는 기본 120×30으로 생성되며, 클라이언트가 호스트 DOM에 attach 된 직후의 첫 `fit()`이 실제 크기로 덮어쓴다.
+- 탭 활성화·패널 재오픈·폰트 크기 변경 시 `fitAddon.fit()`을 다시 호출하고, 크기가 달라진 경우에만 resize 이벤트를 송신한다.
 
 ### FR-405: 버퍼 검색
 
@@ -165,17 +173,38 @@
 - 터미널 출력에서 URL을 자동 감지하여 클릭 가능한 링크로 표시해야 한다.
 - xterm.js `web-links` 애드온을 활용한다.
 
-### FR-407: 배압(Backpressure) 제어
+### FR-407: 배압(Backpressure) 제어 — 절대 드롭 없음
 
-- 터미널 출력이 과도할 때 워터마크 기반 배압 제어를 적용해야 한다.
-  - High watermark: 100KB — 데이터 수신 일시 중지
-  - Low watermark: 10KB — 데이터 수신 재개
-- 50MB 버퍼 한도를 초과하지 않도록 관리한다.
+- 터미널 출력이 과도할 때 워터마크 기반 배압 제어를 적용해야 하며, **데이터를 드롭해서는 안 된다**.
+- 클라이언트 워터마크 (xterm.js write backlog 기준):
+  - High watermark: **100 KB** — 클라이언트가 서버에 `{type:"pause"}` 송신
+  - Low watermark: **10 KB** — 클라이언트가 서버에 `{type:"resume"}` 송신
+- 서버 동작:
+  - `pause` 수신 시 PTY 출력을 내부 큐에 버퍼링한다. 플러시는 중단하지만 데이터는 유지한다.
+  - 버퍼가 **256 KB**를 초과하면 `ptyProcess.pause()`로 상류 쉘 자체의 출력을 멈춰 추가 누적을 막는다 (POSIX 한정; Windows에서는 no-op).
+  - `resume` 수신 시 `ptyProcess.resume()`과 함께 큐를 즉시 플러시하고 순서를 보존한다.
+  - 버퍼가 **5 MB** 상한을 초과하면 `{type:"error", code:"BUFFER_OVERFLOW"}` 제어 프레임을 전송하고 PTY를 kill, WebSocket을 `1011` 코드로 닫는다.
+- xterm.js의 50 MB 내부 쓰기 버퍼는 이 워터마크에 도달하기 전에 클라이언트가 이미 pause를 요청하므로 터치되지 않는다.
 
-### FR-408: 다중 터미널 세션
+### FR-408: 다중 터미널 세션과 수명 보장
 
-- 여러 개의 터미널 세션을 동시에 생성하고 전환할 수 있어야 한다.
-- 각 세션은 독립적인 PTY 프로세스와 연결된다.
+- 여러 개의 터미널 세션을 동시에 생성하고 전환할 수 있어야 한다. 각 세션은 독립적인 PTY 프로세스(= 1 WebSocket 연결)와 연결된다.
+- 클라이언트 측에서는 `TerminalManager` 싱글턴(`src/lib/terminal/terminal-manager.ts`)이 xterm 인스턴스와 WebSocket을 세션 ID 단위로 소유한다. React 컴포넌트(`XTerminalAttach`)는 단순히 DOM 호스트를 제공하는 attach point 역할만 수행한다.
+- PTY는 다음 상황에서 **종료되어서는 안 된다**:
+  - 사용자가 터미널 패널을 접거나(Ctrl+Cmd+J) 다시 펴는 경우
+  - 다른 터미널 탭으로 전환하는 경우
+  - 글로벌 폰트 크기를 변경하는 경우 (매니저가 `term.options.fontSize`만 갱신)
+  - Next.js Fast Refresh / 컴포넌트 리마운트
+- PTY는 다음 상황에서만 종료된다:
+  - 사용자가 명시적으로 탭 close 버튼을 누름
+  - 쉘이 스스로 종료(`exit` 등) — 서버가 `{type:"exit", code}` 제어 프레임을 전송
+  - `BUFFER_OVERFLOW` 초과로 인한 강제 종료
+
+### FR-409: 터미널 포커스 관리
+
+- 터미널 탭을 활성화하면(탭 클릭 또는 신규 생성) xterm에 자동으로 포커스가 전달되어 사용자가 추가 클릭 없이 타이핑할 수 있어야 한다.
+- 패널을 접었다가 다시 펴면 활성 탭에 포커스가 복원되어야 한다.
+- 탭 라벨에는 세션 상태(`connecting` / `open` / `closed` / `exited`)를 시각적으로 구분하는 인디케이터를 표시한다.
 
 ---
 
@@ -204,21 +233,27 @@
 - **세션 명명**: 사용자가 세션에 이름을 부여
 - 세션 목록은 `~/.claude/projects/` 기반으로 조회
 
-### FR-504: 비용 및 토큰 사용량 표시
+### FR-504: 토큰 사용량 표시
 
 - 각 쿼리의 토큰 사용량(입력/출력)을 표시해야 한다.
-- 세션 누적 비용을 표시해야 한다.
-- `result` 메시지의 `cost_usd`, `usage` 필드를 활용한다.
+- `result` 메시지의 `usage` 필드를 활용한다.
+- 누적 비용(`total_cost_usd`)은 Agent SDK가 제공하는 추정치이므로 세션 정보 바에는
+  노출하지 않는다. 내부적으로는 `SessionStats.costUsd` 및 `ClaudeState.totalCost`로
+  계속 누적하여 `max-budget` 한도 체크(FR-508) 등 비표시 용도로만 사용한다.
 - **세션 정보 바 (Session Info Bar)**: Claude 채팅 패널 하단에 현재 활성 세션에 대한
   통계를 접이식 바 형태로 표시한다.
-  - 접힘(기본) 상태: 모델명, 턴 수, 총 토큰 수, 누적 비용, 마지막 업데이트 시각을
-    단일 라인(높이 24px)으로 노출한다. 편집 영역을 침범하지 않기 위해 기본값은 접힘이다.
-  - 펼침 상태: 세션 ID, 모델, `num_turns`, `duration_ms`, 입력/출력/캐시 읽기 토큰,
-    누적 비용(`total_cost_usd`), 마지막 업데이트 경과 시간을 표 형태로 표시한다.
+  - 접힘(기본) 상태: 모델명, 턴 수, **컨텍스트 사용률**(현재/한도 및 %), 총 토큰 수,
+    마지막 업데이트 시각을 단일 라인(높이 24px)으로 노출한다. 편집 영역을 침범하지
+    않기 위해 기본값은 접힘이다.
+  - 펼침 상태: 세션 ID, 모델, `num_turns`, `duration_ms`, **컨텍스트(사용/한도 및 %)**,
+    입력/출력/캐시 읽기 토큰, 마지막 업데이트 경과 시간을 표 형태로 표시한다.
   - 값의 출처는 Agent SDK가 실제로 전달한 이벤트 필드(`system.init`의 `model`,
-    `result`의 `num_turns`/`duration_ms`/`usage.*`/`total_cost_usd`)로 한정한다.
-    컨텍스트 윈도우 크기 등 SDK가 제공하지 않는 값은 하드코딩 추정치를 사용하지
-    않으며, 데이터가 도착하기 전에는 모든 필드를 "-"로 표시한다.
+    `result`의 `num_turns`/`duration_ms`/`usage.*`/`modelUsage.*`)로 한정한다. 컨텍스트 윈도우 크기는 `result.modelUsage[model].contextWindow`에서,
+    현재 턴 컨텍스트 사용량은 동일 엔트리의 `inputTokens + cacheReadInputTokens +
+    cacheCreationInputTokens`에서 읽는다. SDK가 제공하지 않는 값에 대한 하드코딩
+    추정치는 여전히 금지하며, 데이터가 도착하기 전에는 해당 필드를 "-"로 표시한다.
+  - 컨텍스트 사용률은 마지막 `result` 이벤트 기준의 스냅샷이며(턴 누적이 아니다),
+    50% 미만 녹색, 50% 이상 노랑, 80% 이상 빨강의 경고 색을 적용한다.
   - 값은 세션 ID별로 `sessionStats: Record<string, SessionStats>`에 누적되며,
     세션 전환 시 활성 세션의 스냅샷만 표시된다. WebSocket 푸시를 통해 갱신되므로
     별도의 폴링은 수행하지 않는다.
@@ -231,16 +266,26 @@
   - 요청된 도구 이름
   - 인자 (파일 경로, 명령어 등)
   - 위험도 배지 (`safe` / `warning` / `danger`)
-  - **승인(Approve)** / **거부(Deny)** 버튼
-- 거절 시 SDK에 `{ behavior: 'deny', message }`를 반환하면 Claude는 해당 도구 사용을 포기하고 대안을 모색한다.
-- 물리적 사용자 클릭을 요구한다 (자동 승인 방지).
+  - **Deny**, **Allow Once**, **Always Allow** 세 가지 버튼
+- 버튼별 동작은 명확히 구분된다:
+  - **Deny**: `{ behavior: 'deny', message }`를 SDK에 반환. Claude는 해당 도구 사용을 포기하고 대안을 모색한다.
+  - **Allow Once (1회 허용)**: 해당 호출 1건만 통과시킨다. 설정 파일에 어떤 흔적도 남기지 않는다.
+  - **Always Allow (항상 허용)**: `.claude/settings.json`의 `permissions.allow`에 규칙을 저장한 뒤 현재 호출도 승인한다. 같은 툴에 대한 이후 호출은 모달 없이 자동 통과된다.
+- 물리적 사용자 클릭을 요구한다 — `Allow Once`는 세션 내에서도 자동 승인으로 확장되지 않는다.
 - `permissionMode: 'default'`에서 Agent SDK는 안전한 작업(읽기, 단순 Bash 명령)을 자동 승인할 수 있다. 이 경우 `canUseTool`은 호출되지 않으며, 도구 사용은 채팅 패널의 tool 메시지로만 기록된다.
+- 모달을 닫거나(Escape/백드롭) 세션이 종료되면 대기 중인 요청은 자동으로 Deny로 해결된다.
 
-### FR-506: 자동 승인 규칙
+### FR-506: 자동 승인 규칙 (영구 모드)
 
-- `.claude/settings.json`의 화이트리스트와 연동하여 자동 승인을 지원해야 한다.
-- 자동 승인된 도구 호출에는 "Auto-approved" 배지를 표시한다.
-- GUI에서 자동 승인 규칙을 편집할 수 있는 설정 화면을 제공한다.
+- `.claude/settings.json`의 `permissions.allow` / `permissions.deny` 목록과 연동하여 도구 호출을 서버 측에서 자동 승인/거부해야 한다.
+- 매칭은 `canUseTool` 호출 시점에 파일을 다시 읽어 평가하며, "Always Allow"로 추가된 규칙이 다음 호출부터 즉시 반영된다.
+- 규칙 문법:
+  - 툴 이름만: `Write`, `Edit`, `Read` 등 — 해당 툴의 모든 호출이 매칭된다.
+  - Bash 패턴: `Bash(<prefix>:*)` — 명령어가 해당 prefix로 시작하면 매칭된다. `:*`가 없으면 완전 일치.
+- Bash 호출에 대한 "Always Allow"는 명령어의 첫 토큰을 기준으로 `Bash(<firstToken>:*)` 규칙을 생성한다 (예: `npm test ...` → `Bash(npm:*)`).
+- 자동 승인/거부가 발동되면 서버는 `auto_decision` WebSocket 이벤트를 전송하고, UI는 채팅 패널에 시스템 메시지로 기록한다.
+- 사용자는 `PermissionRulesModal`을 통해 현재 저장된 `allow` / `deny` 규칙을 조회·추가·삭제할 수 있어야 한다.
+- 위험도가 `danger`로 평가된 호출에 대해서는 "Always Allow" 버튼을 비활성화하여 위험 명령이 실수로 영구 허용 목록에 들어가는 것을 방지한다.
 
 ### FR-507: 도구 사용 현황 시각화
 
@@ -332,7 +377,11 @@
 - iframe은 `sandbox="allow-scripts"`로 격리되어야 하며 `allow-same-origin`을 사용해서는 안 된다.
 - 디바운스 150ms로 버퍼 업데이트를 처리한다.
 - 쿼리 종료 이벤트(`result`) 시 finalize하여 최종 HTML을 고정한다.
-- 구현: `src/lib/claude/html-stream-extractor.ts`, `src/stores/use-live-preview-store.ts`, `src/components/panels/preview/live-html-preview.tsx`.
+- **에디터 인수인계 규칙**: `Write`/`Edit` `tool_use`로 감지된 HTML 파일 경로는 `useLivePreviewStore.generatedFilePath`에 저장된다. 사용자가 해당 파일을 에디터 탭으로 열면, 라이브 프리뷰는 스트리밍 종료 이후에도 에디터 탭의 `content`를 소스로 사용하여 키 입력마다(150ms 디바운스) `iframe srcdoc`을 갱신해야 한다. 이 상태에서는 상태 라벨이 `Live · Editor`로 표시된다. 코드 펜스 기반으로 생성된 경우(파일 경로 없음)는 기존대로 버퍼를 렌더한다.
+- **부분 편집 보존 규칙**: `Edit`/`MultiEdit` `tool_use`가 `.html` 파일을 대상으로 들어올 때는 `new_string` 스니펫을 문서 전체로 간주해서는 안 된다. 대신 `HtmlStreamExtractor`가 유지하는 최근 전체 HTML(직전 `Write`, 완료된 코드 펜스, 또는 `seedBaseline()`으로 주입된 값)을 기준으로 `old_string → new_string` 치환(`replace_all` 플래그 존중, `MultiEdit`는 `edits[]` 순서대로 적용)을 수행한 결과를 프리뷰에 반영해야 한다. 이렇게 해야 5페이지 HTML 중 한 페이지만 편집해도 나머지 페이지의 렌더링이 유지된다.
+- **라이브 프리뷰 버퍼 지속성**: 새로운 Claude 쿼리가 시작되어도 `useLivePreviewStore.buffer`와 `generatedFilePath`는 초기화되지 않는다. 후속 쿼리의 `Edit`/`MultiEdit`가 이전 렌더의 연장선에서 동작할 수 있도록 하기 위해서이며, 새 컨텐츠가 도착하면 `appendChunk`가 그 시점에 버퍼를 교체한다.
+- **Baseline 디스크 폴백**: 메모리 baseline이 없는 상태(예: 새 세션에서 첫 상호작용이 Edit인 경우)에서 `Edit`/`MultiEdit`가 도착하면 `HtmlStreamExtractor`는 `onNeedBaseline(filePath, apply)` 이벤트를 방출한다. `useClaudeStore`는 `/api/files/read`를 통해 해당 파일 내용을 비동기로 읽어 `apply(content)`를 호출하고, extractor는 그 결과를 기준으로 치환을 적용한다. 파일을 읽지 못하면 프리뷰는 변경 없이 유지된다.
+- 구현: `src/lib/claude/html-stream-extractor.ts` (`onWritePath`, `onNeedBaseline`, `seedBaseline`), `src/stores/use-live-preview-store.ts` (버퍼 지속 `startStream`), `src/stores/use-claude-store.ts` (`onNeedBaseline` → `/api/files/read` 폴백, extractor seed), `src/components/panels/preview/live-html-preview.tsx` (에디터 스토어 구독).
 
 ### FR-611: 프리뷰 전체화면 모드 (v0.3)
 
@@ -484,3 +533,71 @@
 - 클라이언트는 `project-changed` 수신 시 에디터 탭, 프리뷰 선택을 리셋하고 파일 트리를 재로드한다.
 - 상태는 `~/.claudegui/state.json`에 `{ lastRoot, recents }` 형식으로 영속화한다.
 - 구현: `src/lib/project/project-context.mjs`, `src/app/api/project/route.ts`, `src/stores/use-project-store.ts`, `src/components/modals/project-picker-modal.tsx`.
+
+---
+
+## 3.10 생성 콘텐츠 갤러리 (FR-1000)
+
+### FR-1001: 자동 아티팩트 추출
+
+- 시스템은 Claude 어시스턴트 메시지를 수신할 때마다 본문을 파싱하여 다음 종류의 "아티팩트(생성 콘텐츠)"를 자동으로 추출해야 한다.
+  - 펜스 코드 블록: HTML, SVG, Markdown, TypeScript/JavaScript, Python, Go, Rust, Shell, CSS, JSON, YAML 등 모든 언어.
+  - 펜스 밖에 단독으로 나타나는 `<!doctype html> … </html>` 전체 문서.
+  - 펜스 밖에 단독으로 나타나는 `<svg …> … </svg>` 요소.
+- 각 아티팩트는 `{messageId}:{index}` 형식의 안정된 ID를 가져야 한다.
+- 메시지 재로드 시(세션 복원) 기존 ID가 그대로 사용되어 중복이 쌓이지 않는다.
+- 24자 미만의 지나치게 짧은 블록은 노이즈로 간주해 제외한다.
+
+### FR-1002: 자동 팝업 표시
+
+- Claude 한 턴(응답)에서 하나 이상의 아티팩트가 새로 추출되면, 턴 종료(`result` 이벤트) 시점에 생성 콘텐츠 갤러리 모달이 자동으로 열려야 한다.
+- 사용자가 갤러리 설정에서 "Auto-open on new content"를 비활성화한 경우에는 열리지 않는다.
+- 세션 히스토리를 불러올 때 발생하는 아티팩트 추출은 "사일런트 추출"로 처리되며 자동 팝업을 발생시키지 않는다.
+
+### FR-1003: 영속 저장 (localStorage)
+
+- 추출된 아티팩트는 브라우저 `localStorage`에 보존되어야 하며, 새로고침 이후에도 동일 갤러리가 복원되어야 한다.
+- 저장 키: `claudegui-artifacts` (zustand `persist` 미들웨어).
+- 저장 상한은 200개로 제한하며, 상한 초과 시 오래된 항목부터 삭제한다.
+- `autoOpen` 설정 역시 동일 키에 영속화한다.
+
+### FR-1004: 복사 및 내보내기
+
+- 갤러리에서 각 아티팩트는 다음 두 가지 동작을 지원한다.
+  - **Copy**: 원본 텍스트를 클립보드에 복사한다(`navigator.clipboard.writeText`).
+  - **Export**: 드롭다운 메뉴로 아티팩트의 `kind`에 따라 다음 형식 중 적용 가능한 것들을 제공한다.
+    - **Source**: 언어별 확장자(`.ts`, `.py`, `.html`, `.svg`, `.md` 등)로 다운로드.
+    - **HTML (.html)**: Markdown/코드/SVG 아티팩트를 독립 실행형 `<!doctype html>` 문서로 다운로드.
+    - **PDF**: 인쇄 가능한 팝업 창을 열고 `window.print()`를 호출하여 운영체제 "PDF로 저장" 대화상자로 내보낸다.
+    - **Word (.doc)**: MS Word 호환 HTML을 `application/msword`로 다운로드한다(Word/Pages에서 열람 가능).
+    - **SVG → PNG**: `<canvas>` 래스터화를 통해 PNG로 저장.
+    - **Plain text (.txt)**: 일반 코드·텍스트 아티팩트용 plain text 저장.
+- Export 메뉴는 `availableExports(artifact)` 함수가 아티팩트 종류에 따라 동적으로 생성한다.
+
+### FR-1005: 갤러리 UI
+
+- 갤러리 모달은 좌측 목록 + 우측 상세 프리뷰 레이아웃으로 구성된다.
+- 각 목록 항목은 종류 배지(HTML/SVG/Markdown/Code/Text), 제목, 언어, 상대 시각을 표시한다.
+- 상세 영역은 **Preview / Source** 토글을 제공한다. 기본값은 Preview이며, 아티팩트 종류별 렌더링은 다음과 같다.
+  - **HTML**: `<iframe sandbox="allow-scripts">` + `srcDoc` (allow-same-origin은 금지; 프리뷰 패널과 동일한 정책).
+  - **SVG**: `data:image/svg+xml;charset=utf-8,…` URI를 `<img>`로 렌더링하여 내장 스크립트·이벤트 핸들러가 실행되지 않도록 한다.
+  - **Markdown**: 기존 `MarkdownPreview` 컴포넌트(`react-markdown` + `remark-gfm` + `rehype-sanitize`)를 재사용한다.
+  - **Code/Text**: Preview를 제공하지 않고 Source 모드로 고정된다.
+- Copy, Export, Delete 버튼과 상단 툴바의 `Auto-open on new content` 체크박스, `Clear all` 버튼을 제공한다.
+- 접근성: 모달은 Radix Dialog 기반이며 ESC로 닫힌다.
+
+### FR-1006: 진입점, 배지 및 단축키
+
+- Claude 채팅 패널 헤더에 `FileStack` 아이콘 버튼을 두어 갤러리를 수동으로 열 수 있어야 한다.
+- 아이콘 배지로 현재 저장된 아티팩트 수(최대 `99+`)를 표시한다.
+- 글로벌 단축키 **`Cmd/Ctrl + Shift + A`**로 갤러리를 토글한다 (`src/hooks/use-global-shortcuts.ts`).
+
+### FR-1007: 구현
+
+- `src/lib/claude/artifact-extractor.ts` — 정규식 기반 아티팩트 추출기.
+- `src/lib/claude/artifact-export.ts` — 복사·다운로드·PDF 인쇄·Word·PNG 내보내기 헬퍼.
+- `src/stores/use-artifact-store.ts` — zustand 스토어 (`persist` 미들웨어).
+- `src/components/modals/artifacts-modal.tsx` — 갤러리 다이얼로그 (Preview/Source 토글 + 안전한 렌더러).
+- `src/components/panels/claude/claude-chat-panel.tsx` — 트리거 버튼 및 배지.
+- `src/hooks/use-global-shortcuts.ts` — `Cmd/Ctrl + Shift + A` 토글 단축키.
+- `src/stores/use-claude-store.ts` — 어시스턴트 메시지 수신 및 세션 로드 시 추출기 호출, `result` 시점에 자동 팝업 플러시.

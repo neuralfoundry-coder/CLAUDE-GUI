@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square, History, Plus } from 'lucide-react';
+import { Send, Square, History, Plus, FileStack } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useClaudeStore } from '@/stores/use-claude-store';
+import { useArtifactStore } from '@/stores/use-artifact-store';
 import { getClaudeClient } from '@/lib/websocket/claude-client';
 import { SessionList } from './session-list';
 import { SessionInfoBar } from './session-info-bar';
@@ -15,6 +16,8 @@ export function ClaudeChatPanel() {
   const messages = useClaudeStore((s) => s.messages);
   const isStreaming = useClaudeStore((s) => s.isStreaming);
   const reset = useClaudeStore((s) => s.reset);
+  const artifactCount = useArtifactStore((s) => s.artifacts.length);
+  const openArtifacts = useArtifactStore((s) => s.open);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,6 +42,24 @@ export function ClaudeChatPanel() {
       <div className="flex h-7 items-center justify-between border-b bg-muted px-2">
         <span className="text-xs font-semibold uppercase text-muted-foreground">Claude</span>
         <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="relative h-6 w-6"
+            onClick={() => openArtifacts()}
+            title="Generated content"
+            aria-label="Open generated content gallery"
+          >
+            <FileStack className="h-3 w-3" aria-hidden="true" />
+            {artifactCount > 0 && (
+              <span
+                className="absolute -right-0.5 -top-0.5 flex h-3 min-w-3 items-center justify-center rounded-full bg-primary px-1 text-[8px] font-semibold leading-none text-primary-foreground"
+                aria-label={`${artifactCount} artifacts`}
+              >
+                {artifactCount > 99 ? '99+' : artifactCount}
+              </span>
+            )}
+          </Button>
           <Button
             variant="ghost"
             size="icon"

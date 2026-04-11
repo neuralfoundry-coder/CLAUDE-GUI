@@ -1,5 +1,9 @@
 # ClaudeGUI
 
+![ClaudeGUI main screen](./images/main.png)
+![ClaudeGUI main screen 2](./images/main02.png)
+![ClaudeGUI main screen 3](./images/main03.png)
+
 > 🌐 **Language / 언어**: [한국어](./README.md) · [English](./README-EN.md)
 
 > ⚠️ **Disclaimer**: This project is an **unofficial**, community-maintained effort and has **no affiliation** with **Claude Code** or **Anthropic**. Anthropic, Claude, and Claude Code are trademarks of Anthropic, PBC. This project is not endorsed, sponsored by, or affiliated with Anthropic in any way.
@@ -29,6 +33,7 @@ A web-based IDE that wraps Anthropic's Claude CLI. A four-panel layout (file exp
 - **File explorer** — Virtualized tree (`react-arborist`), Git status indicators, drag-and-drop, context menu
 - **Real-time file sync** — chokidar detects filesystem changes and broadcasts them over WebSocket so the editor refreshes automatically
 - **Command palette** — `Cmd+K` / `Ctrl+Shift+P` (cmdk-based), quick open (`Cmd+P`), panel toggles
+- **Generated Content gallery** — Automatically extracts HTML/SVG/Markdown/code artifacts produced by Claude and surfaces them in a popup. Persisted to `localStorage` with one-click clipboard copy and exports to Source, HTML, PDF (via the print dialog), Word (.doc), and PNG (for SVGs)
 
 ## Architecture at a Glance
 

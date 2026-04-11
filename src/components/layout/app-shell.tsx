@@ -13,6 +13,7 @@ import { PermissionRequestModal } from '@/components/modals/permission-request-m
 import { PermissionRulesModal } from '@/components/modals/permission-rules-modal';
 import { ProjectPickerModal } from '@/components/modals/project-picker-modal';
 import { LoginPromptModal } from '@/components/modals/login-prompt-modal';
+import { ArtifactsModal } from '@/components/modals/artifacts-modal';
 import { CommandPalette } from '@/components/command-palette/command-palette';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
@@ -24,6 +25,7 @@ import { useKeyboardShortcut } from '@/hooks/use-keyboard-shortcut';
 import { useGlobalShortcuts } from '@/hooks/use-global-shortcuts';
 import { getClaudeClient } from '@/lib/websocket/claude-client';
 import { getFilesClient } from '@/lib/websocket/files-client';
+import { terminalManager } from '@/lib/terminal/terminal-manager';
 import { useState } from 'react';
 
 export function AppShell() {
@@ -36,6 +38,7 @@ export function AppShell() {
     // Boot shared WebSocket clients so connection status updates early.
     getClaudeClient();
     getFilesClient().start();
+    terminalManager.boot();
     void useProjectStore.getState().refresh();
 
     const unsubscribe = getFilesClient().subscribeProjectChange((evt) => {
@@ -106,6 +109,7 @@ export function AppShell() {
       <PermissionRulesModalHost />
       <ProjectPickerModal open={projectPickerOpen} onOpenChange={setProjectPickerOpen} />
       <LoginPromptModal open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
+      <ArtifactsModal />
       <CommandPalette />
     </div>
   );

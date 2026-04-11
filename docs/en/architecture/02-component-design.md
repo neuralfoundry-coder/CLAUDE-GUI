@@ -193,78 +193,68 @@ function acceptDiff(tabId: string) {
 
 ## 2.5 TerminalPanel Component
 
-### File structure
+### Design overview
 
-```
-src/components/panels/terminal/
-├── terminal-panel.tsx              # container
-├── terminal-tab-bar.tsx            # session tabs
-├── x-terminal.tsx                  # xterm.js wrapper
-├── use-terminal-session.ts         # WebSocket-connection hook
-└── use-backpressure.ts             # backpressure hook
-```
+`TerminalPanel` follows a **thin-attach pattern** so that React's lifecycle cannot touch PTY processes. Both the xterm.js `Terminal` instance and the WebSocket connection are owned by a `TerminalManager` singleton that lives outside the component tree; React components merely supply a DOM host.
+
+- **Owner**: `TerminalManager` singleton (`src/lib/terminal/terminal-manager.ts`)
+- **Attach point**: `XTerminalAttach` (`src/components/panels/terminal/x-terminal.tsx`)
+- **Container + tab UI**: `TerminalPanel` (`src/components/panels/terminal/terminal-panel.tsx`)
+- **State**: `useTerminalStore` (`src/stores/use-terminal-store.ts`) — tab list, active session ID, session status (`connecting` / `open` / `closed` / `exited`)
+- **Framing helpers**: `src/lib/terminal/terminal-framing.ts`
+
+The manager emits session-status events; the store subscribes and reflects them in the tab labels.
+
+### TerminalManager lifecycle
+
+| Event | Behavior |
+|---|---|
+| App boot (`app-shell.tsx`) | `terminalManager.boot()` is called once. It subscribes to `useLayoutStore.fontSize` and registers an HMR hot-dispose hook. |
+| Session creation | Store `createSession` → `terminalManager.ensureSession(id)`. xterm is constructed and the WebSocket is opened (PTY spawns here). `term.open()` is deferred. |
+| React attach | `XTerminalAttach`'s `useEffect` → `terminalManager.attach(id, host)`. The manager appends its persistent `<div>` into `host`, calls `term.open()` on first attach only, waits for a non-zero rect with `requestAnimationFrame`, runs `fit()`, sends a resize frame, and calls `focus()`. |
+| Tab switch | Store `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. |
+| Font-size change | Manager subscription callback → `setFontSize(px)` → sets `term.options.fontSize` and re-fits every instance. No PTY restart. |
+| Panel collapse | `<TerminalPanel>` unmounts → `XTerminalAttach.useEffect` cleanup → `terminalManager.detach(id)`. The manager unparents its persistent `<div>` but keeps xterm and the WS alive. |
+| Tab close | Store `closeSession(id)` → `terminalManager.closeSession(id)` → ws.close (server kills PTY). Then `term.dispose()` and removal from the map. |
+| Shell exit | Server sends `{type:"exit", code}` control frame → manager writes the banner and marks status `exited`. The tab remains until the user closes it. |
 
 ### Addon setup
 
+xterm.js and every addon are loaded via dynamic `import()` for SSR safety.
+
 ```typescript
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
-import { WebglAddon } from '@xterm/addon-webgl';
-import { SearchAddon } from '@xterm/addon-search';
-import { WebLinksAddon } from '@xterm/addon-web-links';
+const [{ Terminal }, { FitAddon }, webgl, { SearchAddon }, { WebLinksAddon }] = await Promise.all([
+  import('@xterm/xterm'),
+  import('@xterm/addon-fit'),
+  import('@xterm/addon-webgl').catch(() => null),
+  import('@xterm/addon-search'),
+  import('@xterm/addon-web-links'),
+]);
 
 const term = new Terminal({
   cursorBlink: true,
   scrollback: 10000,
-  fontFamily: 'JetBrainsMono, monospace',
+  fontFamily: 'JetBrains Mono, Menlo, monospace',
+  fontSize,
+  theme: { background: '#0a0a0a' },
+  allowProposedApi: true,
 });
-
 term.loadAddon(new FitAddon());
-term.loadAddon(new WebglAddon());
 term.loadAddon(new SearchAddon());
 term.loadAddon(new WebLinksAddon());
+// The WebGL addon is loaded lazily on first attach, once the canvas exists.
 ```
 
-### Backpressure control
+### Framing and backpressure
 
-```typescript
-const HIGH_WATERMARK = 100 * 1024;  // 100 KB
-const LOW_WATERMARK = 10 * 1024;    // 10 KB
-
-let pendingBytes = 0;
-let paused = false;
-
-ws.onmessage = (event) => {
-  pendingBytes += event.data.length;
-  term.write(event.data, () => {
-    pendingBytes -= event.data.length;
-    if (paused && pendingBytes < LOW_WATERMARK) {
-      ws.send(JSON.stringify({ type: 'resume' }));
-      paused = false;
-    }
-  });
-  if (!paused && pendingBytes > HIGH_WATERMARK) {
-    ws.send(JSON.stringify({ type: 'pause' }));
-    paused = true;
-  }
-};
-```
+- **PTY data**: the server sends **binary** WebSocket frames → the client dispatches by `typeof event.data`. `term.write(Uint8Array)` decodes UTF-8 internally.
+- **Control messages**: **text JSON** frames in both directions. `parseServerControlFrame` recognises only `exit` / `error` as control; any other text is treated as PTY output for resilience.
+- **Client backpressure**: 100 KB high / 10 KB low watermarks drive `pause` / `resume` control frames to the server.
+- **Server backpressure**: while `paused`, data is buffered (never dropped). When the queue exceeds 256 KB the server calls `ptyProcess.pause()` to stop the upstream shell; beyond 5 MB it emits a `BUFFER_OVERFLOW` error frame, kills the PTY, and closes the WebSocket with code 1011.
 
 ### Resize sync
 
-```typescript
-const fitAddon = new FitAddon();
-term.loadAddon(fitAddon);
-
-const resizeObserver = new ResizeObserver(() => {
-  fitAddon.fit();
-  ws.send(JSON.stringify({
-    type: 'resize',
-    cols: term.cols,
-    rows: term.rows,
-  }));
-});
-```
+The manager calls `fitAddon.fit()` on first attach, tab activation, panel re-expand, and font-size change. PTYs are spawned at a default 120×30 which the first `fit()` overrides. A `{type:'resize', cols, rows}` control frame is sent only when the resulting dimensions differ from the previous send.
 
 ## 2.6 PreviewPanel Component
 
@@ -525,9 +515,14 @@ session's `SessionStats` from `useClaudeStore` and renders a collapsible bar
 at the bottom of the Claude chat panel.
 
 - Collapsed (default): a single line (h-6) —
-  `{model} · {turns} turns · {tokens} tok · {cost} · {updated}`.
+  `{model} · {turns} turns · ctx {used}/{limit} ({pct}) · {tokens} tok · {updated}`.
 - Expanded: session ID, model, turn count, duration, input / output /
-  cache-read tokens, cumulative cost, and last-updated relative time.
+  cache-read tokens, and last-updated relative time.
+- The cumulative cost (`total_cost_usd`) is an estimate emitted by the Agent
+  SDK and is intentionally **not** surfaced in either the collapsed or
+  expanded view. It is still accumulated into `SessionStats.costUsd` and
+  `ClaudeState.totalCost` for internal use (e.g. the `max-budget` cap check).
+  See FR-504.
 - The bar is collapsed by default so it never occludes the editor. The
   chevron toggle state is stored in `localStorage` under the key
   `claudegui-session-info-expanded`.
@@ -554,5 +549,41 @@ interface PreviewState {
 
 - **React components**: subscribe via `use...Store()` hooks.
 - **WebSocket handlers**: call `use...Store.getState().setState(...)` directly (outside React).
-- **Persisted stores**: only `useLayoutStore` (user preferences).
+- **Persisted stores**: `useLayoutStore` (user layout) and `useArtifactStore` (generated-content cache).
 - **Non-persisted**: editor/terminal/claude/preview (session data is fetched from the server).
+
+---
+
+## 2.9 ArtifactGallery module (FR-1000)
+
+A cross-cutting module that collects every code, HTML, Markdown, and SVG snippet Claude streams back into a single place where the user can copy or export them. It runs independently of the editor/preview panels and is composed of four core files.
+
+### Module layout
+
+| File | Responsibility |
+|------|----------------|
+| `src/lib/claude/artifact-extractor.ts` | Regex-based extractor that walks an assistant text and returns `ExtractedArtifact[]` — fenced code blocks, stand-alone `<!doctype html>` documents, and stand-alone `<svg>` elements. Each item gets a stable `{messageId}:{index}` id plus inferred language, kind, title, and extension. |
+| `src/stores/use-artifact-store.ts` | A zustand store holding `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn`, along with `extractFromMessage/flushPendingOpen/open/close/remove/clear` actions. The `persist` middleware writes `artifacts` and `autoOpen` to `localStorage` (key: `claudegui-artifacts`). The store is capped at 200 entries. |
+| `src/lib/claude/artifact-export.ts` | Exposes `copyArtifact`, `availableExports`, and `exportArtifact` and handles source (`.ts`/`.py`/`.html`/…), HTML, PDF (via `window.print()`), Word (`.doc`), and SVG→PNG (via `canvas.toBlob`) outputs. It relies only on browser APIs — no new dependencies. |
+| `src/components/modals/artifacts-modal.tsx` | The Radix Dialog gallery. Left-hand list + right-hand preview, Copy/Export/Delete actions, and an `Auto-open`/`Clear all` toolbar at the top. Subscribes directly to `useArtifactStore`. |
+
+### Data flow
+
+```text
+WebSocket /ws/claude
+   └─► use-claude-store.handleServerMessage
+         ├─ assistant message → useArtifactStore.extractFromMessage(msgId, sid, text)
+         │                         └─► artifact-extractor.extractArtifacts
+         │                               └─► new artifacts → pendingTurn[]
+         └─ result                → useArtifactStore.flushPendingOpen()
+                                      └─► if autoOpen && pendingTurn.length > 0 → isOpen = true
+```
+
+Session restore (`useClaudeStore.loadSession`) calls `extractFromMessage(..., { silent: true })` so that historical artifacts repopulate the gallery without triggering the auto-popup.
+
+### Design choices
+
+- **No new dependencies** — existing deps such as `pptxgenjs`/`react-pdf`/`react-markdown` remain unused on the artifact path. Export relies solely on `Blob` + `<a download>`, `window.print()`, and `<canvas>` APIs. Even heterogeneous formats like PDF and DOCX are produced without adding bundle weight, via the print dialog and a Word-HTML trick.
+- **Auto-popup only on `result`** — popping the dialog mid-stream would hurt readability, so `flushPendingOpen` is called exactly once per turn on the Agent SDK's `result` event.
+- **200-artifact cap** — comfortably within the browser's localStorage budget (~5 MB), with oldest entries evicted first.
+- **Recoverable failures** — if `window.open` is blocked or `<canvas>` rasterisation fails, the export path falls back to downloading the source HTML.
