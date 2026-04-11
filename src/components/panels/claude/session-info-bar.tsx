@@ -15,11 +15,6 @@ function formatNumber(n: number | null): string {
   return String(n);
 }
 
-function formatCost(n: number | null): string {
-  if (n === null || n === undefined || n === 0) return DASH;
-  return `$${n.toFixed(4)}`;
-}
-
 function formatDuration(ms: number | null): string {
   if (ms === null || ms === undefined) return DASH;
   if (ms < 1000) return `${ms}ms`;
@@ -44,6 +39,27 @@ function truncateSessionId(id: string | null): string {
   return id.length > 12 ? `${id.slice(0, 8)}…` : id;
 }
 
+function formatContextRatio(used: number | null, window: number | null): string {
+  if (used === null || window === null || window <= 0) return DASH;
+  return `${formatNumber(used)}/${formatNumber(window)}`;
+}
+
+function formatContextPercent(used: number | null, window: number | null): string {
+  if (used === null || window === null || window <= 0) return DASH;
+  const pct = (used / window) * 100;
+  if (pct >= 100) return '100%';
+  if (pct >= 10) return `${pct.toFixed(0)}%`;
+  return `${pct.toFixed(1)}%`;
+}
+
+function contextColorClass(used: number | null, window: number | null): string {
+  if (used === null || window === null || window <= 0) return '';
+  const pct = (used / window) * 100;
+  if (pct >= 80) return 'text-red-500';
+  if (pct >= 50) return 'text-amber-500';
+  return 'text-emerald-500';
+}
+
 interface Row {
   label: string;
   value: string;
@@ -55,10 +71,16 @@ function expandedRows(stats: SessionStats | null, activeSessionId: string | null
     { label: 'Model', value: stats?.model ?? DASH },
     { label: 'Turns', value: formatNumber(stats?.numTurns ?? null) },
     { label: 'Duration', value: formatDuration(stats?.durationMs ?? null) },
+    {
+      label: 'Context',
+      value:
+        stats?.contextWindow && stats?.lastContextTokens !== null
+          ? `${formatContextRatio(stats.lastContextTokens, stats.contextWindow)} (${formatContextPercent(stats.lastContextTokens, stats.contextWindow)})`
+          : DASH,
+    },
     { label: 'Input tokens', value: formatNumber(stats?.inputTokens ?? null) },
     { label: 'Output tokens', value: formatNumber(stats?.outputTokens ?? null) },
     { label: 'Cache read', value: formatNumber(stats?.cacheReadTokens ?? null) },
-    { label: 'Cost', value: formatCost(stats?.costUsd ?? null) },
     { label: 'Updated', value: formatRelative(stats?.lastUpdated ?? null, now) },
   ];
 }
@@ -93,14 +115,19 @@ export function SessionInfoBar() {
     return () => window.clearInterval(id);
   }, []);
 
+  const ctxUsed = stats?.lastContextTokens ?? null;
+  const ctxWindow = stats?.contextWindow ?? null;
   const summary = {
     model: stats?.model ?? DASH,
     turns: formatNumber(stats?.numTurns ?? null),
     tokens: stats
       ? formatNumber(stats.inputTokens + stats.outputTokens)
       : DASH,
-    cost: formatCost(stats?.costUsd ?? null),
     updated: formatRelative(stats?.lastUpdated ?? null, now),
+    ctxRatio: formatContextRatio(ctxUsed, ctxWindow),
+    ctxPercent: formatContextPercent(ctxUsed, ctxWindow),
+    ctxColor: contextColorClass(ctxUsed, ctxWindow),
+    ctxAvailable: ctxUsed !== null && ctxWindow !== null && ctxWindow > 0,
   };
 
   return (
@@ -121,9 +148,20 @@ export function SessionInfoBar() {
           <span aria-hidden="true">·</span>
           <span className="whitespace-nowrap">{summary.turns} turns</span>
           <span aria-hidden="true">·</span>
-          <span className="whitespace-nowrap">{summary.tokens} tok</span>
+          {summary.ctxAvailable ? (
+            <span
+              className={cn('whitespace-nowrap font-medium', summary.ctxColor)}
+              title={`Context: ${summary.ctxRatio} tokens (${summary.ctxPercent})`}
+            >
+              ctx {summary.ctxRatio} ({summary.ctxPercent})
+            </span>
+          ) : (
+            <span className="whitespace-nowrap" title="Context window size not yet reported">
+              ctx {DASH}
+            </span>
+          )}
           <span aria-hidden="true">·</span>
-          <span className="whitespace-nowrap">{summary.cost}</span>
+          <span className="whitespace-nowrap">{summary.tokens} tok</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <span className="whitespace-nowrap">{summary.updated}</span>

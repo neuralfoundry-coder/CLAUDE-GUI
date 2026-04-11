@@ -159,6 +159,70 @@ describe('useClaudeStore', () => {
     expect(stats!.lastUpdated).not.toBeNull();
   });
 
+  it('tracks last-turn context usage and window from result.modelUsage', () => {
+    useClaudeStore.getState().handleServerMessage({
+      type: 'message',
+      requestId: 'r0',
+      data: {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'sess-ctx',
+        model: 'claude-opus-4-6',
+      },
+    } as never);
+    useClaudeStore.getState().handleServerMessage({
+      type: 'result',
+      requestId: 'r1',
+      data: {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sess-ctx',
+        total_cost_usd: 0.01,
+        usage: { input_tokens: 100, output_tokens: 20 },
+        modelUsage: {
+          'claude-opus-4-6': {
+            inputTokens: 40_000,
+            outputTokens: 500,
+            cacheReadInputTokens: 5_000,
+            cacheCreationInputTokens: 1_000,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 200_000,
+          },
+        },
+      },
+    } as never);
+    const afterFirst = useClaudeStore.getState().sessionStats['sess-ctx'];
+    expect(afterFirst!.contextWindow).toBe(200_000);
+    expect(afterFirst!.lastContextTokens).toBe(46_000);
+
+    useClaudeStore.getState().handleServerMessage({
+      type: 'result',
+      requestId: 'r2',
+      data: {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sess-ctx',
+        total_cost_usd: 0.02,
+        usage: { input_tokens: 50, output_tokens: 10 },
+        modelUsage: {
+          'claude-opus-4-6': {
+            inputTokens: 70_000,
+            outputTokens: 800,
+            cacheReadInputTokens: 8_000,
+            cacheCreationInputTokens: 2_000,
+            webSearchRequests: 0,
+            costUSD: 0.02,
+            contextWindow: 200_000,
+          },
+        },
+      },
+    } as never);
+    const afterSecond = useClaudeStore.getState().sessionStats['sess-ctx'];
+    expect(afterSecond!.lastContextTokens).toBe(80_000);
+    expect(afterSecond!.contextWindow).toBe(200_000);
+  });
+
   it('keeps stats isolated per session id', () => {
     useClaudeStore.getState().handleServerMessage({
       type: 'result',

@@ -1,6 +1,12 @@
 import path from 'node:path';
 import { getActiveRoot } from '../src/lib/project/project-context.mjs';
 import { createDebug } from '../src/lib/debug.mjs';
+import {
+  loadSettings,
+  normalizeRules,
+  isToolAllowedBySettings,
+  isToolDeniedBySettings,
+} from '../src/lib/claude/settings-manager.mjs';
 
 const dbg = createDebug('claude');
 
@@ -77,6 +83,39 @@ export default async function claudeHandler(ws, _req) {
     if (signal.aborted) {
       return { behavior: 'deny', message: 'Aborted by user', interrupt: true };
     }
+
+    // Reload persisted allow/deny rules on every call so that "Always Allow"
+    // additions take effect for the very next tool use without reconnecting.
+    let rules = null;
+    try {
+      const settings = await loadSettings();
+      rules = normalizeRules(settings);
+    } catch (err) {
+      dbg.warn('failed to load settings for permission check', err);
+    }
+
+    if (rules && isToolDeniedBySettings(toolName, rules)) {
+      dbg.info('permission', toolName, 'deny (rule)');
+      send({
+        type: 'auto_decision',
+        tool: toolName,
+        decision: 'deny',
+        source: 'settings',
+      });
+      return { behavior: 'deny', message: 'Denied by ClaudeGUI deny rule' };
+    }
+
+    if (rules && isToolAllowedBySettings(toolName, input, rules)) {
+      dbg.info('permission', toolName, 'allow (rule)');
+      send({
+        type: 'auto_decision',
+        tool: toolName,
+        decision: 'allow',
+        source: 'settings',
+      });
+      return { behavior: 'allow', updatedInput: input };
+    }
+
     const approved = await requestPermission(toolName, input);
     dbg.info('permission', toolName, approved ? 'allow' : 'deny');
     if (approved) {

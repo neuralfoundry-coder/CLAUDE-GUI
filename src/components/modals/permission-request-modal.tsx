@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { AlertTriangle, ShieldCheck } from 'lucide-react';
 import {
   Dialog,
@@ -14,18 +15,87 @@ import { useClaudeStore } from '@/stores/use-claude-store';
 import { getClaudeClient } from '@/lib/websocket/claude-client';
 import { cn } from '@/lib/utils';
 
+interface ToolInputShape {
+  command?: unknown;
+}
+
+function buildAllowRule(toolName: string, args: unknown): string {
+  if (toolName === 'Bash') {
+    const cmd =
+      args && typeof args === 'object' && typeof (args as ToolInputShape).command === 'string'
+        ? ((args as { command: string }).command).trim()
+        : '';
+    if (!cmd) return 'Bash';
+    const firstToken = cmd.split(/\s+/)[0] || cmd;
+    return `Bash(${firstToken}:*)`;
+  }
+  return toolName;
+}
+
+async function persistAllowRule(rule: string): Promise<void> {
+  const getRes = await fetch('/api/settings');
+  const getJson = await getRes.json();
+  if (!getJson?.success) {
+    throw new Error(getJson?.error ?? 'Failed to load settings');
+  }
+  const settings = (getJson.data?.settings ?? {}) as {
+    permissions?: { allow?: string[]; deny?: string[] };
+  };
+  const allow = new Set(settings.permissions?.allow ?? []);
+  allow.add(rule);
+  const next = {
+    ...settings,
+    permissions: {
+      ...(settings.permissions ?? {}),
+      allow: Array.from(allow),
+    },
+  };
+  const putRes = await fetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(next),
+  });
+  const putJson = await putRes.json();
+  if (!putJson?.success) {
+    throw new Error(putJson?.error ?? 'Failed to save settings');
+  }
+}
+
 export function PermissionRequestModal() {
   const pending = useClaudeStore((s) => s.pendingPermission);
+  const [savingRule, setSavingRule] = useState(false);
+  const [ruleError, setRuleError] = useState<string | null>(null);
 
   if (!pending) return null;
 
-  const onApprove = () => getClaudeClient().respondToPermission(pending.requestId, true);
-  const onDeny = () => getClaudeClient().respondToPermission(pending.requestId, false);
-
+  const rule = buildAllowRule(pending.tool, pending.args);
   const isDanger = pending.danger === 'danger';
 
+  const handleDeny = () => {
+    setRuleError(null);
+    getClaudeClient().respondToPermission(pending.requestId, false);
+  };
+
+  const handleAllowOnce = () => {
+    setRuleError(null);
+    getClaudeClient().respondToPermission(pending.requestId, true);
+  };
+
+  const handleAlwaysAllow = async () => {
+    setRuleError(null);
+    setSavingRule(true);
+    try {
+      await persistAllowRule(rule);
+      getClaudeClient().respondToPermission(pending.requestId, true);
+    } catch (err) {
+      setRuleError((err as Error).message);
+    } finally {
+      setSavingRule(false);
+    }
+  };
+
   return (
-    <Dialog open={true} onOpenChange={(open) => !open && onDeny()}>
+    <Dialog open={true} onOpenChange={(open) => !open && handleDeny()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -53,12 +123,38 @@ export function PermissionRequestModal() {
         >
           {JSON.stringify(pending.args, null, 2)}
         </pre>
-        <DialogFooter>
-          <Button variant="outline" onClick={onDeny}>
+        <div className="rounded-md border border-dashed bg-muted/30 p-2 text-xs text-muted-foreground">
+          <div>
+            <span className="font-medium text-foreground">Allow Once</span> grants this single
+            call. <span className="font-medium text-foreground">Always Allow</span> saves a rule
+            to <code>.claude/settings.json</code> so this tool is accepted without asking.
+          </div>
+          <div className="mt-1">
+            Rule to be saved:{' '}
+            <code className="rounded bg-muted px-1 py-0.5">{rule}</code>
+          </div>
+          {ruleError && (
+            <div className="mt-1 text-destructive">Failed to save rule: {ruleError}</div>
+          )}
+        </div>
+        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
+          <Button variant="outline" onClick={handleDeny} disabled={savingRule}>
             Deny
           </Button>
-          <Button variant={isDanger ? 'destructive' : 'default'} onClick={onApprove}>
-            Approve
+          <Button
+            variant={isDanger ? 'destructive' : 'default'}
+            onClick={handleAllowOnce}
+            disabled={savingRule}
+          >
+            Allow Once
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={handleAlwaysAllow}
+            disabled={savingRule || isDanger}
+            title={isDanger ? 'Dangerous actions cannot be added as always-allow rules' : undefined}
+          >
+            {savingRule ? 'Saving…' : 'Always Allow'}
           </Button>
         </DialogFooter>
       </DialogContent>

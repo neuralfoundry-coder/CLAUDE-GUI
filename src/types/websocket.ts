@@ -86,6 +86,16 @@ export interface ClaudePermissionRequest {
   danger: 'safe' | 'warning' | 'danger';
 }
 
+export interface ClaudeModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  webSearchRequests?: number;
+  costUSD?: number;
+  contextWindow?: number;
+}
+
 export interface ClaudeResultMessage {
   type: 'result';
   requestId: string;
@@ -102,6 +112,7 @@ export interface ClaudeResultMessage {
       output_tokens?: number;
       cache_read_input_tokens?: number;
     };
+    modelUsage?: Record<string, ClaudeModelUsage>;
   };
 }
 
@@ -112,9 +123,17 @@ export interface ClaudeErrorMessage {
   code?: number;
 }
 
+export interface ClaudeAutoDecisionMessage {
+  type: 'auto_decision';
+  tool: string;
+  decision: 'allow' | 'deny';
+  source: 'settings';
+}
+
 export type ClaudeServerMessage =
   | ClaudeStreamMessage
   | ClaudeToolCallMessage
   | ClaudePermissionRequest
   | ClaudeResultMessage
-  | ClaudeErrorMessage;
+  | ClaudeErrorMessage
+  | ClaudeAutoDecisionMessage;
