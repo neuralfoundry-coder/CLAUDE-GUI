@@ -5,7 +5,15 @@ interface Bucket {
 
 const buckets = new Map<string, Bucket>();
 const WINDOW_MS = 60_000;
-const MAX_REQUESTS = 300;
+/**
+ * The file API rate limit is primarily a defense against misbehaving
+ * clients or external callers — for a single local desktop user, a
+ * reasonable project crawl (Cmd+P / `@` autocomplete / file tree expand)
+ * can legitimately burst into the hundreds of requests when opening a
+ * large repo. 1200 req/min (~20 req/sec sustained) comfortably covers
+ * that while still cutting off runaway loops.
+ */
+const MAX_REQUESTS = 1200;
 
 export function rateLimit(key: string): { ok: boolean; remaining: number } {
   const now = Date.now();
