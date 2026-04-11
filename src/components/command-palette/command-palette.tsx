@@ -9,6 +9,7 @@ import { useSettingsStore } from '@/stores/use-settings-store';
 import { filesApi } from '@/lib/api-client';
 import { exportToPptx, parseHtmlToSlides } from '@/lib/export/pptx-exporter';
 import { openPrintPdf } from '@/lib/export/pdf-exporter';
+import { isFocusInsideTerminal } from '@/hooks/use-keyboard-shortcut';
 
 interface FileItem {
   path: string;
@@ -43,10 +44,18 @@ export function CommandPalette() {
   const setTheme = useLayoutStore((s) => s.setTheme);
   const resetClaude = useClaudeStore((s) => s.reset);
   const openRulesModal = useSettingsStore((s) => s.openRulesModal);
+  const setTerminalFontFamily = useSettingsStore((s) => s.setTerminalFontFamily);
+  const setTerminalFontLigatures = useSettingsStore((s) => s.setTerminalFontLigatures);
+  const terminalFontLigatures = useSettingsStore((s) => s.terminalFontLigatures);
+  const setTerminalCopyOnSelect = useSettingsStore((s) => s.setTerminalCopyOnSelect);
+  const terminalCopyOnSelect = useSettingsStore((s) => s.terminalCopyOnSelect);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        // Cmd+K inside the terminal panel is reserved for "clear terminal"
+        // (handled by the global terminal shortcuts). Let it pass through.
+        if (isFocusInsideTerminal()) return;
         e.preventDefault();
         setOpen((o) => !o);
       }
@@ -159,6 +168,34 @@ export function CommandPalette() {
                 className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
               >
                 Edit Permission Rules
+              </Command.Item>
+              <Command.Item
+                onSelect={() =>
+                  runCommand(() => {
+                    const next = prompt(
+                      'Terminal font family',
+                      useSettingsStore.getState().terminalFontFamily,
+                    );
+                    if (next != null) setTerminalFontFamily(next);
+                  })
+                }
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                Terminal: Set Font Family…
+              </Command.Item>
+              <Command.Item
+                onSelect={() =>
+                  runCommand(() => setTerminalFontLigatures(!terminalFontLigatures))
+                }
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                Terminal: {terminalFontLigatures ? 'Disable' : 'Enable'} Font Ligatures
+              </Command.Item>
+              <Command.Item
+                onSelect={() => runCommand(() => setTerminalCopyOnSelect(!terminalCopyOnSelect))}
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                Terminal: {terminalCopyOnSelect ? 'Disable' : 'Enable'} Copy-on-Select
               </Command.Item>
               <Command.Item
                 onSelect={() => runCommand(exportPptx)}

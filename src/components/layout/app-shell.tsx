@@ -39,6 +39,18 @@ export function AppShell() {
     getClaudeClient();
     getFilesClient().start();
     terminalManager.boot();
+    terminalManager.setFileLinkHandler((path, line, col) => {
+      const projectRoot = useProjectStore.getState().activeRoot;
+      // Prefer a path relative to the project root so the editor store's
+      // `filesApi.read(relativePath)` succeeds (the server resolves it
+      // against the active root via `resolveSafe`).
+      let target = path;
+      if (projectRoot && path.startsWith(projectRoot)) {
+        target = path.slice(projectRoot.length).replace(/^[/\\]+/, '');
+      }
+      if (!target) target = path;
+      void useEditorStore.getState().openFile(target, { line, col });
+    });
     void useProjectStore.getState().refresh();
 
     const unsubscribe = getFilesClient().subscribeProjectChange((evt) => {
