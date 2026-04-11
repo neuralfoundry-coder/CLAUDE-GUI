@@ -14,7 +14,7 @@ ClaudeGUI adopts a **hybrid local-server architecture**. The browser (React fron
 | Long-running Claude sessions | ❌ timeout | ✅ stateful | ✅ |
 | Local filesystem access | ❌ not possible | ✅ direct `fs` module | ✅ |
 | node-pty integration | ❌ not possible | ✅ native module | ✅ |
-| chokidar file watching | ❌ stateless | ✅ persistent watching | ✅ |
+| File watching (`@parcel/watcher`) | ❌ stateless | ✅ persistent watching | ✅ |
 | Session persistence | ❌ stateless | ✅ stateful | ✅ |
 
 **Conclusion**: the custom Node.js server (`server.js`) is the only viable choice.
@@ -66,8 +66,8 @@ ClaudeGUI adopts a **hybrid local-server architecture**. The browser (React fron
 │      │     │  │                                   │              │
 │      ▼     ▼  ▼                                   ▼              │
 │  ┌─────┐┌──────┐┌──────────┐              ┌──────────────┐     │
-│  │node-││Agent ││chokidar  │              │  fs/promises │     │
-│  │pty  ││SDK   ││Watcher   │              │  (sandboxed) │     │
+│  │node-││Agent ││@parcel/  │              │  fs/promises │     │
+│  │pty  ││SDK   ││watcher   │              │  (sandboxed) │     │
 │  └──┬──┘└──┬───┘└────┬─────┘              └──────┬───────┘     │
 └─────┼──────┼─────────┼───────────────────────────┼─────────────┘
       │      │         │                           │
@@ -103,11 +103,11 @@ ClaudeGUI adopts a **hybrid local-server architecture**. The browser (React fron
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
-| **Runtime** | Node.js 20+ LTS | chokidar v5 ESM, stability |
+| **Runtime** | Node.js 20+ LTS | `@parcel/watcher`/node-pty native ABI, ESM dynamic import |
 | **Server** | Next.js + custom server.js | WebSocket required |
 | **WebSocket** | ws v8 | Lightweight, standards-compliant |
 | **Terminal Backend** | node-pty | Maintained by Microsoft; PTY sessions |
-| **File Watching** | chokidar v5 | Cross-platform, accurate events |
+| **File Watching** | @parcel/watcher v2 | Native FSEvents/inotify backend, one OS handle per root (ADR-024) |
 | **CLI Integration** | @anthropic-ai/claude-agent-sdk | Official SDK, type-safe |
 | **PPTX Export** | PptxGenJS | Pure JS, no external dependencies |
 
@@ -140,7 +140,7 @@ ClaudeGUI adopts a **hybrid local-server architecture**. The browser (React fron
 ### Infrastructure Layer — server side
 
 - **Role**: Access to external resources (filesystem, PTY, Claude CLI)
-- **Components**: node-pty, chokidar, fs/promises, Agent SDK wrapper
+- **Components**: node-pty, `@parcel/watcher`, fs/promises, Agent SDK wrapper
 - **Location**: `src/lib/fs/`, `src/lib/claude/`, `src/lib/pty/`
 
 ## 1.5 Key Architecture Decisions (ADR)

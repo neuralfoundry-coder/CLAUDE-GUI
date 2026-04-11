@@ -22,11 +22,12 @@
 - CDN 로더(`@monaco-editor/loader`)를 사용하여 초기 번들에서 제외한다.
 - 오프라인 환경에서는 별도 CDN 미러링 또는 로컬 번들링이 필요하다.
 
-### TC-04: chokidar v5 ESM 전용
+### TC-04: `@parcel/watcher` 네이티브 바이너리
 
-- chokidar v5는 ESM(ES Modules) 전용이다.
-- Node.js 20 이상이 필수이며, CommonJS `require()`로 임포트할 수 없다.
-- `server.js`를 ESM으로 작성하거나 dynamic import를 사용해야 한다.
+- 파일 감시는 `@parcel/watcher` v2를 사용한다. macOS FSEvents / Linux inotify / Windows ReadDirectoryChangesW 위에서 동작하는 네이티브 프리빌트 바이너리를 포함한다.
+- 지원 OS × CPU 조합(`darwin-x64`, `darwin-arm64`, `linux-x64-glibc`, `linux-x64-musl`, `linux-arm64-glibc`, `win32-x64` 등)에 대해 npm 설치 시 올바른 프리빌트가 선택된다.
+- 지원 외 플랫폼에서 빌드할 때는 Python 3, `make`, C++ 툴체인이 필요하다 (`node-gyp` 소스 컴파일).
+- chokidar v5는 더 이상 사용하지 않는다 — v4부터 네이티브 fsevents 경로를 제거해 macOS에서 `fs.watch` 로 폴백하며, 서브디렉토리마다 파일 디스크립터 1개를 소모해 256 FD/프로세스 기본 한도에 닿으면 `EMFILE` 크래시가 발생하는 것이 실측되었다 (ADR-024 참조).
 
 ### TC-05: WebSocket과 Next.js HMR 충돌
 
@@ -115,7 +116,7 @@
 | `react-resizable-panels` | 2.0 | 패널 레이아웃 | — |
 | `react-arborist` | 3.4 | 파일 트리 | — |
 | `ws` | 8.0 | WebSocket 서버 | — |
-| `chokidar` | 5.0 | 파일 감시 | ESM 전용 |
+| `@parcel/watcher` | 2.5 | 파일 감시 (FSEvents/inotify 네이티브 백엔드) | 지원 외 플랫폼에서 소스 빌드 필요 |
 | `reveal.js` | 5.0 | 프레젠테이션 | — |
 | `zustand` | 5.0 | 상태 관리 | — |
 | `react-pdf` | 10.0 | PDF 렌더링 | pdf.js 호환 |

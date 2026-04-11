@@ -4,25 +4,76 @@ import { createDebug } from '../src/lib/debug.mjs';
 
 const dbg = createDebug('files');
 
-async function loadWatcher(rootAbs) {
-  const chokidar = await import('chokidar');
-  const watcher = chokidar.watch(rootAbs, {
-    ignored: [
-      /(^|[/\\])\.(?!claude-project$)/,
-      /node_modules/,
-      /\.next/,
-      /dist|build|out/,
-      /\.DS_Store/,
-    ],
-    followSymlinks: false,
-    persistent: true,
-    ignoreInitial: true,
-  });
-  return watcher;
+// We subscribe via @parcel/watcher, which uses the native FSEvents / inotify /
+// ReadDirectoryChangesW APIs. A single subscription watches the entire project
+// tree with 1 OS handle — unlike chokidar 5's `fs.watch` fallback, which burns
+// 1 file descriptor per directory and hits the macOS per-process 256 FD limit
+// (EMFILE) on non-trivial projects.
+const IGNORE_DIR_NAMES = [
+  'node_modules',
+  '.next',
+  '.git',
+  '.claude',
+  '.claude-worktrees',
+  '.turbo',
+  '.cache',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+  'test-results',
+  'playwright-report',
+];
+
+// Native ignore globs — these subtrees are never scanned or watched.
+export const WATCHER_IGNORE_GLOBS = IGNORE_DIR_NAMES.flatMap((name) => [
+  `**/${name}`,
+  `**/${name}/**`,
+]);
+
+function segmentPattern(name) {
+  return new RegExp(`(^|[/\\\\])${name.replace(/\./g, '\\.')}($|[/\\\\])`);
+}
+
+// Hidden dotfiles/dirs, keeping `.claude-project` visible (user-facing config).
+const HIDDEN_DOT_SEGMENT =
+  /(^|[/\\])\.(?!claude-project($|[/\\]))[^/\\]*($|[/\\])/;
+
+// JS-level filter for the remaining policy (dotfiles, .DS_Store, and any heavy
+// directory that somehow slipped past the native ignore on weird filesystems).
+export const WATCHER_IGNORE_PATTERNS = [
+  HIDDEN_DOT_SEGMENT,
+  ...IGNORE_DIR_NAMES.map(segmentPattern),
+];
+
+export function isIgnoredByWatcher(p) {
+  return WATCHER_IGNORE_PATTERNS.some((re) => re.test(p));
+}
+
+function mapEvent(type) {
+  if (type === 'create') return 'add';
+  if (type === 'delete') return 'unlink';
+  return 'change';
+}
+
+async function loadWatcher(rootAbs, onEvents, onError) {
+  const mod = await import('@parcel/watcher');
+  const subscribe = mod.subscribe ?? mod.default?.subscribe;
+  return subscribe(
+    rootAbs,
+    (err, events) => {
+      if (err) {
+        onError(err);
+        return;
+      }
+      onEvents(events);
+    },
+    { ignore: WATCHER_IGNORE_GLOBS },
+  );
 }
 
 const connections = new Set();
-let sharedWatcher = null;
+let sharedSubscription = null;
 let watcherRoot = null;
 let rootChangeUnsubscribe = null;
 
@@ -41,15 +92,15 @@ function broadcastAll(message) {
 
 async function rebuildWatcher() {
   const root = getActiveRoot();
-  if (sharedWatcher && watcherRoot === root) return sharedWatcher;
-  if (sharedWatcher) {
+  if (sharedSubscription && watcherRoot === root) return sharedSubscription;
+  if (sharedSubscription) {
     dbg.info('closing existing watcher on', watcherRoot);
     try {
-      await sharedWatcher.close();
+      await sharedSubscription.unsubscribe();
     } catch (err) {
-      dbg.error('close failed', err);
+      dbg.error('unsubscribe failed', err);
     }
-    sharedWatcher = null;
+    sharedSubscription = null;
     watcherRoot = null;
   }
   if (!root) {
@@ -57,35 +108,46 @@ async function rebuildWatcher() {
     return null;
   }
   dbg.info('starting watcher on', root);
-  sharedWatcher = await loadWatcher(root);
-  watcherRoot = root;
 
-  const broadcastEvent = (event) => (p) => {
+  const handleEvents = (events) => {
     const currentRoot = watcherRoot;
     if (!currentRoot) return;
-    const rel = path.relative(currentRoot, p) || '.';
-    dbg.trace(event, rel);
+    for (const ev of events) {
+      if (isIgnoredByWatcher(ev.path)) continue;
+      const rel = path.relative(currentRoot, ev.path) || '.';
+      const mapped = mapEvent(ev.type);
+      dbg.trace(mapped, rel);
+      broadcastAll({
+        type: 'change',
+        event: mapped,
+        path: rel,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  };
+
+  const handleError = (err) => {
+    dbg.error('watcher error', err);
     broadcastAll({
       type: 'change',
-      event,
-      path: rel,
+      event: 'error',
+      path: '.',
+      message: String(err?.message || err),
       timestamp: new Date().toISOString(),
     });
   };
 
-  ['add', 'change', 'unlink', 'addDir', 'unlinkDir'].forEach((evt) => {
-    sharedWatcher.on(evt, broadcastEvent(evt));
-  });
-  sharedWatcher.on('ready', () => {
-    broadcastAll({
-      type: 'change',
-      event: 'ready',
-      path: '.',
-      timestamp: new Date().toISOString(),
-    });
+  sharedSubscription = await loadWatcher(root, handleEvents, handleError);
+  watcherRoot = root;
+
+  broadcastAll({
+    type: 'change',
+    event: 'ready',
+    path: '.',
+    timestamp: new Date().toISOString(),
   });
 
-  return sharedWatcher;
+  return sharedSubscription;
 }
 
 async function ensureWatcher() {

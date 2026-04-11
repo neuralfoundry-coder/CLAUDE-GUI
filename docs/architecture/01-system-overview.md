@@ -12,7 +12,7 @@ ClaudeGUI는 **하이브리드 로컬 서버 아키텍처**를 채택한다. 브
 | 장기 실행 Claude 세션 | ❌ 타임아웃 | ✅ 상태 유지 | ✅ |
 | 로컬 파일시스템 접근 | ❌ 불가 | ✅ fs 모듈 직접 접근 | ✅ |
 | node-pty 통합 | ❌ 불가 | ✅ 네이티브 모듈 | ✅ |
-| chokidar 파일 감시 | ❌ 상태 없음 | ✅ 지속 감시 | ✅ |
+| 파일 감시 (`@parcel/watcher`) | ❌ 상태 없음 | ✅ 지속 감시 | ✅ |
 | 세션 지속성 | ❌ stateless | ✅ stateful | ✅ |
 
 **결론**: 커스텀 Node.js 서버(`server.js`)가 유일한 선택지이다.
@@ -64,8 +64,8 @@ ClaudeGUI는 **하이브리드 로컬 서버 아키텍처**를 채택한다. 브
 │      │     │  │                                   │              │
 │      ▼     ▼  ▼                                   ▼              │
 │  ┌─────┐┌──────┐┌──────────┐              ┌──────────────┐     │
-│  │node-││Agent ││chokidar  │              │  fs/promises │     │
-│  │pty  ││SDK   ││Watcher   │              │  (sandboxed) │     │
+│  │node-││Agent ││@parcel/  │              │  fs/promises │     │
+│  │pty  ││SDK   ││watcher   │              │  (sandboxed) │     │
 │  └──┬──┘└──┬───┘└────┬─────┘              └──────┬───────┘     │
 └─────┼──────┼─────────┼───────────────────────────┼─────────────┘
       │      │         │                           │
@@ -101,11 +101,11 @@ ClaudeGUI는 **하이브리드 로컬 서버 아키텍처**를 채택한다. 브
 
 | 계층 | 기술 | 선택 근거 |
 |------|------|----------|
-| **Runtime** | Node.js 20+ LTS | chokidar v5 ESM, 안정성 |
+| **Runtime** | Node.js 20+ LTS | `@parcel/watcher`/node-pty 네이티브 ABI, ESM dynamic import |
 | **Server** | Next.js + 커스텀 server.js | WebSocket 필수 |
 | **WebSocket** | ws v8 | 경량, 표준 준수 |
 | **Terminal Backend** | node-pty | Microsoft 유지관리, PTY 세션 |
-| **File Watching** | chokidar v5 | 크로스 플랫폼, 정확한 이벤트 |
+| **File Watching** | @parcel/watcher v2 | FSEvents/inotify 네이티브 백엔드, 루트당 OS 핸들 1개 (ADR-024) |
 | **CLI Integration** | @anthropic-ai/claude-agent-sdk | 공식 SDK, 타입 안전 |
 | **PPTX Export** | PptxGenJS | 순수 JS, 의존성 없음 |
 
@@ -138,7 +138,7 @@ ClaudeGUI는 **하이브리드 로컬 서버 아키텍처**를 채택한다. 브
 ### 인프라 계층 (Infrastructure Layer) — 서버 측
 
 - **역할**: 외부 자원 접근 (파일시스템, PTY, Claude CLI)
-- **구성**: node-pty, chokidar, fs/promises, Agent SDK 래퍼
+- **구성**: node-pty, `@parcel/watcher`, fs/promises, Agent SDK 래퍼
 - **위치**: `src/lib/fs/`, `src/lib/claude/`, `src/lib/pty/`
 
 ## 1.5 주요 아키텍처 결정 (ADR)

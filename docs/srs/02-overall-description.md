@@ -68,7 +68,7 @@ ClaudeGUI의 핵심 차별점:
 
 | 소프트웨어 | 최소 버전 | 비고 |
 |-----------|----------|------|
-| Node.js | 20.0+ | chokidar v5 ESM 지원, node-pty 빌드 |
+| Node.js | 20.0+ | `@parcel/watcher` / node-pty 네이티브 바이너리, ESM dynamic import 안정성 |
 | Claude CLI | 최신 | `claude` 명령어 PATH 등록 필수 |
 | npm | 10.0+ | 패키지 관리 |
 | Chrome | 최신 2개 버전 | 기본 타겟 브라우저 |

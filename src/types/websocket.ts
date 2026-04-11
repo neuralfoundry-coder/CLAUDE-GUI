@@ -8,9 +8,10 @@ export interface WsHealthCheck {
 
 export interface FileChangeMessage {
   type: 'change';
-  event: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir' | 'ready';
+  event: 'add' | 'change' | 'unlink' | 'ready' | 'error';
   path: string;
   timestamp: string;
+  message?: string;
 }
 
 export interface ProjectChangedMessage {

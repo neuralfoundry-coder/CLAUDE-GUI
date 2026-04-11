@@ -119,15 +119,17 @@
 | **심볼릭 링크** | `fs.lstat()` 검증 |
 | **인코딩** | 텍스트 파일 UTF-8, 바이너리 파일 Buffer |
 
-### chokidar
+### @parcel/watcher
 
 | 항목 | 내용 |
 |------|------|
-| **패키지** | `chokidar` v5 (ESM) |
-| **감시 대상** | 프로젝트 루트 디렉토리 (재귀적) |
-| **무시 패턴** | `node_modules`, `.git`, `dist`, `build` |
-| **이벤트** | `add`, `change`, `unlink`, `addDir`, `unlinkDir` |
+| **패키지** | `@parcel/watcher` v2 (네이티브 바이너리) |
+| **구동 백엔드** | macOS FSEvents / Linux inotify / Windows ReadDirectoryChangesW |
+| **감시 대상** | 프로젝트 루트 디렉토리 (재귀적, 루트당 OS 핸들 1개) |
+| **무시 패턴** | `**/node_modules`, `**/.next`, `**/.git`, `**/.claude`, `**/dist`, `**/build`, `**/out`, `**/coverage`, `**/test-results`, `**/playwright-report`, `**/.turbo`, `**/.cache`, `**/.claude-worktrees` (글롭) + JS 측 dotfile 필터 |
+| **이벤트** | `create`, `update`, `delete` → WS로 브로드캐스트할 때 `add`, `change`, `unlink`, `ready`, `error` 로 정규화 |
 | **출력** | WebSocket `/ws/files` 채널로 브로드캐스트 |
+| **채택 이유** | chokidar v5는 네이티브 fsevents 지원을 제거해 macOS에서 `fs.watch` 로 폴백하며 디렉토리마다 FD 1개를 소모한다. 256개의 프로세스당 기본 한도에 도달하면 `EMFILE` 으로 워처가 크래시한다. `@parcel/watcher` 는 루트당 1개의 OS 핸들만 사용하므로 규모에 무관하게 안정적이다 (ADR-024 참고). |
 
 ### node-pty
 

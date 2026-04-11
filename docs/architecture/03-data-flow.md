@@ -80,7 +80,7 @@
 ### 3.2.2 Claude에 의한 외부 편집
 
 ```
-Claude CLI      파일시스템        chokidar         Server (WS)     Browser         Monaco
+Claude CLI      파일시스템        @parcel/watcher  Server (WS)     Browser         Monaco
    │                │                 │                │              │                │
    │ 1. 파일 수정    │                 │                │              │                │
    │──────────────▶│                 │                 │              │                │
@@ -323,7 +323,7 @@ HtmlStreamExtractor.feedToolUse({name:'Write', input:{file_path, content}})
 ```
 
 - 스트리밍 종료(`result`) 이후에도 `useLivePreviewStore.mode`는 `live-html`을 유지할 수 있으나, `LiveHtmlPreview`는 에디터 탭이 열려 있으면 버퍼 대신 에디터 content를 소스로 사용한다.
-- 사용자가 에디터에서 수정한 내용은 `useEditorStore.tabs[*].content`에 즉시 반영되고, Zustand 구독을 통해 `LiveHtmlPreview`가 150ms 디바운스로 재렌더한다 (파일 저장·디스크 쓰기·chokidar 이벤트 불필요).
+- 사용자가 에디터에서 수정한 내용은 `useEditorStore.tabs[*].content`에 즉시 반영되고, Zustand 구독을 통해 `LiveHtmlPreview`가 150ms 디바운스로 재렌더한다 (파일 저장·디스크 쓰기·`@parcel/watcher` 이벤트 불필요).
 - 코드 펜스만으로 생성된 HTML(파일 경로 없음)은 `generatedFilePath`가 `null`이므로 버퍼 기반 렌더링 경로를 그대로 사용한다.
 
 ### 부분 편집 보존 흐름 (FR-610)
@@ -397,8 +397,8 @@ apply(content) → applyEditOps → onChunk/onComplete
   │                   │    (Edit tool)  │                 │                       │
   │                   │────────────────▶│                 │                       │
   │                   │                 │ 4. 파일 쓰기     │                       │
-  │                   │                 │ → chokidar      │                       │
-  │                   │                 │   감지           │                       │
+  │                   │                 │ → @parcel/      │                       │
+  │                   │                 │   watcher 감지   │                       │
   │                   │                 │                 │                       │
   │                   │                 │ 5. /ws/files    │                       │
   │                   │                 │   change event  │                       │

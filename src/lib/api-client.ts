@@ -34,8 +34,20 @@ export const filesApi = {
     });
   },
 
-  delete(path: string): Promise<{ deleted: string }> {
-    return apiFetch(`/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+  delete(path: string, options: { recursive?: boolean } = {}): Promise<{ deleted: string }> {
+    const qs = new URLSearchParams({ path });
+    if (options.recursive) qs.set('recursive', '1');
+    return apiFetch(`/api/files?${qs.toString()}`, { method: 'DELETE' });
+  },
+
+  copy(
+    srcPath: string,
+    destPath: string,
+  ): Promise<{ srcPath: string; destPath: string; writtenPath: string }> {
+    return apiFetch('/api/files/copy', {
+      method: 'POST',
+      body: JSON.stringify({ srcPath, destPath }),
+    });
   },
 
   mkdir(path: string): Promise<{ created: string }> {

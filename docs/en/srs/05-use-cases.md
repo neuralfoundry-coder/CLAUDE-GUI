@@ -48,7 +48,7 @@
 4. Claude invokes a file-edit tool.
 5. A permission-request modal appears (see FR-505, UC-03).
 6. When the user approves, Claude modifies the file.
-7. chokidar detects the file change and the editor reflects it.
+7. `@parcel/watcher` detects the file change and the editor reflects it.
 8. The editor shows the changes as a diff view.
 9. The user accepts or rejects the changes.
 10. After the query completes, cost and token usage are displayed.
@@ -176,7 +176,7 @@
 2. The terminal starts a shell session in the project directory.
 3. The user enters a command (e.g., `npm test`).
 4. The command output is rendered in real time with ANSI color.
-5. If the command modifies files, chokidar detects it and refreshes the editor/file tree.
+5. If the command modifies files, `@parcel/watcher` detects it and refreshes the editor/file tree.
 
 ### Alternative flows
 

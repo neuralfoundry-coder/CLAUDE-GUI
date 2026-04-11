@@ -92,22 +92,45 @@ export async function GET(req: Request) {
 }
 ```
 
-### 5.2.3 chokidar 감시 범위 제한
+### 5.2.3 `@parcel/watcher` 감시 범위 제한
 
 ```typescript
-import chokidar from 'chokidar';
+import watcher from '@parcel/watcher';
 
-const watcher = chokidar.watch(PROJECT_ROOT, {
-  ignored: [
-    /(^|[/\\])\.(?!claude-project$)/,  // 대부분의 dotfile
-    /node_modules/,
-    /dist|build|\.next|out/,
-    /\.DS_Store/,
-  ],
-  followSymlinks: false,  // 심볼릭 링크 추적 금지
-  cwd: PROJECT_ROOT,
-});
+const subscription = await watcher.subscribe(
+  PROJECT_ROOT,
+  (err, events) => {
+    if (err) return; // 오류는 별도 broadcast
+    for (const ev of events) {
+      if (isIgnoredByWatcher(ev.path)) continue; // dotfile/.DS_Store JS 필터
+      // ev.type: 'create' | 'update' | 'delete'
+      // ev.path: 절대 경로
+    }
+  },
+  {
+    // 네이티브 ignore: 아래 서브트리는 스캔/구독에서 완전히 제외됨
+    ignore: [
+      '**/node_modules', '**/node_modules/**',
+      '**/.next',        '**/.next/**',
+      '**/.git',         '**/.git/**',
+      '**/.claude',      '**/.claude/**',
+      '**/dist',         '**/dist/**',
+      '**/build',        '**/build/**',
+      '**/out',          '**/out/**',
+      '**/coverage',     '**/coverage/**',
+      '**/test-results', '**/test-results/**',
+      '**/playwright-report', '**/playwright-report/**',
+      '**/.turbo',       '**/.turbo/**',
+      '**/.cache',       '**/.cache/**',
+      '**/.claude-worktrees', '**/.claude-worktrees/**',
+    ],
+  },
+);
 ```
+
+- `@parcel/watcher`는 OS 네이티브 API(FSEvents/inotify/RDCW)를 사용하므로 심볼릭 링크를 재귀적으로 팔로우하지 않는다 — 별도 `followSymlinks: false` 플래그가 필요 없다.
+- 네이티브 ignore 글롭이 `node_modules` 등 거대한 서브트리의 스캔 자체를 차단하므로 FD 소모가 폭주하지 않는다 (chokidar v5에서 발생했던 EMFILE 크래시 제거 — ADR-024).
+- `.claude-project`는 사용자 설정이 담긴 디렉토리이므로 위 ignore 글롭에 포함되지 않아 계속 감시된다. dotfile 일반 정책은 JS 측 `isIgnoredByWatcher` 필터가 담당한다.
 
 ---
 

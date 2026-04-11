@@ -33,12 +33,18 @@ function registerArtifactPaths(paths: string[]): void {
   });
 }
 
+export interface ArtifactModalSize {
+  width: number;
+  height: number;
+}
+
 interface ArtifactState {
   artifacts: Artifact[];
   isOpen: boolean;
   autoOpen: boolean;
   highlightedId: string | null;
   pendingTurn: string[];
+  modalSize: ArtifactModalSize | null;
 
   extractFromMessage: (
     messageId: string,
@@ -58,6 +64,7 @@ interface ArtifactState {
   close: () => void;
   toggle: () => void;
   setAutoOpen: (enabled: boolean) => void;
+  setModalSize: (size: ArtifactModalSize | null) => void;
   remove: (id: string) => void;
   clear: () => void;
   clearSession: (sessionId: string | null) => void;
@@ -92,6 +99,7 @@ export const useArtifactStore = create<ArtifactState>()(
       autoOpen: true,
       highlightedId: null,
       pendingTurn: [],
+      modalSize: null,
 
       extractFromMessage: (messageId, sessionId, text, options) => {
         const extracted = extractArtifacts(text, { messageId, sessionId });
@@ -155,6 +163,7 @@ export const useArtifactStore = create<ArtifactState>()(
       close: () => set({ isOpen: false }),
       toggle: () => set((s) => ({ isOpen: !s.isOpen })),
       setAutoOpen: (enabled) => set({ autoOpen: enabled }),
+      setModalSize: (size) => set({ modalSize: size }),
 
       remove: (id) =>
         set((s) => ({
@@ -171,10 +180,11 @@ export const useArtifactStore = create<ArtifactState>()(
     }),
     {
       name: 'claudegui-artifacts',
-      version: 2,
+      version: 3,
       partialize: (state) => ({
         artifacts: state.artifacts,
         autoOpen: state.autoOpen,
+        modalSize: state.modalSize,
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
@@ -184,22 +194,28 @@ export const useArtifactStore = create<ArtifactState>()(
         if (paths.length > 0) registerArtifactPaths(paths);
       },
       migrate: (persistedState, fromVersion) => {
-        // v1 records lack `source`/`updatedAt`. Fill in safe defaults so the
-        // new renderer paths behave like "legacy inline text artifact".
+        // v1 records lack `source`/`updatedAt`; v2 lacks `modalSize`. Fill in
+        // safe defaults so older persisted shapes hydrate cleanly.
         const state = persistedState as Partial<ArtifactState> | undefined;
-        if (!state || fromVersion >= 2) return state as ArtifactState;
-        const migrated = {
-          ...state,
-          artifacts: (state.artifacts ?? []).map((a) => {
-            const anyA = a as Artifact & { source?: string; updatedAt?: number };
-            return {
-              ...anyA,
-              source: anyA.source ?? 'inline',
-              updatedAt: anyA.updatedAt ?? anyA.createdAt ?? Date.now(),
-            } as Artifact;
-          }),
-        };
-        return migrated as ArtifactState;
+        if (!state) return persistedState as ArtifactState;
+        let working = state;
+        if (fromVersion < 2) {
+          working = {
+            ...working,
+            artifacts: (working.artifacts ?? []).map((a) => {
+              const anyA = a as Artifact & { source?: string; updatedAt?: number };
+              return {
+                ...anyA,
+                source: anyA.source ?? 'inline',
+                updatedAt: anyA.updatedAt ?? anyA.createdAt ?? Date.now(),
+              } as Artifact;
+            }),
+          };
+        }
+        if (fromVersion < 3) {
+          working = { ...working, modalSize: working.modalSize ?? null };
+        }
+        return working as ArtifactState;
       },
     },
   ),

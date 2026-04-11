@@ -1,9 +1,13 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Maximize2, Minimize2 } from 'lucide-react';
+import { Code, Eye, Maximize2, Minimize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { usePreviewStore, detectPreviewType } from '@/stores/use-preview-store';
+import {
+  usePreviewStore,
+  detectPreviewType,
+  isSourceToggleable,
+} from '@/stores/use-preview-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { PreviewRouter } from './preview-router';
@@ -16,6 +20,8 @@ export function PreviewPanel() {
   const fullscreen = usePreviewStore((s) => s.fullscreen);
   const toggleFullscreen = usePreviewStore((s) => s.toggleFullscreen);
   const setFullscreen = usePreviewStore((s) => s.setFullscreen);
+  const viewMode = usePreviewStore((s) => s.viewMode);
+  const toggleViewMode = usePreviewStore((s) => s.toggleViewMode);
   const activeTabId = useEditorStore((s) => s.activeTabId);
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
   const liveMode = useLivePreviewStore((s) => s.mode);
@@ -24,6 +30,9 @@ export function PreviewPanel() {
   const path = currentFile ?? activeTab?.path ?? null;
   const type = detectPreviewType(path);
   const showLive = autoSwitch && liveMode !== 'idle';
+  const showSourceToggle = !showLive && isSourceToggleable(type);
+  const typeLabel = showLive ? 'live' : type !== 'none' ? type : '';
+  const headerLabel = showSourceToggle && viewMode === 'source' ? `${typeLabel} · source` : typeLabel;
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -44,9 +53,23 @@ export function PreviewPanel() {
       <div className="flex h-7 items-center justify-between border-b bg-muted px-3">
         <span className="text-xs font-semibold uppercase text-muted-foreground">Preview</span>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase text-muted-foreground">
-            {showLive ? 'live' : type !== 'none' ? type : ''}
-          </span>
+          <span className="text-[10px] uppercase text-muted-foreground">{headerLabel}</span>
+          {showSourceToggle && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-5 w-5"
+              onClick={toggleViewMode}
+              aria-label={viewMode === 'source' ? 'Show rendered' : 'Show source'}
+              title={viewMode === 'source' ? 'Show rendered' : 'Show source'}
+            >
+              {viewMode === 'source' ? (
+                <Eye className="h-3 w-3" aria-hidden="true" />
+              ) : (
+                <Code className="h-3 w-3" aria-hidden="true" />
+              )}
+            </Button>
+          )}
           <PreviewDownloadMenu />
           <Button
             variant="ghost"

@@ -97,7 +97,7 @@ Instead of invoking `node server.js` directly, this launcher bundles clean / ins
 |--------|--------|--------|
 | `server` | `server.js` | Boot, shutdown, upgrade errors |
 | `project` | `src/lib/project/project-context.mjs` | Runtime root swap, listener notifications, state file persistence |
-| `files` | `server-handlers/files-handler.mjs` | chokidar watcher create/restart, file events, client connect/disconnect |
+| `files` | `server-handlers/files-handler.mjs` | `@parcel/watcher` subscription create/restart, file events, client connect/disconnect |
 | `terminal` | `server-handlers/terminal-handler.mjs` | node-pty spawn/exit, WS lifecycle |
 | `claude` | `server-handlers/claude-handler.mjs` | Agent SDK query start/result/error, permission requests |
 
@@ -537,6 +537,90 @@ jobs:
 | `Error: Cannot find module 'node-pty'` | Native build failed | `npm rebuild node-pty` or install build tools |
 | WebSocket connection fails | server.js not running | Use `node server.js` instead of `next dev` |
 | Monaco fails to load | CDN blocked | Enable a local-bundle fallback |
-| chokidar events missing | ESM import failed | Use Node.js 20+ and dynamic imports |
+| File change events missing | `@parcel/watcher` native binary failed to load | `npm rebuild @parcel/watcher`, then restart on Node.js 20+ |
+| `files` handler spams `EMFILE: too many open files, watch` (legacy chokidar 5) | chokidar 4+ removed native fsevents and falls back to `fs.watch` on macOS, burning one FD per directory and blowing past the 256-per-process default soft limit | **Resolved (ADR-024)**: file watching switched to `@parcel/watcher`, which uses a single native OS handle per root. See `server-handlers/files-handler.mjs` → `loadWatcher` calling `mod.subscribe(root, cb, { ignore: WATCHER_IGNORE_GLOBS })`. |
 | Path sandbox 403 | `PROJECT_ROOT` misconfigured | Double-check the env var |
 | `claude` command not found | Not on `PATH` | `npm install -g @anthropic-ai/claude-code` |
+| Desktop icon double-click closes immediately | Launcher script lost the +x bit | `chmod +x ~/.claudegui/bin/claudegui-launcher.sh` |
+| macOS Gatekeeper blocks the `.command` | First-launch security prompt | Right-click → Open in Finder (one time) |
+| Browser doesn't open automatically | 30-s polling timeout / `xdg-open` missing | Open `http://localhost:3000` manually; on Linux install `xdg-utils` |
+
+---
+
+## 6.8 Desktop launcher (FR-1100, ADR-022)
+
+### Overview
+
+After the build step the one-line installer drops a **ClaudeGUI shortcut on the user's desktop**. Double-clicking it opens a fresh console window, boots `node server.js` in production mode, and a background poller launches the OS default browser as soon as `localhost:3000` responds. Closing the console window stops the server with it (close window = stop server).
+
+This path **complements rather than replaces** the Tauri `.dmg`/`.msi` native installer from ADR-018. It exists so that source-install users (`curl | bash`, `iwr | iex`) get the same "double-click to start" experience.
+
+### File layout
+
+| Path | Purpose |
+|------|---------|
+| `public/branding/claudegui.svg` | Single source of truth — mascot SVG |
+| `public/branding/claudegui-{16,32,48,64,128,180,256,512}.png` | Pre-rendered PNGs (qlmanage rasterization) |
+| `public/branding/claudegui.ico` | Vista+ PNG-in-ICO container (six sizes: 16/32/48/64/128/256) |
+| `src/app/icon.svg` | Next.js App Router auto-served favicon |
+| `src/app/apple-icon.png` | iOS home-screen icon (180×180) |
+| `scripts/build-icons.mjs` | macOS-only asset regeneration script |
+| `scripts/install/install.sh` | macOS / Linux installer (`install_desktop_launcher` function) |
+| `scripts/install/install.ps1` | Windows installer (`Install-DesktopLauncher` function) |
+
+### User-system locations
+
+| File | macOS / Linux | Windows |
+|------|---------------|---------|
+| Icon directory | `~/.claudegui/icons/` | `%LOCALAPPDATA%\ClaudeGUI\icons\` |
+| Launcher script | `~/.claudegui/bin/claudegui-launcher.sh` | `%LOCALAPPDATA%\ClaudeGUI\bin\claudegui-launcher.ps1` |
+| Desktop shortcut | `~/Desktop/ClaudeGUI.command` (mac) / `.desktop` (linux) | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` |
+| Launcher log | `~/.claudegui/logs/launcher.log` (append) | `%USERPROFILE%\.claudegui\logs\launcher.log` (append) |
+
+### Launcher flow
+
+```
+[ user double-clicks ]
+        │
+        ▼
+[ console window opens ] ──┐
+        │                  │
+        ▼                  │
+[ banner printed ]         │ macOS:   .command → Terminal.app
+[ env exported ]           │ Linux:   .desktop → x-terminal-emulator → bash
+        │                  │ Windows: .lnk     → powershell.exe
+        ▼
+   ┌──────────────────────────────┐
+   │ background poller (60×500ms) │ ── 200/3xx ──> [ open / xdg-open / Start-Process ]
+   └──────────────────────────────┘
+        │
+        ▼ (in parallel)
+[ node server.js (foreground) ]
+        │
+   stdout/stderr ─tee─> [ console window ] + [ launcher.log ]
+        │
+        ▼
+[ user closes the window / Ctrl+C ]
+        │
+   SIGHUP/SIGINT propagates
+        │
+        ▼
+[ node server.js exits ]
+```
+
+### Trade-offs
+
+- **macOS uses the default Terminal icon.** Attaching a custom icon to a `.command` file requires resource forks (`Rez`/`SetFile`) or an external tool such as `fileicon`, or moving to a full `.app` bundle and dealing with Gatekeeper signing. We chose to avoid both. The mascot icon is still surfaced in the browser favicon and on Linux/Windows desktop shortcuts.
+- **Closing the window stops the server.** No background daemonization, no system-tray icon. This keeps lifecycle management explicit and prevents zombie processes when users forget to stop the server. If you need long-running execution use ADR-018 (Tauri native app) or `scripts/dev.sh --background`.
+- **30-second polling timeout.** Cold-start `next start` is well under 30 seconds in practice; if it isn't, the launcher prints a manual-open hint and lets the user finish the session themselves.
+- **Tee real-time behaviour.** Both bash `tee` and PowerShell `Tee-Object` are line-buffered, so the user sees logs as they happen. We did not force `node`'s stdout to line-buffered (no measurable issue today).
+
+### Regenerating assets
+
+After editing the SVG mascot (`public/branding/claudegui.svg`), regenerate every raster, the ICO, and the favicon on macOS:
+
+```bash
+node scripts/build-icons.mjs
+```
+
+The script uses `qlmanage` (SVG rendering), `sips` (exact-square resize), and an in-script PNG-in-ICO packer. It does not run on Windows or Linux and exits with an error there — the committed artifacts under `public/branding/` are the canonical outputs.

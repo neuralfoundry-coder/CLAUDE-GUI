@@ -13,9 +13,11 @@ import { SlidePreview } from './slide-preview';
 import { DocxPreview } from './docx-preview';
 import { XlsxPreview } from './xlsx-preview';
 import { PptxPreview } from './pptx-preview';
+import { SourcePreview } from './source-preview';
 
 export function PreviewRouter() {
   const currentFile = usePreviewStore((s) => s.currentFile);
+  const viewMode = usePreviewStore((s) => s.viewMode);
   const activeTabId = useEditorStore((s) => s.activeTabId);
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
   const [content, setContent] = useState<string>('');
@@ -47,18 +49,32 @@ export function PreviewRouter() {
   }, [activeTab, filePath]);
 
   if (!filePath || type === 'none') {
-    return (
-      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-        Select a previewable file (HTML, Markdown, PDF, image, slides, docx, xlsx, pptx)
-      </div>
-    );
+    return <div className="h-full w-full" aria-hidden="true" />;
   }
 
-  if (type === 'html') return <HtmlPreview content={content} />;
-  if (type === 'markdown') return <MarkdownPreview content={content} />;
+  if (type === 'html') {
+    return viewMode === 'source' ? (
+      <SourcePreview content={content} language="html" />
+    ) : (
+      <HtmlPreview content={content} />
+    );
+  }
+  if (type === 'markdown') {
+    return viewMode === 'source' ? (
+      <SourcePreview content={content} language="markdown" />
+    ) : (
+      <MarkdownPreview content={content} />
+    );
+  }
+  if (type === 'slides') {
+    return viewMode === 'source' ? (
+      <SourcePreview content={content} language="html" />
+    ) : (
+      <SlidePreview content={content} />
+    );
+  }
   if (type === 'image') return <ImagePreview path={filePath} />;
   if (type === 'pdf') return <PdfPreview path={filePath} />;
-  if (type === 'slides') return <SlidePreview content={content} />;
   if (type === 'docx') return <DocxPreview path={filePath} />;
   if (type === 'xlsx') return <XlsxPreview path={filePath} />;
   if (type === 'pptx') return <PptxPreview path={filePath} />;

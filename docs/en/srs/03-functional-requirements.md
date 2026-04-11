@@ -47,11 +47,20 @@
 ### FR-202: File/folder CRUD
 
 - Creation, rename (F2), and deletion of files and folders shall be supported.
-- Deletion shall trigger a confirmation dialog.
+- **Renaming uses inline editing** (react-arborist `tree.edit()`). `Enter` commits, `Esc` cancels, and blurring the input auto-commits. Empty strings, `.`, `..`, path separators (`/`, `\`), and `\0` are rejected.
+- **New file / new folder uses the create-then-inline-rename pattern**, matching macOS Finder. A placeholder `untitled.txt` / `untitled folder` (disambiguated with ` 2`, ` 3`, … if it already exists) is created immediately, after which the new node automatically enters rename mode.
+- **Deletion confirmation uses a shadcn `<Dialog>`-based `DeleteConfirmDialog`** for both single and multi-selection. For multi-selection, the affected paths are listed inside the modal. Folder deletion is recursive by default (`fs.rm({ recursive: true })`); the API opts in via `DELETE /api/files?path=…&recursive=1`.
+- Bulk deletion processes the selection sequentially; if some items fail, the remainder are still attempted and the failure list is reported to the user at the end.
+- Implementation: `src/components/panels/file-explorer/file-tree.tsx` (inline input renderer), `src/components/panels/file-explorer/use-file-actions.ts` (`deletePaths`), `src/components/panels/file-explorer/delete-confirm-dialog.tsx`, `src/lib/fs/file-operations.ts` (`deleteEntry({ recursive })`).
 
-### FR-203: Drag and drop
+### FR-203: Intra-tree drag and drop (move/copy)
 
-- Files and folders shall be movable to other directories via drag-and-drop.
+- Nodes within the tree shall be draggable to another directory to move or copy them.
+- The default drag is a **move** (via `filesApi.rename`, an in-place rename within the same filesystem). Holding the `Alt`/`Option` modifier turns the drag into a **copy** (via `filesApi.copy`). The modifier key is captured from native `dragstart`/`dragover` events and forwarded to react-arborist's `onMove` callback through a ref.
+- Moving a node into itself or any of its descendants is rejected with a user-visible reason. Copy mode allows duplicating into the same directory (an automatic ` (1)` suffix is appended).
+- Multi-selected drags are processed in bulk. Partial failures are tolerated: successful items are applied and the failure list is aggregated for the user.
+- This rule applies only to **intra-tree node drags**. OS file-explorer drops (`FR-208`) are routed through a separate path keyed on `e.dataTransfer.types` containing `'Files'`, so the two flows do not collide.
+- Implementation: `src/components/panels/file-explorer/file-tree.tsx` (`onMove`, `dragAltKeyRef`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (`onMove` handler), `src/app/api/files/copy/route.ts`.
 
 ### FR-204: Git status display
 
@@ -70,10 +79,21 @@
 - Appropriate icons shall be displayed based on file extension.
 - Supported extensions include: `.ts`, `.tsx`, `.js`, `.jsx`, `.json`, `.md`, `.html`, `.css`, `.py`, `.go`, `.rs`, etc.
 
-### FR-206: Context menu
+### FR-206: Context menu (hoisted single instance)
 
 - Right-clicking a file or folder shall open a context menu.
-- Menu items: New File, New Folder, Rename, Delete, Copy Path, Open in Terminal.
+- **The menu is rendered as a single instance hoisted to the panel root** (`src/components/panels/file-explorer/file-context-menu.tsx`). On right-click the node renderer dispatches `useFileContextMenuStore.openAtNode({ clientX, clientY }, target, selectionPaths)`, and the menu component moves a `position: fixed` invisible anchor to those coordinates and opens a Radix DropdownMenu against it. As a result, react-arborist's virtualized list reconciliation and per-node hover re-renders cannot affect menu state.
+- **The menu dismisses only on (a) `Esc`, (b) clicking outside the menu, or (c) right-clicking another node (which moves the anchor)**. Plain mouse movement does not dismiss the menu (matching Radix DropdownMenu's default behaviour).
+- **Menu items** — node scope:
+  - `Open` (file), `Open as project root` (directory)
+  - `Open terminal here`, `Open in system terminal`, `Reveal in Finder/File Explorer`
+  - `Cut` (Cmd/Ctrl+X), `Copy` (Cmd/Ctrl+C), `Paste` (Cmd/Ctrl+V — disabled when clipboard is empty), `Duplicate` (Cmd/Ctrl+D)
+  - `Copy path`
+  - For directories only: `New file…`, `New folder…`
+  - `Rename` (F2 — enters inline edit mode)
+  - `Delete` (Del — opens `DeleteConfirmDialog`)
+- **Menu items** — empty-area scope (right-clicking the empty space of the tree): `New file…`, `New folder…`, `Paste`, `Refresh`.
+- When a multi-selection exists, right-clicking forwards every selected path as `selectionPaths`, so `Cut`/`Copy`/`Delete` operate on the entire selection. If the right-clicked node is not part of the existing selection, the selection is replaced with that single node (matching Finder/Explorer behaviour).
 
 ### FR-207: Virtualized rendering
 
@@ -91,13 +111,13 @@
   - Normalize each filename with `path.basename` and reject names equal to `.`, `..`, or containing `/`, `\`, or `\0`.
   - Reject individual files larger than `MAX_BINARY_SIZE` (50 MB) and reject any request whose total size exceeds 200 MB with `413 Payload Too Large`.
   - If a filename already exists, do not overwrite — disambiguate by appending ` (1)`, ` (2)`, etc.
-- On success, the client calls `refreshRoot()` to refresh the tree immediately. The `/ws/files` watcher also emits a change event, but the manual refresh avoids waiting for chokidar debouncing.
+- On success, the client calls `refreshRoot()` to refresh the tree immediately. The `/ws/files` watcher also emits a change event, but the manual refresh avoids waiting on the `@parcel/watcher` event batch.
 - On failure, the header status label renders `upload failed: <message>` highlighted with `text-destructive`.
 - Implementation: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (drop/paste handlers, overlay).
 
 ### FR-209: Explorer root navigation (up / down re-rooting)
 
-- The file explorer must be able to **move the active project root to a parent directory or to any descendant directory**. The newly chosen directory becomes the active root and is immediately reflected across the entire process (file API sandbox, new terminal session cwd, Claude query cwd, chokidar watch target).
+- The file explorer must be able to **move the active project root to a parent directory or to any descendant directory**. The newly chosen directory becomes the active root and is immediately reflected across the entire process (file API sandbox, new terminal session cwd, Claude query cwd, `@parcel/watcher` subscription target).
 - **UI**:
   - An **↑ Up button** (`lucide-react`'s `ArrowUp`) in the panel header calls `useProjectStore.openParent()`, which sets `path.dirname(activeRoot)` as the new root. If the parent would become the filesystem root (`/` or `C:\`), the backend rejects with `4403` and the button is disabled.
   - A **breadcrumb bar** below the header renders each path segment of the current root as a clickable button. The trailing segment highlights the current location; clicking any other segment re-roots to that ancestor.
@@ -107,6 +127,47 @@
   - `$HOME` is now allowed as an explicit user choice (the previous `4403` ban is removed). This supports the legitimate use case of editing dotfile/script projects under `~`. The dotfile deny list in `resolveSafe` (`.env`, `.git`, `.ssh`, `.claude`, `.aws`, `.npmrc`, `id_rsa`, `id_ed25519`, `credentials`, …) still blocks access to sensitive files.
 - **State transitions**: Changing the root resets existing editor tabs and preview selection (FR-908 behavior) and reloads the file tree against the new root. Running terminal sessions are preserved, but newly created sessions start in the new root.
 - Implementation: `src/components/panels/file-explorer/file-explorer-panel.tsx` (Up button, breadcrumb), `src/components/panels/file-explorer/file-tree.tsx` (context menu item), `src/stores/use-project-store.ts` (`openParent()`, `parentDirectory()`).
+
+### FR-210: Multi-selection
+
+- The file explorer shall support selecting multiple nodes simultaneously.
+- Mouse: single click = replace selection, `Cmd`/`Ctrl`+click = toggle, `Shift`+click = range, click on empty area = clear. All handled by react-arborist's built-in selection model.
+- Keyboard: `↑`/`↓` move focus, `Cmd`/`Ctrl`+`A` selects all visible nodes, `Esc` clears the selection.
+- The current selection is the single source of truth for the context menu, keyboard shortcuts, drag-move, and bulk delete actions.
+- Implementation: `src/components/panels/file-explorer/file-tree.tsx` (`onSelect` → `onSelectionChange`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (`selection`/`selectionRef`).
+
+### FR-211: In-app file clipboard (Cut/Copy/Paste/Duplicate)
+
+- The file explorer maintains its own in-app clipboard, separate from the OS clipboard (`useFileClipboardStore` — `{ paths, mode: 'copy' | 'cut' | null }`).
+- **Copy** (`Cmd`/`Ctrl`+`C`): loads the current selection into the clipboard with `mode='copy'`. No visual indicator (matches Finder).
+- **Cut** (`Cmd`/`Ctrl`+`X`): loads the selection with `mode='cut'`. Cut nodes are rendered as `italic + opacity-50` in the tree.
+- **Paste** (`Cmd`/`Ctrl`+`V`): applies the clipboard contents to the currently focused directory (or the active root if none). `copy` mode goes through `filesApi.copy`; `cut` mode goes through `filesApi.rename` (move). Naming conflicts are resolved with ` (1)`, ` (2)` suffixes (matching the upload rule in FR-208).
+- **Duplicate** (`Cmd`/`Ctrl`+`D`): immediately duplicates the single-selected node into the same directory with a ` (1)` suffix.
+- After a successful cut+paste, the clipboard is cleared automatically. On partial failure, the clipboard is preserved so the user can retry elsewhere.
+- Moving or copying into self/descendant is rejected, and failures are surfaced to the user.
+- Implementation: `src/stores/use-file-clipboard-store.ts`, `src/components/panels/file-explorer/use-file-actions.ts` (`copyToClipboard`, `cutToClipboard`, `paste`, `duplicate`), `src/app/api/files/copy/route.ts`, `src/lib/api-client.ts` (`filesApi.copy`).
+
+### FR-212: File-explorer keyboard shortcuts
+
+- The following shortcuts are active when focus is inside the file-explorer panel (`isFocusInsideFileExplorer()` — based on the `data-file-explorer-panel="true"` container). They never fire when another panel has focus.
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` / `←` / `→` / `Home` / `End` | Move focus among tree nodes (built-in react-arborist) |
+| `Enter` / `Space` | Open file / toggle folder |
+| `F2` | Enter inline rename |
+| `Del` / `Backspace` | Delete the selection through `DeleteConfirmDialog` |
+| `Cmd`/`Ctrl` + `A` | Select all visible nodes |
+| `Cmd`/`Ctrl` + `C` | Copy the selection |
+| `Cmd`/`Ctrl` + `X` | Cut the selection |
+| `Cmd`/`Ctrl` + `V` | Paste into the current directory |
+| `Cmd`/`Ctrl` + `D` | Duplicate single selection |
+| `Cmd`/`Ctrl` + `N` | Create new file + enter inline rename |
+| `Cmd`/`Ctrl` + `Shift` + `N` | Create new folder + enter inline rename |
+| `Esc` | Clear selection / close context menu |
+
+- All shortcuts reuse the existing `useKeyboardShortcut`/`hasPrimaryModifier` infrastructure and automatically map the platform-specific modifier (`Cmd` on macOS, `Ctrl` elsewhere).
+- Implementation: `src/components/panels/file-explorer/use-file-keyboard.ts`, `src/hooks/use-keyboard-shortcut.ts` (reused).
 
 ---
 
@@ -155,7 +216,7 @@
 
 ### FR-308: Live reflection of external changes
 
-- External file changes detected by chokidar shall be reflected in the editor in real time.
+- External file changes detected by `@parcel/watcher` shall be reflected in the editor in real time.
 - Change events are received via the WebSocket `/ws/files` channel.
 - Content is updated while preserving the user's cursor position.
 - If the editor has unsaved changes, a conflict notification shall be displayed.
@@ -509,6 +570,7 @@
   - `.md` → Markdown preview
   - `.png`, `.jpg`, `.gif`, `.svg`, `.webp` → image preview
   - `.reveal.html`, presentation mode → reveal.js preview
+- When the extension is unrecognized or no file is selected, the preview panel shall render a **fully blank surface** (no help text).
 
 ### FR-602: HTML preview
 
@@ -602,6 +664,15 @@
 - PDF export opens `window.open()` + `window.print()` to trigger the browser print dialog and lets the user save via the OS "Save as PDF" flow — the same policy as the artifact export pipeline (FR-1004). No server-side PDF renderer (Puppeteer, etc.) is required.
 - DOCX/XLSX/PPTX binary types expose only "Original file" because the viewer already reads the file via `/api/files/raw`. Transcoding (e.g. DOCX → PDF) is out of scope for v1.0.
 - Implementation: `src/lib/preview/preview-download.ts` (adapts the live preview state into an `ExtractedArtifact` shape and reuses the download/print pipeline in `src/lib/claude/artifact-export.ts`), `src/components/panels/preview/preview-download-menu.tsx` (header dropdown), `src/components/panels/preview/preview-panel.tsx` (header placement).
+
+### FR-614: Preview source/rendered view toggle (v0.5)
+
+- Text-backed preview types (`html`, `markdown`, `slides`) shall provide a natural switch between the **rendered view** and the **source view**. Binary or render-only types (`pdf`, `image`, `docx`, `xlsx`, `pptx`) are not toggleable.
+- The preview panel header shall expose a `Code` / `Eye` icon toggle button (to the left of `PreviewDownloadMenu`) whose icon indicates the **target state** (flip-to), matching the convention already used by `live-html-preview.tsx`. `aria-label`/`title` describe the target (`Show source` / `Show rendered`).
+- The toggle state is stored in `usePreviewStore.viewMode: 'rendered' | 'source'` with a default of `'rendered'`. Calling `setFile` resets `viewMode` to `'rendered'` so the source view never sticks across file switches.
+- The source view is rendered with `highlight.js` syntax highlighting (`<pre><code class="hljs language-xml|markdown">`). `highlight.js/styles/github-dark.css` is imported once from the root layout to keep highlighting legible in both light and dark themes. The container follows the FR-612 outline rules (`bg-muted` outer + `ring-1 ring-border/70 shadow-sm`).
+- The live HTML streaming preview (`FR-610`) keeps its **existing internal toggle**; the header toggle is hidden when `showLive === true` (`autoSwitch && liveMode !== 'idle'`). The two toggle paths are mutually exclusive.
+- Implementation: `src/stores/use-preview-store.ts` (`viewMode`, `setViewMode`, `toggleViewMode`, `isSourceToggleable` helper), `src/components/panels/preview/preview-panel.tsx` (header toggle button), `src/components/panels/preview/preview-router.tsx` (source view branch), `src/components/panels/preview/source-preview.tsx` (new syntax-highlighted viewer), `src/app/layout.tsx` (highlight theme CSS).
 
 ---
 
@@ -750,10 +821,10 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 
 ### FR-907: Real-time file-change detection
 
-- chokidar v5 shall detect file changes in the project directory.
+- `@parcel/watcher` v2 shall detect file changes in the project directory. It uses native FSEvents (macOS) / inotify (Linux) / ReadDirectoryChangesW (Windows) and consumes a single OS handle per watched root (see ADR-024).
 - Change events shall be broadcast on the WebSocket `/ws/files` channel.
-- Event types: `add`, `change`, `unlink`, `addDir`, `unlinkDir`.
-- Unnecessary directories (`node_modules`, `.git`, etc.) shall be ignored.
+- The native `create` / `update` / `delete` events are normalized to `add` / `change` / `unlink`; the channel additionally emits `ready` (subscription ready) and `error` (watcher failure).
+- The following subtrees are excluded from watching via both a native ignore glob list and a JS-side dotfile filter: `node_modules`, `.next`, `.git`, `.claude`, `dist`, `build`, `out`, `coverage`, `test-results`, `playwright-report`, `.turbo`, `.cache`, `.claude-worktrees`. `.claude-project` is explicitly **kept** visible because it holds user-facing project settings.
 
 ### FR-908: Runtime project hot-swap (v0.3)
 
@@ -769,10 +840,10 @@ The following shortcuts are active **only when the terminal panel has focus** (e
   - After `useProjectStore.refresh()` completes at boot, if `activeRoot === null` the client **force-opens the project picker modal** (implemented in `AppShell` via `useEffect`).
   - The Claude WS handler, on `runQuery`, checks `getActiveRoot()` — if `null` it immediately emits `{ code: 4412, message: "No project is open. Open a folder in the file explorer before running Claude queries." }` and does not start the query.
   - `resolveSafe`/`getProjectRoot()` throw `SandboxError('No project is open', 4412)` while the root is `null`. File API routes map this to HTTP `412 Precondition Failed`.
-  - The `chokidar` watcher remains idle while the root is `null`; the `onActiveRootChange` listener starts the real watcher once a root is set.
+  - The `@parcel/watcher` subscription remains idle while the root is `null`; the `onActiveRootChange` listener starts the real subscription once a root is set.
   - Newly spawned terminal sessions fall back to the user's home directory (`os.homedir()`) when the root is `null`, preserving the existing "running sessions are never killed" policy.
 - On switch:
-  - The chokidar watcher is closed on the old root and restarted on the new one.
+  - The `@parcel/watcher` subscription is `unsubscribe()`d on the old root and re-subscribed on the new one.
   - All `/ws/files` clients receive `{ type: 'project-changed', root, timestamp }`.
   - Newly spawned PTY sessions use the new root as `cwd` (existing sessions are left alone).
   - Claude queries also use the new root as `cwd`.
@@ -805,7 +876,7 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 ### FR-1003: Persistent storage (localStorage)
 
 - Extracted artifacts shall be persisted in the browser's `localStorage` and the gallery shall be restored intact across page reloads.
-- Storage key: `claudegui-artifacts` (zustand `persist` middleware, `version: 2`).
+- Storage key: `claudegui-artifacts` (zustand `persist` middleware, `version: 3`). Up to v2 only `artifacts`/`autoOpen` were persisted; starting at v3 the gallery's `modalSize` (see FR-1005) is persisted alongside them.
 - The store is capped at 200 artifacts; when the cap is exceeded, the oldest entries are evicted first.
 - The `autoOpen` preference is persisted under the same key.
 - Binary artifacts (`source: "file"`) are not base64-encoded into localStorage; only their absolute `filePath` and metadata are stored, keeping the persisted payload small.
@@ -819,7 +890,7 @@ The following shortcuts are active **only when the terminal panel has focus** (e
   - **Export** — a dropdown menu offers the applicable formats for the artifact's `kind` and `source`:
     - **Source** — download using the language-appropriate extension (`.ts`, `.py`, `.html`, `.svg`, `.md`, etc.) for inline text artifacts.
     - **HTML (.html)** — download the markdown/code/SVG artifact as a stand-alone `<!doctype html>` document.
-    - **PDF** — open a print-ready popup window and call `window.print()`, letting the OS "Save as PDF" dialog produce the file.
+    - **PDF** — inject a hidden `<iframe>` into the current document with the standalone HTML as `srcdoc`, await `decode()` of every `<img>` plus two `requestAnimationFrame` ticks, then call `iframe.contentWindow.print()` so the OS "Save as PDF" dialog fires. Cleanup runs from the `afterprint` event with a 60 s safety fallback. The generated HTML now includes `@page { size: A4; margin: 15mm }` plus `@media print` rules (`page-break-inside: avoid`, color preservation). Content over 1.5 MB falls back from `srcdoc` to a blob URL. This replaces the previous popup-window approach, which was unreliable under popup blockers, racy timers, and missing print CSS.
     - **Word (.doc)** — download MS Word-compatible HTML with the `application/msword` MIME type (opens in Word and Pages).
     - **SVG → PNG** — rasterise via `<canvas>` and download a PNG.
     - **Plain text (.txt)** — fallback for generic code and text artifacts.
@@ -830,6 +901,7 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 
 - The gallery is a modal dialog laid out as a left-hand list and a right-hand detail preview.
 - Each list row shows a kind badge (HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), the artifact title (the file's basename for file-backed entries), its language or extension, and a relative timestamp.
+- Every list row exposes a hover-revealed per-row Delete (Trash) button that calls `useArtifactStore.remove(id)` on click and stops click propagation so the row's default select behaviour is not triggered. If the currently selected artifact is the one being deleted, the existing auto-reselect effect promotes the next entry. For accessibility the row itself is `role="button"` + `tabIndex=0` with Enter/Space handlers, and the inner delete button exposes `aria-label="Delete {title}"`.
 - The detail area exposes a **Preview / Source** toggle. Preview is the default, and per-kind rendering is as follows:
   - **HTML**: `<iframe sandbox="allow-scripts">` with `srcDoc` (no `allow-same-origin`, matching the main preview-panel policy).
   - **SVG**: rendered via `data:image/svg+xml;charset=utf-8,…` in an `<img>` so embedded scripts and event handlers cannot execute.
@@ -842,6 +914,7 @@ The following shortcuts are active **only when the terminal panel has focus** (e
   - **Code/Text**: Preview is not offered; the view falls back to Source mode.
   - **File-backed binary whose source project is inactive and whose registry registration failed**: a fallback card shows the title, absolute path, and an Export button.
 - Copy, Export, and Delete actions remain available, along with the top-bar `Auto-open on new content` checkbox and `Clear all` button.
+- **Resizable modal**: the dialog has a bottom-right drag handle that lets the user freely resize the popup. Size is clamped to a minimum of 640×480 px and a maximum of `viewport − 20 px`. The picked size is persisted via `useArtifactStore.setModalSize` into the `claudegui-artifacts` store (`version: 3`), so it survives reloads and restarts. Because Radix Dialog centers content with `translate(-50%, -50%)`, pointer deltas are multiplied by 2 so the handle tracks the cursor 1:1. The default size is `min(1024px, 90vw) × min(720px, 80vh)`, and the dialog re-clamps automatically when the viewport shrinks below a previously persisted size.
 - Accessibility: the modal is built on Radix Dialog and closes on ESC.
 
 ### FR-1006: Entry point, badge, and shortcut
@@ -905,3 +978,51 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 - `src/hooks/use-global-shortcuts.ts` — `Cmd/Ctrl + Shift + A` toggle shortcut.
 - `src/stores/use-claude-store.ts` — calls `ingestToolUse` on every assistant-event tool_use, invokes the extractor on session load, and flushes the gallery auto-popup on `result`.
 - `src/stores/use-claude-store.ts` — calls the extractor when assistant messages arrive and when sessions are loaded; flushes the auto-popup on the `result` event.
+
+---
+
+## 3.11 Installation and Desktop Launcher (FR-1100)
+
+### FR-1101: One-line installer creates a desktop shortcut
+
+- `scripts/install/install.sh` (macOS / Linux) and `scripts/install/install.ps1` (Windows) shall, after the build step, automatically create a **ClaudeGUI shortcut** on the user's desktop.
+- The installer must support skipping this step via `--no-desktop-icon` (bash) or `-NoDesktopIcon` (PowerShell). The environment variable `CLAUDEGUI_NO_DESKTOP_ICON=1` has the same effect.
+- The installer must copy `<repo>/public/branding/claudegui.svg|.ico|claudegui-{128,256,512}.png` into the user's icon directory:
+  - macOS / Linux: `~/.claudegui/icons/`
+  - Windows: `%LOCALAPPDATA%\ClaudeGUI\icons\`
+- The shortcut is created in an OS-specific form:
+
+| OS | File | Double-click action | Icon handling |
+|----|------|--------------------|---------------|
+| macOS | `~/Desktop/ClaudeGUI.command` (chmod +x) | Terminal.app launches and runs the launcher script | Uses the default Terminal icon for simplicity (no `.app` bundle, no Gatekeeper signing) |
+| Linux | `~/Desktop/ClaudeGUI.desktop` | Runs the launcher through the `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xterm` fallback chain | `Icon=` field references the absolute SVG path; on GNOME the installer also runs `gio set ... metadata::trusted true` |
+| Windows | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` | A PowerShell console window created via `WScript.Shell.CreateShortcut` | `IconLocation` set to `claudegui.ico,0` |
+
+- On macOS the first launch may require Right-click → Open due to Gatekeeper; the installer must surface this as a warning.
+
+### FR-1102: Launcher script behaviour
+
+- The launcher script lives at:
+  - macOS / Linux: `~/.claudegui/bin/claudegui-launcher.sh`
+  - Windows: `%LOCALAPPDATA%\ClaudeGUI\bin\claudegui-launcher.ps1`
+- When executed it shall, in order:
+  1. Print a ClaudeGUI banner (URL, log file, how to stop) at the top of the console window.
+  2. `cd $INSTALL_DIR`, then export `NODE_ENV=production` and `PORT=${CLAUDEGUI_PORT:-${PORT:-3000}}`.
+  3. Detach a **background poller** that issues HEAD requests against `http://localhost:$PORT` every 0.5 s for up to 30 s.
+  4. As soon as the poller receives a 2xx/3xx response it opens the URL in the OS default browser:
+     - macOS: `open`
+     - Linux: `xdg-open`
+     - Windows: `Start-Process`
+  5. Run `node server.js` in the **foreground**, tee'ing stdout/stderr to both the console and the log file (`tee` / `Tee-Object`).
+  6. When the user closes the console window or presses `Ctrl+C`, SIGHUP/SIGINT propagates to the child so `node server.js` exits with the window (close window = stop server).
+- Log file path:
+  - macOS / Linux: `~/.claudegui/logs/launcher.log` (append)
+  - Windows: `%USERPROFILE%\.claudegui\logs\launcher.log` (append)
+
+### FR-1103: Brand icon assets and favicon integration
+
+- A single SVG source (`public/branding/claudegui.svg`) is the authoritative source for every icon raster.
+- The build script (`scripts/build-icons.mjs`, macOS only) uses `qlmanage` + `sips` to produce 16/32/48/64/128/180/256/512 PNGs and packs six of those sizes into a Vista+-compatible PNG-in-ICO `claudegui.ico`.
+- `src/app/icon.svg` and `src/app/apple-icon.png` (180×180) are exposed automatically by Next.js App Router file-based metadata, so opening `localhost:3000` shows the same mascot as a favicon without any explicit `<link rel="icon">`.
+- The desktop shortcut and the browser favicon use the **same mascot**, ensuring visual consistency between the OS-level entry point and the in-app experience.
+- Implementation: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `scripts/install/install.sh`, `scripts/install/install.ps1`.

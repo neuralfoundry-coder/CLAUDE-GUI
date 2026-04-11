@@ -11,6 +11,9 @@ REPO_URL="${CLAUDEGUI_REPO:-https://github.com/neuralfoundry-coder/CLAUDE-GUI.gi
 INSTALL_DIR="${CLAUDEGUI_HOME:-$HOME/.claudegui/app}"
 LAUNCHER="$HOME/.local/bin/claudegui"
 BRANCH="${CLAUDEGUI_BRANCH:-main}"
+ICON_DIR="$HOME/.claudegui/icons"
+LAUNCHER_SCRIPT="$HOME/.claudegui/bin/claudegui-launcher.sh"
+NO_DESKTOP_ICON=0
 
 YES=0
 DRY_RUN=0
@@ -18,12 +21,14 @@ for arg in "$@"; do
   case "$arg" in
     --yes|-y) YES=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --no-desktop-icon) NO_DESKTOP_ICON=1 ;;
     --help|-h)
       cat <<EOF
 ClaudeGUI installer
-  --yes       Non-interactive; assume yes to all prompts
-  --dry-run   Print actions without executing
-  --help      Show this help
+  --yes              Non-interactive; assume yes to all prompts
+  --dry-run          Print actions without executing
+  --no-desktop-icon  Skip creating the desktop shortcut
+  --help             Show this help
 EOF
       exit 0
       ;;
@@ -173,6 +178,131 @@ case ":$PATH:" in
     ;;
 esac
 
+# --- Desktop launcher (FR-1100) -----------------------------------------
+install_desktop_launcher() {
+  local desktop_dir
+  if command -v xdg-user-dir >/dev/null 2>&1; then
+    desktop_dir=$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")
+  else
+    desktop_dir="$HOME/Desktop"
+  fi
+
+  if [ "$DRY_RUN" -eq 0 ]; then
+    mkdir -p "$ICON_DIR" "$(dirname "$LAUNCHER_SCRIPT")" "$desktop_dir"
+  fi
+
+  # Copy icon assets from the freshly checked-out repo.
+  for f in claudegui.svg claudegui-512.png claudegui-256.png claudegui-128.png claudegui.ico; do
+    if [ -f "$INSTALL_DIR/public/branding/$f" ]; then
+      run cp "$INSTALL_DIR/public/branding/$f" "$ICON_DIR/$f"
+    fi
+  done
+
+  # Write the launcher script (starts server, polls, opens browser, terminates on close).
+  if [ "$DRY_RUN" -eq 0 ]; then
+    cat > "$LAUNCHER_SCRIPT" <<LAUNCHER_BODY
+#!/usr/bin/env bash
+# ClaudeGUI desktop launcher
+# Boots the production server, opens the default browser when ready,
+# and terminates the server when this window closes.
+set -eu
+set -o pipefail
+
+INSTALL_DIR="$INSTALL_DIR"
+PORT="\${CLAUDEGUI_PORT:-\${PORT:-3000}}"
+URL="http://localhost:\${PORT}"
+LOG_DIR="\$HOME/.claudegui/logs"
+mkdir -p "\$LOG_DIR"
+LOG_FILE="\$LOG_DIR/launcher.log"
+
+open_url() {
+  case "\$(uname -s)" in
+    Darwin) open "\$1" 2>/dev/null || true ;;
+    Linux)  command -v xdg-open >/dev/null 2>&1 && xdg-open "\$1" >/dev/null 2>&1 || true ;;
+  esac
+}
+
+cat <<BANNER
+
+  ╭─────────────────────────────────────────────╮
+  │   ClaudeGUI                                  │
+  │   url   : \$URL
+  │   log   : \$LOG_FILE
+  │   stop  : close this window or press Ctrl+C  │
+  ╰─────────────────────────────────────────────╯
+
+BANNER
+
+cd "\$INSTALL_DIR"
+export NODE_ENV=production
+export PORT
+
+# Background opener: poll for readiness, then open default browser.
+(
+  for _ in \$(seq 1 60); do
+    if curl -sfI "\$URL" -o /dev/null 2>/dev/null; then
+      printf '\n[claudegui] server ready — opening %s\n\n' "\$URL"
+      open_url "\$URL"
+      exit 0
+    fi
+    sleep 0.5
+  done
+  printf '\n[claudegui] server did not become ready within 30s — open %s manually.\n' "\$URL"
+) &
+
+# Foreground server: log to file AND this terminal so the user sees activity.
+node server.js 2>&1 | tee -a "\$LOG_FILE"
+LAUNCHER_BODY
+    chmod +x "$LAUNCHER_SCRIPT"
+  fi
+  log "Launcher script: $LAUNCHER_SCRIPT"
+
+  case "$OS" in
+    macos)
+      local cmd_file="$desktop_dir/ClaudeGUI.command"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        cat > "$cmd_file" <<CMD
+#!/usr/bin/env bash
+# Double-click to launch ClaudeGUI in a new Terminal window.
+exec "$LAUNCHER_SCRIPT"
+CMD
+        chmod +x "$cmd_file"
+      fi
+      log "Desktop shortcut: $cmd_file"
+      warn "macOS Gatekeeper note: first launch may require Right-click → Open."
+      ;;
+    linux)
+      local desktop_file="$desktop_dir/ClaudeGUI.desktop"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        cat > "$desktop_file" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=ClaudeGUI
+Comment=Web-based IDE wrapping Claude CLI
+Exec=bash -c "x-terminal-emulator -e bash '$LAUNCHER_SCRIPT' || gnome-terminal -- bash '$LAUNCHER_SCRIPT' || konsole -e bash '$LAUNCHER_SCRIPT' || xterm -e bash '$LAUNCHER_SCRIPT'"
+Icon=$ICON_DIR/claudegui.svg
+Terminal=false
+Categories=Development;IDE;
+StartupNotify=true
+DESKTOP
+        chmod +x "$desktop_file"
+        # GNOME 3.36+ requires the file to be marked trusted via this metadata.
+        if command -v gio >/dev/null 2>&1; then
+          gio set "$desktop_file" metadata::trusted true 2>/dev/null || true
+        fi
+      fi
+      log "Desktop shortcut: $desktop_file"
+      ;;
+  esac
+}
+
+if [ "$NO_DESKTOP_ICON" -eq 1 ]; then
+  log "Skipping desktop launcher (--no-desktop-icon)."
+else
+  install_desktop_launcher
+fi
+
 log "Install complete."
-log "Run:  claudegui               # start on port 3000"
+log "Run:  claudegui               # start on port 3000 (CLI)"
 log "Run:  claudegui --project /path/to/project   # pre-select a project"
+log "GUI:  double-click the ClaudeGUI shortcut on your Desktop"

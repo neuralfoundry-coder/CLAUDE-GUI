@@ -89,7 +89,7 @@ server.js
     ├── fs/                             ← Sandboxed file system
     │   ├── resolve-safe.ts
     │   ├── file-operations.ts
-    │   └── watcher.ts                  (chokidar)
+    │   └── watcher.ts                  (@parcel/watcher)
     ├── claude/                         ← Agent SDK wrapper
     │   ├── session-manager.ts
     │   ├── query-handler.ts
@@ -105,24 +105,36 @@ server.js
 
 ```
 src/components/panels/file-explorer/
-├── file-explorer-panel.tsx         # container
-├── file-explorer-header.tsx        # title, new-file button
-├── file-tree.tsx                   # react-arborist wrapper
-├── file-tree-node.tsx              # per-node renderer
+├── file-explorer-panel.tsx         # container (FR-208 upload, mounts keyboard hook)
+├── file-tree.tsx                   # react-arborist wrapper + inline-edit renderer
+├── file-context-menu.tsx           # hoisted single context menu (FR-206)
+├── delete-confirm-dialog.tsx       # delete confirmation dialog (FR-202)
+├── use-file-actions.ts             # CRUD/clipboard action hook
+├── use-file-keyboard.ts            # tree-scoped keyboard shortcuts (FR-212)
+├── use-file-tree.ts                # data-loading hook
+├── use-files-websocket.ts          # /ws/files subscription
 ├── file-icon.tsx                   # icon by extension
 ├── git-status-indicator.tsx        # Git status badge
-├── context-menu.tsx                # right-click menu
-└── use-file-tree.ts                # data-loading hook
+└── use-git-status.ts               # Git status map fetch
 ```
+
+Related global stores:
+- `src/stores/use-file-context-menu-store.ts` — context-menu state (`{ open, anchor, target, selectionPaths, scope }`)
+- `src/stores/use-file-clipboard-store.ts` — in-app clipboard (`{ paths, mode }`, FR-211)
 
 ### Key behavior
 
 1. **Data loading**: the `useFileTree` hook calls `/api/files?path=<root>` to build the tree nodes.
 2. **Virtualization**: `react-arborist`'s built-in virtual scrolling.
 3. **Git status**: call `/api/git/status` to build a per-file status map → overlay.
-4. **Live updates**: receive `/ws/files` WebSocket events to update tree nodes.
-5. **Context menu**: uses Radix UI `@radix-ui/react-context-menu`.
-6. **OS file drop / paste upload (FR-208)**: the `FileExplorerPanel` root `div` is `tabIndex={0}` and wires `onDragEnter/onDragOver/onDragLeave/onDrop` plus `onPaste`. Only drags whose `e.dataTransfer.types` include `'Files'` are accepted, so the handler does not conflict with react-arborist's internal node drags. `File[]` collected from drop or paste events is sent via `filesApi.upload(destDir, files)` to `POST /api/files/upload`, and on success `refreshRoot()` refreshes the tree immediately. While dragging, the panel shows a `ring-2 ring-primary` border together with a "Drop files to upload to project root" overlay. Upload progress/error state surfaces in the header status label (`uploading…` / `upload failed: <message>`).
+4. **Live updates**: receive `/ws/files` WebSocket events to update tree nodes (debounced + rAF batched).
+5. **Context menu (FR-206)**: the node renderer does **not** carry its own `<ContextMenu>`. Instead its `onContextMenu` calls `useFileContextMenuStore.openAtNode()` with the click coordinates, target node, and current selection paths. A single `<FileContextMenu>` mounted at the panel root opens a Radix DropdownMenu via a controlled `open` prop and an invisible fixed-position trigger that is repositioned at the click coordinates. Because the menu lives outside the virtualized list, react-arborist's row reconciliation and per-node hover re-renders cannot affect menu state — fixing the known dismissal glitch where moving the mouse after right-clicking would close the menu. Dismissal happens through exactly three paths: `Esc`, click outside the menu, or right-clicking another node.
+6. **Selection model (FR-210)**: react-arborist's built-in selection is used. `Tree.onSelect` emits the selected node array; the panel container holds it in `selection`/`selectionRef` state and feeds it to the keyboard hook and the context menu.
+7. **Inline editing (FR-202)**: when `node.isEditing` is true the node renderer renders an `<input>` and triggers `node.submit()` / `node.reset()` from `Enter`/`Esc`/`onBlur`. New file/folder creation uses a placeholder name (suffixed ` 2`, ` 3`, … on collision) created immediately by the panel, which then calls `treeRef.beginRename(path)` to enter inline edit mode.
+8. **In-app clipboard (FR-211) and keyboard shortcuts (FR-212)**: `useFileActions` collects copy/cut/paste/duplicate/delete in one place. `useFileKeyboard` activates only when focus is inside the `data-file-explorer-panel="true"` container and maps the actions plus tree helpers (`tree.selectAll`, `tree.deselectAll`, `tree.edit(id)`) onto key presses. Cut nodes are rendered with `italic + opacity-50`.
+9. **Intra-tree drag move/copy (FR-203)**: react-arborist's `onMove` is wired up. The native `dragstart`/`dragover` events capture `altKey` into a ref so the move handler can branch between move (`filesApi.rename`) and Alt-copy (`filesApi.copy`). Moving into self/descendants is rejected.
+10. **Delete confirmation (FR-202)**: `useDeleteConfirmStore.request(paths)` exposes a Promise-based async-prompt pattern, and a `<DeleteConfirmDialog>` mounted at the panel root surfaces the modal (with the affected path list when multi-selected).
+11. **OS file drop / paste upload (FR-208)**: the `FileExplorerPanel` root `div` is `tabIndex={0}` and wires `onDragEnter/onDragOver/onDragLeave/onDrop` plus `onPaste`. Only drags whose `e.dataTransfer.types` include `'Files'` are accepted, so the handler does not conflict with react-arborist's internal node drags. `File[]` collected from drop or paste events is sent via `filesApi.upload(destDir, files)` to `POST /api/files/upload`, and on success `refreshRoot()` refreshes the tree immediately. While dragging, the panel shows a `ring-2 ring-primary` border together with a "Drop files to upload to project root" overlay.
 
 ## 2.4 EditorPanel Component
 
@@ -301,38 +313,52 @@ The `TerminalInstance` retains its `searchAddon` so `findNext`, `findPrevious`, 
 
 ```
 src/components/panels/preview/
-├── preview-panel.tsx               # container
-├── preview-header.tsx              # type indicator, controls
-├── preview-router.tsx              # selects renderer by type
+├── preview-panel.tsx               # container + header (source/rendered toggle, download)
+├── preview-router.tsx              # renderer dispatch + viewMode branching
 ├── html-preview.tsx                # iframe srcdoc
 ├── pdf-preview.tsx                 # react-pdf
 ├── markdown-preview.tsx            # react-markdown
 ├── image-preview.tsx               # zoom/pan
 ├── slide-preview.tsx               # reveal.js iframe
-└── use-preview-content.ts          # content loading
+├── source-preview.tsx              # highlight.js-backed source view (FR-614)
+├── live-html-preview.tsx           # streaming-only path
+└── preview-download-menu.tsx       # one-click download dropdown
 ```
+
+Beyond `currentFile`/`pageNumber`/`zoom`/`fullscreen`, `usePreviewStore` carries a `viewMode: 'rendered' | 'source'` field (FR-614). The default is `'rendered'`, and calling `setFile` resets `viewMode` to `'rendered'` so the source view never sticks across file switches. An `isSourceToggleable(type)` helper only allows the toggle for `html`/`markdown`/`slides`.
 
 ### Router logic
 
 ```typescript
 function PreviewRouter({ filePath, content }: Props) {
-  const ext = getExtension(filePath);
-  switch (ext) {
-    case 'html':
-      return isRevealSlide(content)
-        ? <SlidePreview content={content} />
-        : <HTMLPreview content={content} />;
-    case 'pdf':
-      return <PDFPreview path={filePath} />;
-    case 'md':
-    case 'markdown':
-      return <MarkdownPreview content={content} />;
-    case 'png': case 'jpg': case 'jpeg':
-    case 'gif': case 'svg': case 'webp':
-      return <ImagePreview path={filePath} />;
-    default:
-      return <UnsupportedPreview ext={ext} />;
-  }
+  const viewMode = usePreviewStore((s) => s.viewMode); // 'rendered' | 'source'
+  const type = detectPreviewType(filePath);
+
+  // Unsupported type or no selection → fully blank surface (FR-601)
+  if (!filePath || type === 'none') return <div className="h-full w-full" aria-hidden />;
+
+  // Text-backed types branch into the syntax-highlighted source view when
+  // viewMode === 'source' (FR-614)
+  if (type === 'html')
+    return viewMode === 'source'
+      ? <SourcePreview content={content} language="html" />
+      : <HTMLPreview content={content} />;
+  if (type === 'markdown')
+    return viewMode === 'source'
+      ? <SourcePreview content={content} language="markdown" />
+      : <MarkdownPreview content={content} />;
+  if (type === 'slides')
+    return viewMode === 'source'
+      ? <SourcePreview content={content} language="html" />
+      : <SlidePreview content={content} />;
+
+  // Binary / render-only types
+  if (type === 'pdf') return <PDFPreview path={filePath} />;
+  if (type === 'image') return <ImagePreview path={filePath} />;
+  if (type === 'docx') return <DocxPreview path={filePath} />;
+  if (type === 'xlsx') return <XlsxPreview path={filePath} />;
+  if (type === 'pptx') return <PptxPreview path={filePath} />;
+  return null;
 }
 ```
 
@@ -395,6 +421,12 @@ The preview panel guarantees that the entire content layout is visible regardles
 - **Slides (`reveal-host.html`)**: `Reveal.initialize` is called with a fixed logical size (`width: 960, height: 700`) plus `margin: 0.04`, `minScale: 0.05`, and `maxScale: 2.0`, so a full slide always fits the viewport at any aspect ratio. `.reveal .slides > section` draws its outline with `box-shadow: 0 0 0 1px rgba(255,255,255,0.28), 0 6px 24px rgba(0,0,0,0.45)`.
 - **PDF (`pdf-preview.tsx`)**: a `ResizeObserver` watches the scroll container, and the first page's `onLoadSuccess` captures the native size via `getViewport({ scale: 1 })`. `Page` is then rendered with `width = min(availableWidth, availableHeight × aspect)` so the whole page fits the container. The page canvas is wrapped in a `ring-1 ring-border/70 shadow-md` box. The cached native size is reset whenever the file path changes.
 - **HTML / Live HTML / Markdown**: the content surface is wrapped in a `bg-muted` outer box with an inner `ring-1 ring-border/70 shadow-sm`, so it is visually separated from the surrounding UI.
+
+### Source/rendered view toggle (FR-614)
+
+Text-backed formats (`html`/`markdown`/`slides`) can flip between the rendered view and the source view through a `Code`/`Eye` toggle button in the preview panel header. The button lives in the `preview-panel.tsx` header row (to the left of the download menu) and is only shown when `!showLive && isSourceToggleable(type)`. While the live HTML stream is active, `live-html-preview.tsx`'s existing internal toggle remains authoritative and the header toggle stays hidden (the two paths are mutually exclusive).
+
+The source view (`source-preview.tsx`) registers only `xml` (HTML) and `markdown` on `highlight.js/lib/core` and injects the result of `hljs.highlight()` into a `<pre><code class="hljs language-...">` block. The theme CSS (`highlight.js/styles/github-dark.css`) is imported once from `src/app/layout.tsx`, and the outer container reuses the FR-612 outline rules (`bg-muted` + `ring-1 ring-border/70 shadow-sm`).
 
 ### One-click preview download (FR-613)
 
@@ -634,8 +666,8 @@ A cross-cutting module that collects every code, HTML, Markdown, and SVG snippet
 |------|----------------|
 | `src/lib/claude/artifact-extractor.ts` | Regex-based text extractor (fenced blocks + stand-alone `<!doctype html>` / `<svg>`) and the `classifyByPath`/`isBinaryKind`/`titleFromPath` helpers that map an extension to a kind and decide inline vs. file-backed storage. Text artifacts get a `{messageId}:{index}` id. |
 | `src/lib/claude/artifact-from-tool.ts` | Builds artifact records from `Write`/`Edit`/`MultiEdit` tool_use blocks. `Write` classifies by extension and either snapshots `input.content` inline or keeps only `filePath` for binary kinds. `Edit`/`MultiEdit` apply `old_string → new_string` patches against an existing inline baseline via `applyEditOps`. All tool_use artifacts share the `file:{absolutePath}` id so repeat Writes/Edits collapse into a single entry (FR-1008). |
-| `src/stores/use-artifact-store.ts` | zustand store holding `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn`, and the `extractFromMessage`/`ingestToolUse`/`findByFilePath`/`flushPendingOpen`/`open`/`close`/`remove`/`clear` actions. `persist` v2 writes up to 200 artifacts to `localStorage` (key `claudegui-artifacts`); `onRehydrateStorage` re-registers rehydrated `filePath`s with the server registry (FR-1009). |
-| `src/lib/claude/artifact-export.ts` | `copyArtifact`, `availableExports`, `exportArtifact`. Inline text artifacts export to Source/HTML/Word (`.doc`)/PDF (`window.print()`)/PNG (`canvas.toBlob`). File-backed binaries go through `downloadBinaryFile`, which tries `/api/artifacts/raw` first and falls back to `/api/files/raw`. |
+| `src/stores/use-artifact-store.ts` | zustand store holding `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn`, `modalSize`, and the `extractFromMessage`/`ingestToolUse`/`findByFilePath`/`flushPendingOpen`/`open`/`close`/`setAutoOpen`/`setModalSize`/`remove`/`clear` actions. `persist` v3 writes up to 200 artifacts plus `autoOpen` and `modalSize` to `localStorage` (key `claudegui-artifacts`); `onRehydrateStorage` re-registers rehydrated `filePath`s with the server registry (FR-1009). |
+| `src/lib/claude/artifact-export.ts` | `copyArtifact`, `availableExports`, `exportArtifact`. Inline text artifacts export to Source/HTML/Word (`.doc`)/PDF/PNG (`canvas.toBlob`). PDF goes through `printViaIframe()`, which mounts an invisible `<iframe>` with the standalone HTML (`srcdoc`, or a blob URL for content over 1.5 MB), waits for `decode()` on every `<img>` and two `requestAnimationFrame` ticks, then calls `contentWindow.print()`; cleanup fires from the `afterprint` event with a 60 s safety timer. The generated HTML ships with `@page` + `@media print` rules. File-backed binaries still go through `downloadBinaryFile`, which tries `/api/artifacts/raw` first and falls back to `/api/files/raw`. |
 | `src/lib/claude/artifact-registry.ts` | Server-side in-process allowlist of absolute paths (max 1024, FIFO eviction). Exposes `registerArtifactPath`, `isArtifactPathRegistered`, `listArtifactPaths`, `clearArtifactRegistry`. |
 | `src/lib/claude/artifact-url.ts` | Client-only URL helpers: `artifactRawUrl`, `projectRawUrl`, and `fetchArtifactBytes` (try registry, fall back to project raw endpoint). |
 | `src/app/api/artifacts/register/route.ts` | `POST /api/artifacts/register`. Accepts `{ paths: [] }`, validates each path via `fs.stat` and the 50 MB binary cap, and registers it. Rate-limited through the shared `rateLimit`/`clientKey` helpers. |

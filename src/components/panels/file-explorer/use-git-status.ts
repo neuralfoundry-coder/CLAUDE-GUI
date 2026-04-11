@@ -13,7 +13,7 @@ let cache: GitStatusData | null = null;
 const listeners = new Set<(data: GitStatusData) => void>();
 
 /**
- * Debounce + single-flight around `/api/git/status` so bursts of chokidar
+ * Debounce + single-flight around `/api/git/status` so bursts of watcher
  * file change events (dev server writing `.next/`, large git checkouts,
  * formatters running across many files) collapse into one request. Without
  * this guard a build could fire 100+ calls in a few seconds and trip the

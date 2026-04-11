@@ -70,7 +70,7 @@ ClaudeGUI's key differentiators:
 
 | Software | Minimum version | Notes |
 |----------|-----------------|-------|
-| Node.js | 20.0+ | chokidar v5 ESM support, node-pty build |
+| Node.js | 20.0+ | `@parcel/watcher` / node-pty native binaries, ESM dynamic import stability |
 | Claude CLI | latest | `claude` command must be on `PATH` |
 | npm | 10.0+ | package manager |
 | Chrome | latest 2 versions | primary target browser |

@@ -94,7 +94,7 @@ NODE_ENV=development
 |------|------|----------|
 | `server` | `server.js` | 부팅, 셧다운, 업그레이드 에러 |
 | `project` | `src/lib/project/project-context.mjs` | 런타임 루트 전환, 리스너 알림, 상태 파일 영속화 |
-| `files` | `server-handlers/files-handler.mjs` | chokidar 워처 생성/재시작, 파일 이벤트, 클라이언트 연결 |
+| `files` | `server-handlers/files-handler.mjs` | `@parcel/watcher` 구독 생성/재시작, 파일 이벤트, 클라이언트 연결 |
 | `terminal` | `server-handlers/terminal-handler.mjs` | node-pty 스폰/종료, WS 수명 |
 | `claude` | `server-handlers/claude-handler.mjs` | Agent SDK 쿼리 시작/결과/에러, 권한 요청 |
 
@@ -528,6 +528,90 @@ jobs:
 | `Error: Cannot find module 'node-pty'` | 네이티브 빌드 실패 | `npm rebuild node-pty` 또는 빌드 도구 설치 |
 | WebSocket 연결 실패 | server.js 미실행 | `next dev` 대신 `node server.js` 사용 |
 | Monaco 로드 실패 | CDN 차단 | 로컬 번들 폴백 활성화 |
-| chokidar 이벤트 누락 | ESM 임포트 실패 | Node.js 20+ 사용, dynamic import |
+| 파일 변경 이벤트 누락 | `@parcel/watcher` 네이티브 바이너리 로드 실패 | `npm rebuild @parcel/watcher` 후 Node.js 20+ 재기동 |
+| 파일 탐색기에서 `files-handler`가 `EMFILE: too many open files, watch`로 에러 스팸 (legacy chokidar 5) | chokidar 4+는 네이티브 fsevents 경로를 제거해 macOS에서 `fs.watch` 폴백을 사용 → 서브디렉토리마다 FD 1개 소비 → 256 FD/프로세스 기본 한도 초과 | **해결됨 (ADR-024)**: 파일 감시를 `@parcel/watcher`로 전환하여 루트당 OS 핸들 1개만 사용하도록 변경. `server-handlers/files-handler.mjs`의 `loadWatcher`가 `mod.subscribe(root, cb, { ignore: WATCHER_IGNORE_GLOBS })`를 호출한다. |
 | 경로 샌드박스 403 | `PROJECT_ROOT` 오설정 | 환경변수 재확인 |
 | `claude` 명령어 없음 | PATH 미등록 | `npm install -g @anthropic-ai/claude-code` |
+| 데스크톱 아이콘 더블클릭 시 즉시 닫힘 | 런처 스크립트 권한 누락 | `chmod +x ~/.claudegui/bin/claudegui-launcher.sh` |
+| macOS Gatekeeper 차단 | `.command` 파일 미인증 | Finder에서 우클릭 → 열기 (1회) |
+| 브라우저가 자동으로 열리지 않음 | 30s 폴링 타임아웃 / `xdg-open` 없음 | 수동으로 `http://localhost:3000` 접속, Linux는 `xdg-utils` 설치 |
+
+---
+
+## 6.8 데스크톱 런처 (FR-1100, ADR-022)
+
+### 개요
+
+원라인 인스톨러는 빌드 단계 이후 **사용자 데스크톱에 ClaudeGUI 바로가기**를 자동 생성한다. 더블클릭하면 새 콘솔 창에서 `node server.js`(prod 모드)가 부팅되고, 백그라운드 폴러가 `localhost:3000`이 응답하면 즉시 OS 기본 브라우저를 띄운다. 콘솔 창을 닫으면 서버도 종료된다 (창 종료 = 서버 종료).
+
+이 경로는 ADR-018의 Tauri `.dmg`/`.msi` 네이티브 인스톨러를 **대체하지 않고 보완**한다. 소스 인스톨 사용자(`curl | bash`, `iwr | iex`)에게 동일한 "더블클릭으로 시작" UX를 제공하는 것이 목표이다.
+
+### 파일 레이아웃
+
+| 경로 | 역할 |
+|------|------|
+| `public/branding/claudegui.svg` | 단일 source of truth — 마스코트 SVG |
+| `public/branding/claudegui-{16,32,48,64,128,180,256,512}.png` | 사전 생성된 PNG (qlmanage 래스터) |
+| `public/branding/claudegui.ico` | Vista+ 호환 PNG-in-ICO (16/32/48/64/128/256 6사이즈) |
+| `src/app/icon.svg` | Next.js App Router 자동 favicon |
+| `src/app/apple-icon.png` | iOS 홈스크린 아이콘 (180×180) |
+| `scripts/build-icons.mjs` | macOS 전용 자산 재생성 스크립트 |
+| `scripts/install/install.sh` | macOS / Linux 인스톨러 (`install_desktop_launcher` 함수) |
+| `scripts/install/install.ps1` | Windows 인스톨러 (`Install-DesktopLauncher` 함수) |
+
+### 사용자 시스템 위치
+
+| 파일 | macOS / Linux | Windows |
+|------|---------------|---------|
+| 아이콘 디렉토리 | `~/.claudegui/icons/` | `%LOCALAPPDATA%\ClaudeGUI\icons\` |
+| 런처 스크립트 | `~/.claudegui/bin/claudegui-launcher.sh` | `%LOCALAPPDATA%\ClaudeGUI\bin\claudegui-launcher.ps1` |
+| 데스크톱 바로가기 | `~/Desktop/ClaudeGUI.command` (mac) / `.desktop` (linux) | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` |
+| 런처 로그 | `~/.claudegui/logs/launcher.log` (append) | `%USERPROFILE%\.claudegui\logs\launcher.log` (append) |
+
+### 런처 동작 흐름
+
+```
+[ 사용자 더블클릭 ]
+        │
+        ▼
+[ 콘솔 창 오픈 ] ──┐
+        │          │
+        ▼          │
+[ 배너 출력 ]      │ macOS:   .command → Terminal.app
+[ env 설정 ]       │ Linux:   .desktop → x-terminal-emulator → bash
+        │          │ Windows: .lnk     → powershell.exe
+        ▼
+   ┌────────────────────────────┐
+   │ 백그라운드 폴러 (60×500ms)  │ ── 200/3xx 응답 ──> [ open / xdg-open / Start-Process ]
+   └────────────────────────────┘
+        │
+        ▼ (병렬)
+[ node server.js (foreground) ]
+        │
+   stdout/stderr ─tee─> [ 콘솔 창 ] + [ launcher.log ]
+        │
+        ▼
+[ 사용자가 창을 닫음 / Ctrl+C ]
+        │
+   SIGHUP/SIGINT 전파
+        │
+        ▼
+[ node server.js 종료 ]
+```
+
+### 트레이드오프
+
+- **macOS는 기본 Terminal 아이콘을 사용한다.** `.command` 파일에 커스텀 아이콘을 붙이려면 resource fork(`Rez`/`SetFile`) 또는 별도 도구(`fileicon`)가 필요하고, 또는 `.app` 번들로 전환해 Gatekeeper 서명까지 처리해야 한다. 단순성을 위해 두 가지 모두 회피했다. 마스코트 아이콘은 favicon, Linux/Windows 데스크톱 아이콘에서만 시각적으로 노출된다.
+- **창 종료 = 서버 종료.** 백그라운드 데몬화나 시스템 트레이를 도입하지 않는다. 사용자가 명시적으로 시작·중지할 수 있고, 종료를 잊어서 좀비 프로세스가 남는 일이 없다. 장기 실행이 필요하면 ADR-018(Tauri 네이티브 앱) 또는 `scripts/dev.sh --background`를 사용한다.
+- **30초 폴링 타임아웃.** 콜드 부트 시 `next start`가 30초 안에 응답하지 않을 가능성은 낮지만, 초과 시 사용자에게 수동 접속 안내 메시지를 출력한다.
+- **Tee의 실시간성.** PowerShell `Tee-Object`와 bash `tee`는 line-buffered여서 사용자 콘솔에 실시간으로 표시된다. node의 stdout이 fully-buffered가 되지 않도록 환경 변수는 추가하지 않았다(현재 동작상 문제 없음).
+
+### 자산 재생성
+
+SVG 마스코트(`public/branding/claudegui.svg`)를 수정하면 macOS에서 다음 명령으로 모든 래스터/ICO/favicon을 재생성한다:
+
+```bash
+node scripts/build-icons.mjs
+```
+
+스크립트는 `qlmanage`(SVG 렌더), `sips`(정확한 정사각형 리사이즈), 자체 PNG-in-ICO 패커를 사용한다. Windows/Linux에서는 동작하지 않으며(에러로 종료), 커밋된 산출물이 정본이다.

@@ -121,15 +121,17 @@
 | **Symlink** | Validated via `fs.lstat()` |
 | **Encoding** | UTF-8 for text files; Buffer for binary files |
 
-### chokidar
+### @parcel/watcher
 
 | Item | Value |
 |------|-------|
-| **Package** | `chokidar` v5 (ESM) |
-| **Watch target** | Project root directory (recursive) |
-| **Ignored patterns** | `node_modules`, `.git`, `dist`, `build` |
-| **Events** | `add`, `change`, `unlink`, `addDir`, `unlinkDir` |
+| **Package** | `@parcel/watcher` v2 (native prebuilt binary) |
+| **Backend** | macOS FSEvents / Linux inotify / Windows ReadDirectoryChangesW |
+| **Watch target** | Project root directory (recursive; 1 OS handle per root) |
+| **Ignored patterns** | `**/node_modules`, `**/.next`, `**/.git`, `**/.claude`, `**/dist`, `**/build`, `**/out`, `**/coverage`, `**/test-results`, `**/playwright-report`, `**/.turbo`, `**/.cache`, `**/.claude-worktrees` (globs) + a JS-side dotfile filter |
+| **Events** | `create`, `update`, `delete` — normalized to `add`, `change`, `unlink`, `ready`, `error` before broadcast |
 | **Output** | Broadcast to the WebSocket `/ws/files` channel |
+| **Rationale** | chokidar v5 dropped its native fsevents path and falls back to `fs.watch` on macOS, which consumes one file descriptor per directory and crashes with `EMFILE` once the 256-per-process default soft limit is hit. `@parcel/watcher` uses a single OS handle per root, so cost is independent of tree size (see ADR-024). |
 
 ### node-pty
 

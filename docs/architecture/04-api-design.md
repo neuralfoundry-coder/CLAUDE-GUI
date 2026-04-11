@@ -92,10 +92,44 @@
 
 #### `DELETE /api/files`
 
-파일 또는 빈 디렉토리를 삭제한다.
+파일 또는 디렉토리를 삭제한다.
 
 **쿼리 파라미터**:
 - `path` (필수)
+- `recursive` (선택, `1`/`true`로 활성): 디렉토리에 자식이 있어도 재귀 삭제. 미지정 시 빈 디렉토리만 허용한다. 파일 탐색기 UI는 항상 `recursive=1`로 호출한다.
+
+#### `POST /api/files/copy`
+
+파일 또는 디렉토리를 프로젝트 루트 샌드박스 내부에서 복사한다. 인-앱 클립보드 paste(`Cmd/Ctrl+V`), Alt+드래그, Duplicate(`Cmd/Ctrl+D`) 액션이 사용한다 (FR-211).
+
+**요청 본문**:
+```json
+{ "srcPath": "src/foo.ts", "destPath": "src/bar/foo.ts" }
+```
+
+**서버 검증**:
+- `resolveSafe(srcPath)` 및 `resolveSafe(destPath)`로 양쪽 경로를 프로젝트 루트 내부로 제한한다. 거부된 세그먼트(`.env`, `.git` 등)는 차단한다.
+- 디렉토리를 자기 자신 또는 자손 위치로 복사하는 요청은 `400 EINVAL`로 거부한다.
+- 대상 경로가 이미 존재하면 덮어쓰지 않고 ` (1)`, ` (2)` 접미사로 고유화한다 (FR-208 업로드와 동일 규칙).
+- 내부적으로 `fs.cp(src, finalDest, { recursive: true, force: false, errorOnExist: true })` 사용.
+
+**응답**:
+```json
+{
+  "success": true,
+  "data": {
+    "srcPath": "src/foo.ts",
+    "destPath": "src/bar/foo.ts",
+    "writtenPath": "src/bar/foo.ts"
+  }
+}
+```
+
+**에러 코드**:
+- `400` — `srcPath`/`destPath` 누락, 동일 경로, 자기/자손 복사 시도
+- `403` — 샌드박스 이탈 / 거부된 세그먼트
+- `404` — 소스 없음
+- `429` — 레이트 리밋
 
 #### `POST /api/files/mkdir`
 
@@ -497,7 +531,7 @@ Claude Agent SDK와 연결된다.
 
 ### 4.2.4 `/ws/files`
 
-chokidar 파일 변경 이벤트를 브로드캐스트한다.
+`@parcel/watcher`가 수집한 파일 변경 이벤트를 브로드캐스트한다 (ADR-024).
 
 #### 클라이언트 → 서버
 
@@ -518,7 +552,7 @@ chokidar 파일 변경 이벤트를 브로드캐스트한다.
 }
 ```
 
-**이벤트 종류**: `add`, `change`, `unlink`, `addDir`, `unlinkDir`, `ready`
+**이벤트 종류**: `add`, `change`, `unlink`, `ready`, `error` (네이티브 감시기가 방출하는 `create`/`update`/`delete`를 정규화한 값 + 구독 준비 / 실패 상태)
 
 ---
 

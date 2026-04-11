@@ -45,11 +45,20 @@
 ### FR-202: 파일/폴더 CRUD
 
 - 파일 및 폴더의 생성, 이름 변경(F2), 삭제를 지원해야 한다.
-- 삭제 시 확인 대화상자를 표시한다.
+- **이름 변경은 인라인 편집**(react-arborist `tree.edit()`)으로 수행한다. `Enter`로 확정, `Esc`로 취소, 포커스 이탈 시 자동 확정한다. 빈 문자열, `.`, `..`, 경로 구분자(`/`, `\`), `\0`은 거부한다.
+- **새 파일/새 폴더는 생성-후-인라인-편집** 방식이다. macOS Finder처럼 `untitled.txt` / `untitled folder` (이미 존재하면 ` 2`, ` 3` 접미사로 고유화) placeholder를 즉시 만든 뒤 새 노드에 자동으로 rename 모드를 진입시킨다.
+- **삭제 확인은 shadcn `<Dialog>` 기반 `DeleteConfirmDialog`** 를 사용한다. 단일/다중 선택을 모두 지원하며, 다중 선택 시 영향 받는 경로 목록을 모달 내부에 표시한다. 폴더 삭제는 기본 **재귀 삭제**(`fs.rm({ recursive: true })`)이며, API는 `DELETE /api/files?path=…&recursive=1`로 옵트인한다.
+- 다중 선택된 항목의 일괄 삭제는 순차로 수행하되, 일부가 실패해도 나머지를 계속 시도하고 종료 시 실패 목록을 사용자에게 집계 표시한다.
+- 구현: `src/components/panels/file-explorer/file-tree.tsx` (인라인 input 렌더), `src/components/panels/file-explorer/use-file-actions.ts` (`deletePaths`), `src/components/panels/file-explorer/delete-confirm-dialog.tsx`, `src/lib/fs/file-operations.ts` (`deleteEntry({ recursive })`).
 
-### FR-203: 드래그 앤 드롭
+### FR-203: 트리 내부 드래그 앤 드롭 (이동/복사)
 
-- 파일/폴더를 드래그하여 다른 디렉토리로 이동할 수 있어야 한다.
+- 트리 내부에서 노드를 드래그하여 다른 디렉토리로 이동·복사할 수 있어야 한다.
+- 기본 드래그는 **이동**(`filesApi.rename`을 통해 동일 파일시스템 내 rename), `Alt`/`Option` 수정자 드래그는 **복사**(`filesApi.copy`)이다. 수정자 키는 네이티브 `dragstart`/`dragover`에서 캡처하여 react-arborist의 `onMove` 콜백에 ref로 전달한다.
+- 자기 자신 또는 자손 디렉토리로의 이동은 거부하고 사유를 표시한다. 복사 모드에서는 동일 위치 복제도 허용한다 (` (1)` 접미사 자동 부여).
+- 다중 선택된 노드의 드래그도 일괄 처리한다. 부분 실패 시 성공한 항목은 적용하고 실패 목록을 모아 알린다.
+- 본 규정은 **트리 내부 노드** 드래그에만 적용된다. OS 파일 탐색기에서의 드롭(`FR-208`)은 `e.dataTransfer.types`에 `'Files'` 포함 여부로 분기되므로 두 경로가 충돌하지 않는다.
+- 구현: `src/components/panels/file-explorer/file-tree.tsx` (`onMove`, `dragAltKeyRef`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (`onMove` 핸들러), `src/app/api/files/copy/route.ts`.
 
 ### FR-204: Git 상태 표시
 
@@ -68,10 +77,21 @@
 - 파일 확장자에 따라 적절한 아이콘을 표시해야 한다.
 - 지원 확장자: `.ts`, `.tsx`, `.js`, `.jsx`, `.json`, `.md`, `.html`, `.css`, `.py`, `.go`, `.rs` 등
 
-### FR-206: 컨텍스트 메뉴
+### FR-206: 컨텍스트 메뉴 (호이스팅된 단일 인스턴스)
 
 - 파일/폴더 우클릭 시 컨텍스트 메뉴를 표시해야 한다.
-- 메뉴 항목: 새 파일, 새 폴더, 이름 변경, 삭제, 복사 경로, 터미널에서 열기
+- **메뉴는 패널 루트에 단일 인스턴스로 호이스팅**된다 (`src/components/panels/file-explorer/file-context-menu.tsx`). 우클릭 시 노드 렌더러는 `useFileContextMenuStore.openAtNode({ clientX, clientY }, target, selectionPaths)`를 호출하고, 메뉴는 `position: fixed`인 invisible anchor를 트리 좌표로 이동시켜 Radix DropdownMenu로 띄운다. 이 구조 덕분에 react-arborist의 가상화 리스트 재조정이나 노드 hover 리렌더가 메뉴 상태에 영향을 주지 않는다.
+- **해제 조건은 (a) `Esc`, (b) 메뉴 바깥 클릭, (c) 다른 노드 우클릭에 의한 앵커 교체** 세 가지뿐이다. 단순한 마우스 이동만으로는 메뉴가 닫히지 않는다 (Radix DropdownMenu 기본 동작과 일치).
+- **메뉴 항목** — 노드 스코프:
+  - `열기` (파일), `프로젝트 루트로 열기` (디렉토리)
+  - `Open terminal here`, `Open in system terminal`, `Reveal in Finder/File Explorer`
+  - `Cut` (Cmd/Ctrl+X), `Copy` (Cmd/Ctrl+C), `Paste` (Cmd/Ctrl+V — 클립보드가 비어 있으면 비활성), `Duplicate` (Cmd/Ctrl+D)
+  - `Copy path`
+  - 디렉토리에 한해 `New file…`, `New folder…`
+  - `Rename` (F2 — 인라인 편집 진입)
+  - `Delete` (Del — `DeleteConfirmDialog`)
+- **메뉴 항목** — 빈 영역 스코프 (트리 빈 공간 우클릭 시): `New file…`, `New folder…`, `Paste`, `Refresh`.
+- 다중 선택 상태에서 우클릭하면 선택된 모든 경로가 `selectionPaths`로 전달되어 `Cut/Copy/Delete`가 일괄 동작한다. 우클릭한 노드가 기존 선택에 포함돼 있지 않으면 그 노드만 단일 선택으로 교체한다 (Finder/Explorer와 일치).
 
 ### FR-207: 가상화 렌더링
 
@@ -95,7 +115,7 @@
 
 ### FR-209: 탐색기 루트 네비게이션 (상위/하위 재루팅)
 
-- 파일 탐색기는 현재 활성 프로젝트 루트를 **상위 디렉토리 또는 임의의 하위 디렉토리로 이동**할 수 있어야 한다. 이동한 디렉토리는 새로운 활성 루트가 되며, 동일 프로세스 전체(파일 API 샌드박스, 터미널 신규 세션 cwd, Claude 쿼리 cwd, chokidar 감시 대상)에 즉시 반영된다.
+- 파일 탐색기는 현재 활성 프로젝트 루트를 **상위 디렉토리 또는 임의의 하위 디렉토리로 이동**할 수 있어야 한다. 이동한 디렉토리는 새로운 활성 루트가 되며, 동일 프로세스 전체(파일 API 샌드박스, 터미널 신규 세션 cwd, Claude 쿼리 cwd, `@parcel/watcher` 감시 대상)에 즉시 반영된다.
 - **UI 구성**:
   - 패널 헤더에 **↑ Up 버튼**(`lucide-react`의 `ArrowUp`) — 클릭 시 `useProjectStore.openParent()`를 호출해 `path.dirname(activeRoot)`을 새 루트로 설정한다. 부모가 파일시스템 루트(`/` 또는 `C:\`)가 되는 경우 백엔드에서 `4403`으로 거부되며 버튼은 비활성화된다.
   - 헤더 아래 **브레드크럼 바** — 현재 루트의 각 경로 세그먼트를 클릭 가능한 버튼으로 표시한다. 마지막 세그먼트는 현재 위치로 하이라이트되며, 다른 세그먼트 클릭 시 해당 조상 디렉토리로 루트를 이동한다.
@@ -105,6 +125,47 @@
   - `$HOME`은 사용자의 명시적 선택으로 허용한다(이전 `4403` 금지 조항 삭제). 이는 `~` 아래 dotfile/스크립트 프로젝트를 편집하려는 합법적인 사용 케이스를 지원하기 위함이다. `resolveSafe`의 dotfile deny 리스트(`.env`, `.git`, `.ssh`, `.claude`, `.aws`, `.npmrc`, `id_rsa`, `id_ed25519`, `credentials` 등)는 계속 적용되어 민감 파일 접근을 차단한다.
 - **상태 전환**: 루트가 변경되면 기존 에디터 탭과 프리뷰 선택이 리셋되고(`FR-908`의 기존 동작), 파일 트리가 새 루트 기준으로 재로드된다. 터미널의 실행 중 세션은 유지되지만 신규 세션은 새 루트에서 시작한다.
 - 구현: `src/components/panels/file-explorer/file-explorer-panel.tsx` (Up 버튼·브레드크럼), `src/components/panels/file-explorer/file-tree.tsx` (컨텍스트 메뉴 항목), `src/stores/use-project-store.ts` (`openParent()`, `parentDirectory()`).
+
+### FR-210: 다중 선택
+
+- 파일 탐색기는 여러 노드를 동시에 선택할 수 있어야 한다.
+- 마우스: 단일 클릭=교체 선택, `Cmd`/`Ctrl`+클릭=토글, `Shift`+클릭=범위 선택, 빈 영역 클릭=선택 해제. 모두 react-arborist 내장 셀렉션 모델로 동작한다.
+- 키보드: `↑`/`↓`로 포커스 이동, `Cmd`/`Ctrl`+`A`로 가시 노드 전체 선택, `Esc`로 선택 해제.
+- 컨텍스트 메뉴, 키보드 단축키, 드래그 이동, 일괄 삭제 등 모든 액션은 현재 선택을 단일 진실 원천으로 사용한다.
+- 구현: `src/components/panels/file-explorer/file-tree.tsx` (`onSelect` → `onSelectionChange`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (`selection`/`selectionRef`).
+
+### FR-211: 인-앱 파일 클립보드 (Cut/Copy/Paste/Duplicate)
+
+- 파일 탐색기는 OS 클립보드와 분리된 자체 인-앱 클립보드를 가진다 (`useFileClipboardStore` — `{ paths, mode: 'copy' | 'cut' | null }`).
+- **Copy** (`Cmd`/`Ctrl`+`C`): 현재 선택을 `mode='copy'`로 클립보드에 적재한다. 시각 표시는 없다 (Finder와 동일).
+- **Cut** (`Cmd`/`Ctrl`+`X`): 현재 선택을 `mode='cut'`로 적재한다. 잘라내기된 노드는 트리에서 `italic + opacity-50`로 표시된다.
+- **Paste** (`Cmd`/`Ctrl`+`V`): 현재 포커스된 디렉토리(없으면 활성 루트)로 클립보드 내용을 적용한다. `copy` 모드는 `filesApi.copy`로, `cut` 모드는 `filesApi.rename`(이동)으로 처리한다. 동일명이 존재하면 ` (1)`, ` (2)` 접미사로 고유화한다 (FR-208의 업로드 규칙과 일치).
+- **Duplicate** (`Cmd`/`Ctrl`+`D`): 단일 선택을 동일 디렉토리에 ` (1)` 접미사로 즉시 복제한다.
+- 잘라내기 후 붙여넣기가 모두 성공하면 클립보드는 자동으로 비워진다. 일부 실패 시 클립보드는 유지되어 사용자가 다른 위치에서 재시도할 수 있다.
+- 자기 자신 또는 자손으로의 이동·복사는 거부한다. 실패는 사용자에게 알린다.
+- 구현: `src/stores/use-file-clipboard-store.ts`, `src/components/panels/file-explorer/use-file-actions.ts` (`copyToClipboard`, `cutToClipboard`, `paste`, `duplicate`), `src/app/api/files/copy/route.ts`, `src/lib/api-client.ts` (`filesApi.copy`).
+
+### FR-212: 파일 탐색기 키보드 단축키
+
+- 파일 탐색기 패널에 포커스가 있을 때(`isFocusInsideFileExplorer()` — `data-file-explorer-panel="true"` 컨테이너 기준) 다음 단축키가 활성화된다. 다른 패널에 포커스가 있을 때는 발화하지 않는다.
+
+| 키 | 동작 |
+|---|---|
+| `↑` / `↓` / `←` / `→` / `Home` / `End` | 트리 노드 포커스 이동 (react-arborist 내장) |
+| `Enter` / `Space` | 파일 열기 / 폴더 토글 |
+| `F2` | 인라인 이름 변경 진입 |
+| `Del` / `Backspace` | `DeleteConfirmDialog`를 거쳐 선택 항목 삭제 |
+| `Cmd`/`Ctrl` + `A` | 가시 노드 전체 선택 |
+| `Cmd`/`Ctrl` + `C` | 선택 항목 Copy |
+| `Cmd`/`Ctrl` + `X` | 선택 항목 Cut |
+| `Cmd`/`Ctrl` + `V` | 현재 디렉토리에 Paste |
+| `Cmd`/`Ctrl` + `D` | 단일 선택 Duplicate |
+| `Cmd`/`Ctrl` + `N` | 새 파일 생성 + 인라인 이름 변경 |
+| `Cmd`/`Ctrl` + `Shift` + `N` | 새 폴더 생성 + 인라인 이름 변경 |
+| `Esc` | 선택 해제 + 컨텍스트 메뉴 닫기 |
+
+- 모든 단축키는 기존 `useKeyboardShortcut`/`hasPrimaryModifier` 인프라를 재사용하고, 플랫폼별 modifier(`Cmd` on macOS, `Ctrl` elsewhere)를 자동으로 매핑한다.
+- 구현: `src/components/panels/file-explorer/use-file-keyboard.ts`, `src/hooks/use-keyboard-shortcut.ts` (재사용).
 
 ---
 
@@ -153,7 +214,7 @@
 
 ### FR-308: 외부 변경 실시간 반영
 
-- chokidar가 감지한 외부 파일 변경을 에디터에 실시간 반영해야 한다.
+- `@parcel/watcher`가 감지한 외부 파일 변경을 에디터에 실시간 반영해야 한다.
 - WebSocket `/ws/files` 채널로 변경 이벤트를 수신한다.
 - 사용자 커서 위치를 보존하면서 콘텐츠를 업데이트한다.
 - 에디터에 미저장 변경이 있을 경우 충돌 알림을 표시한다.
@@ -498,6 +559,7 @@
   - `.md` → Markdown 프리뷰
   - `.png`, `.jpg`, `.gif`, `.svg`, `.webp` → 이미지 프리뷰
   - `.reveal.html`, 프레젠테이션 모드 → reveal.js 프리뷰
+- 인식되지 않는 확장자이거나 파일이 선택되지 않은 경우 프리뷰 패널은 **완전한 빈 화면**(도움말 텍스트 없음)을 렌더해야 한다.
 
 ### FR-602: HTML 프리뷰
 
@@ -591,6 +653,15 @@
 - PDF 내보내기는 `window.open()` + `window.print()`로 브라우저 인쇄 대화상자를 띄워 운영체제의 "PDF로 저장"으로 내보낸다(FR-1004의 아티팩트 내보내기와 동일 정책). 서버 측 PDF 렌더러(Puppeteer 등)는 요구하지 않는다.
 - DOCX/XLSX/PPTX 바이너리 타입은 프리뷰 뷰어가 이미 `/api/files/raw`로 원본을 읽으므로 "Original file" 한 가지만 노출한다. 트랜스코드(예: DOCX → PDF)는 v1.0 범위 외로 지원하지 않는다.
 - 구현: `src/lib/preview/preview-download.ts`(프리뷰 상태를 `ExtractedArtifact` 모양으로 어댑터해 `src/lib/claude/artifact-export.ts`의 기존 다운로드/인쇄 파이프라인을 재사용), `src/components/panels/preview/preview-download-menu.tsx`(헤더 드롭다운), `src/components/panels/preview/preview-panel.tsx`(헤더 배치).
+
+### FR-614: 프리뷰 소스/렌더 뷰 토글 (v0.5)
+
+- 텍스트 기반 포맷의 파일 프리뷰(`html`, `markdown`, `slides`)는 **렌더 뷰**와 **소스 뷰**를 자연스럽게 전환할 수 있어야 한다. 바이너리/렌더 전용 타입(`pdf`, `image`, `docx`, `xlsx`, `pptx`)은 토글 대상이 아니다.
+- 프리뷰 패널 헤더에 `Code` / `Eye` 아이콘의 토글 버튼을 두어(`PreviewDownloadMenu` 왼쪽), 현재 상태의 **반대쪽으로 전환**하는 의미 체계를 `live-html-preview.tsx`와 동일하게 유지한다. `aria-label`/`title`은 목표 상태를 가리킨다(`Show source` / `Show rendered`).
+- 토글 상태는 `usePreviewStore.viewMode: 'rendered' | 'source'` 필드로 관리하며 기본값은 `'rendered'`이다. `setFile` 호출 시 `viewMode`는 자동으로 `'rendered'`로 리셋되어 다른 파일을 열 때 소스 뷰가 의도치 않게 고착되지 않는다.
+- 소스 뷰는 `highlight.js` 기반 구문 강조(`<pre><code class="hljs language-xml|markdown">`)로 렌더하며, 라이트/다크 테마 모두에서 가독성을 유지하기 위해 `highlight.js/styles/github-dark.css`를 전역 레이아웃에서 로드한다. 컨테이너는 FR-612 규칙(`bg-muted` 외곽 + `ring-1 ring-border/70 shadow-sm`)을 그대로 따른다.
+- HTML 스트리밍 라이브 프리뷰(`FR-610`)는 **기존 내부 토글을 유지**하며, 헤더 토글 버튼은 `showLive === true`(= `autoSwitch && liveMode !== 'idle'`)일 때 숨겨진다. 두 경로는 상호 배타적으로 동작한다.
+- 구현: `src/stores/use-preview-store.ts`(`viewMode`, `setViewMode`, `toggleViewMode`, `isSourceToggleable` 헬퍼), `src/components/panels/preview/preview-panel.tsx`(헤더 토글 버튼), `src/components/panels/preview/preview-router.tsx`(소스 뷰 분기), `src/components/panels/preview/source-preview.tsx`(신규 구문 강조 뷰어), `src/app/layout.tsx`(하이라이트 테마 CSS).
 
 ---
 
@@ -739,10 +810,10 @@
 
 ### FR-907: 실시간 파일 변경 감지
 
-- chokidar v5를 사용하여 프로젝트 디렉토리의 파일 변경을 감지해야 한다.
+- `@parcel/watcher` v2를 사용하여 프로젝트 디렉토리의 파일 변경을 감지해야 한다. 네이티브 FSEvents(macOS) / inotify(Linux) / ReadDirectoryChangesW(Windows) 위에서 동작하며, 루트당 OS 핸들 1개만 소비한다 (ADR-024).
 - 변경 이벤트를 WebSocket `/ws/files` 채널로 브로드캐스트한다.
-- 이벤트 타입: `add`, `change`, `unlink`, `addDir`, `unlinkDir`
-- `node_modules`, `.git` 등 불필요한 디렉토리는 무시한다.
+- 네이티브 감시기가 방출하는 `create`/`update`/`delete` 이벤트를 `add`/`change`/`unlink`로 정규화하고, 추가로 `ready`(구독 완료) 및 `error`(감시기 오류)를 전송한다.
+- `node_modules`, `.next`, `.git`, `.claude`, `dist`, `build`, `out`, `coverage`, `test-results`, `playwright-report`, `.turbo`, `.cache`, `.claude-worktrees` 등의 서브트리는 감시 대상에서 제외한다 (ignore 글롭 + JS dotfile 필터). `.claude-project`는 사용자 설정이므로 예외적으로 감시 대상에 남긴다.
 
 ### FR-908: 런타임 프로젝트 핫스왑 (v0.3)
 
@@ -758,10 +829,10 @@
   - 클라이언트는 부팅 시 `useProjectStore.refresh()`가 완료된 후 `activeRoot === null`이면 **프로젝트 선택 모달을 강제로 연다**(`AppShell`의 `useEffect`로 구현).
   - Claude WS 핸들러는 `runQuery` 호출 시 `getActiveRoot()`가 `null`이면 즉시 `{ code: 4412, message: "No project is open. Open a folder in the file explorer before running Claude queries." }` 에러를 클라이언트로 보내고 쿼리를 시작하지 않는다.
   - `resolveSafe`/`getProjectRoot()`는 `null` 상태에서 `SandboxError('No project is open', 4412)`를 던진다. 파일 API 라우트는 이를 HTTP `412 Precondition Failed`로 응답한다.
-  - `chokidar` 감시자는 루트가 `null`인 동안 대기(idle) 상태를 유지하며, 루트가 설정되는 시점에 `onActiveRootChange` 리스너가 실제 감시를 시작한다.
+  - 파일 감시기(`@parcel/watcher`)는 루트가 `null`인 동안 대기(idle) 상태를 유지하며, 루트가 설정되는 시점에 `onActiveRootChange` 리스너가 실제 구독을 시작한다.
   - 터미널 신규 세션은 `null` 상태에서는 사용자 홈 디렉토리(`os.homedir()`)로 폴백해 동작을 유지한다(기존 세션 보존 정책과의 일관성을 위해).
 - 교체 시:
-  - chokidar watcher를 기존 루트 `close()` 후 새 루트로 재시작
+  - `@parcel/watcher` 구독을 기존 루트에서 `unsubscribe()` 후 새 루트로 재구독
   - 모든 `/ws/files` 클라이언트에 `{ type: 'project-changed', root, timestamp }` 브로드캐스트
   - 새로 스폰되는 PTY 세션은 신규 루트를 `cwd`로 사용 (기존 세션은 유지)
   - Claude 쿼리도 신규 루트를 `cwd`로 사용
@@ -794,7 +865,7 @@
 ### FR-1003: 영속 저장 (localStorage)
 
 - 추출된 아티팩트는 브라우저 `localStorage`에 보존되어야 하며, 새로고침 이후에도 동일 갤러리가 복원되어야 한다.
-- 저장 키: `claudegui-artifacts` (zustand `persist` 미들웨어, `version: 2`).
+- 저장 키: `claudegui-artifacts` (zustand `persist` 미들웨어, `version: 3`). v2까지는 `artifacts`/`autoOpen`만 영속화했으며 v3부터는 FR-1005의 모달 크기(`modalSize`)도 함께 저장한다.
 - 저장 상한은 200개로 제한하며, 상한 초과 시 오래된 항목부터 삭제한다.
 - `autoOpen` 설정 역시 동일 키에 영속화한다.
 - 바이너리 아티팩트(`source: "file"`)는 콘텐츠를 base64로 인코딩하지 않고 절대 경로(`filePath`)와 메타데이터만 저장한다. localStorage 할당량을 보호하기 위함이다.
@@ -808,7 +879,7 @@
   - **Export**: 드롭다운 메뉴로 아티팩트의 `kind`와 `source`에 따라 다음 형식 중 적용 가능한 것들을 제공한다.
     - **Source**: 언어별 확장자(`.ts`, `.py`, `.html`, `.svg`, `.md` 등)로 다운로드 (인라인 텍스트 아티팩트).
     - **HTML (.html)**: Markdown/코드/SVG 아티팩트를 독립 실행형 `<!doctype html>` 문서로 다운로드.
-    - **PDF**: 인쇄 가능한 팝업 창을 열고 `window.print()`를 호출하여 운영체제 "PDF로 저장" 대화상자로 내보낸다.
+    - **PDF**: 비가시 `<iframe>`을 현재 문서에 주입해 독립 실행형 HTML을 `srcdoc`로 로드한 뒤, 모든 `<img>`의 `decode()` 대기와 2프레임의 `requestAnimationFrame`을 거쳐 `contentWindow.print()`를 호출한다. `afterprint` 이벤트와 60초 안전 타이머로 iframe을 정리하고, 생성된 HTML에는 `@page { size: A4; margin: 15mm }`와 `@media print` 규칙(`page-break-inside: avoid`, 색상 보존)이 포함된다. 1.5MB를 초과하는 콘텐츠는 `srcdoc` 대신 blob URL로 폴백한다. 이전 팝업 창 기반 구현은 팝업 차단·렌더링 타이밍·인쇄 CSS 누락 문제로 인해 대체되었다.
     - **Word (.doc)**: MS Word 호환 HTML을 `application/msword`로 다운로드한다(Word/Pages에서 열람 가능).
     - **SVG → PNG**: `<canvas>` 래스터화를 통해 PNG로 저장.
     - **Plain text (.txt)**: 일반 코드·텍스트 아티팩트용 plain text 저장.
@@ -819,6 +890,7 @@
 
 - 갤러리 모달은 좌측 목록 + 우측 상세 프리뷰 레이아웃으로 구성된다.
 - 각 목록 항목은 종류 배지(HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), 제목(파일 기반이면 파일명), 언어/확장자, 상대 시각을 표시한다.
+- 각 목록 항목은 호버 시 드러나는 개별 삭제(Trash) 버튼을 포함한다. 버튼 클릭 시 해당 아티팩트만 `useArtifactStore.remove(id)`로 제거되며, 현재 선택된 항목이 삭제되면 기존 자동 재선택 이펙트가 다음 항목을 선택한다. 행의 기본 클릭 동작(선택)과 분리되도록 삭제 버튼은 클릭 이벤트 전파를 중단한다. 접근성을 위해 행은 `role="button"` + `tabIndex=0` + Enter/Space 키보드 선택을 지원하고, 내부 삭제 버튼은 `aria-label="Delete {title}"`을 노출한다.
 - 상세 영역은 **Preview / Source** 토글을 제공한다. 기본값은 Preview이며, 아티팩트 종류별 렌더링은 다음과 같다.
   - **HTML**: `<iframe sandbox="allow-scripts">` + `srcDoc` (allow-same-origin은 금지; 프리뷰 패널과 동일한 정책).
   - **SVG**: `data:image/svg+xml;charset=utf-8,…` URI를 `<img>`로 렌더링하여 내장 스크립트·이벤트 핸들러가 실행되지 않도록 한다.
@@ -831,6 +903,7 @@
   - **Code/Text**: Preview를 제공하지 않고 Source 모드로 고정된다.
   - **파일 기반 바이너리이지만 현재 프로젝트가 원본 프로젝트가 아니고 레지스트리 재등록에 실패한 경우**: 파일명·경로·안내문과 Export 단일 버튼만 보여주는 fallback 카드로 표시한다.
 - Copy, Export, Delete 버튼과 상단 툴바의 `Auto-open on new content` 체크박스, `Clear all` 버튼을 제공한다.
+- **모달 크기 조정**: 모달은 우측 하단 드래그 핸들로 사용자가 자유롭게 크기를 조정할 수 있다. 최소 크기는 640×480px, 최대 크기는 뷰포트에서 20px를 뺀 값으로 클램프된다. 변경된 크기는 `useArtifactStore.setModalSize`를 통해 `claudegui-artifacts` 스토어(`version: 3`)에 영속화되어 재로그인·재부팅 후에도 유지된다. Radix Dialog가 `translate(-50%, -50%)`로 중앙 정렬하므로 드래그 델타에 2배를 곱해 커서와 1:1로 추적한다. 기본 크기는 `min(1024px, 90vw) × min(720px, 80vh)`이며, 창 크기가 저장된 크기보다 작아지면 자동으로 재클램프된다.
 - 접근성: 모달은 Radix Dialog 기반이며 ESC로 닫힌다.
 
 ### FR-1006: 진입점, 배지 및 단축키
@@ -893,3 +966,51 @@
 - `src/components/panels/claude/claude-chat-panel.tsx` — 트리거 버튼 및 배지.
 - `src/hooks/use-global-shortcuts.ts` — `Cmd/Ctrl + Shift + A` 토글 단축키.
 - `src/stores/use-claude-store.ts` — assistant 이벤트에서 `ingestToolUse` 호출, 세션 로드 시 추출기 호출, `result` 시점에 자동 팝업 플러시.
+
+---
+
+## 3.11 설치 및 데스크톱 런처 (FR-1100)
+
+### FR-1101: 원라인 인스톨러 — 데스크톱 바로가기 생성
+
+- macOS / Linux의 `scripts/install/install.sh`와 Windows의 `scripts/install/install.ps1`은 빌드 단계 이후 사용자 데스크톱에 **ClaudeGUI 바로가기**를 자동 생성해야 한다.
+- 인스톨러는 `--no-desktop-icon` (bash) 또는 `-NoDesktopIcon` (PowerShell)로 이 단계를 건너뛸 수 있어야 한다. 환경변수 `CLAUDEGUI_NO_DESKTOP_ICON=1`로도 동일하게 동작한다.
+- 인스톨러는 `<repo>/public/branding/claudegui.svg|.ico|claudegui-{128,256,512}.png`를 사용자 아이콘 디렉토리로 복사해야 한다.
+  - macOS / Linux: `~/.claudegui/icons/`
+  - Windows: `%LOCALAPPDATA%\ClaudeGUI\icons\`
+- 바로가기 생성 형태는 OS별로 다음과 같다.
+
+| OS | 파일 | 더블클릭 동작 | 아이콘 처리 |
+|----|------|-------------|----------|
+| macOS | `~/Desktop/ClaudeGUI.command` (chmod +x) | Terminal.app이 자동 실행되어 launcher 스크립트를 실행 | 단순성을 위해 기본 Terminal 아이콘을 그대로 사용 (`.app` 번들 미사용 — Gatekeeper 서명 불요) |
+| Linux | `~/Desktop/ClaudeGUI.desktop` | `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xterm` 폴백 체인에서 launcher 실행 | `Icon=` 필드에 절대경로 SVG 지정. GNOME 환경에서는 `gio set ... metadata::trusted true` 설정 |
+| Windows | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` | `WScript.Shell.CreateShortcut`로 생성된 PowerShell 콘솔 창 | `IconLocation`에 `claudegui.ico,0` 지정 |
+
+- macOS는 첫 실행 시 Gatekeeper로 인해 우클릭 → 열기가 필요할 수 있으며, 인스톨러는 이 점을 사용자에게 경고로 출력해야 한다.
+
+### FR-1102: 런처 스크립트 동작
+
+- 런처 스크립트는 다음 위치에 설치된다.
+  - macOS / Linux: `~/.claudegui/bin/claudegui-launcher.sh`
+  - Windows: `%LOCALAPPDATA%\ClaudeGUI\bin\claudegui-launcher.ps1`
+- 실행 시 다음 순서로 동작해야 한다.
+  1. 콘솔 창 상단에 ClaudeGUI 배너(URL, 로그 파일 경로, 종료 안내)를 출력한다.
+  2. `cd $INSTALL_DIR` 후 `NODE_ENV=production`, `PORT=${CLAUDEGUI_PORT:-${PORT:-3000}}`을 export한다.
+  3. **백그라운드 잡(폴러)**을 분리해 0.5초 간격으로 최대 30초간 `http://localhost:$PORT`에 HEAD 요청을 보낸다.
+  4. 폴러가 200/3xx 응답을 받으면 즉시 OS의 기본 브라우저로 해당 URL을 연다.
+     - macOS: `open`
+     - Linux: `xdg-open`
+     - Windows: `Start-Process`
+  5. **포어그라운드**에서 `node server.js`를 실행하고, 표준 출력 / 에러를 동시에 콘솔과 로그 파일에 기록한다(`tee` / `Tee-Object`).
+  6. 사용자가 콘솔 창을 닫거나 `Ctrl+C`를 누르면 SIGHUP/SIGINT가 자식 프로세스로 전파되어 `node server.js`가 종료된다 (창 종료 = 서버 종료).
+- 로그 파일 경로:
+  - macOS / Linux: `~/.claudegui/logs/launcher.log` (append)
+  - Windows: `%USERPROFILE%\.claudegui\logs\launcher.log` (append)
+
+### FR-1103: 브랜드 아이콘 자산과 favicon 통합
+
+- 단일 SVG 소스(`public/branding/claudegui.svg`)가 모든 아이콘 래스터의 source of truth이다.
+- 빌드 스크립트(`scripts/build-icons.mjs`, macOS 전용)는 `qlmanage` + `sips`로 16/32/48/64/128/180/256/512 PNG를 생성하고, Vista+ 호환 PNG-in-ICO 형식으로 6개 사이즈를 묶은 `claudegui.ico`를 생성한다.
+- `src/app/icon.svg`와 `src/app/apple-icon.png`(180×180)은 Next.js App Router 파일 기반 메타데이터로 자동 노출되며, 별도 `<link rel="icon">` 선언 없이 `localhost:3000` 접속 시 favicon으로 표시된다.
+- 데스크톱 바로가기와 브라우저 favicon이 **동일한 마스코트**를 사용해 시각적 일관성을 유지한다.
+- 구현: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `scripts/install/install.sh`, `scripts/install/install.ps1`.

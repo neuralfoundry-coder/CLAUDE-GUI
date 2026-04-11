@@ -108,7 +108,7 @@ export function exportArtifact(artifact: ExtractedArtifact, format: ExportFormat
       return;
     }
     case 'pdf': {
-      openPrintWindow(artifact);
+      printViaIframe(artifact);
       return;
     }
     case 'svg': {
@@ -161,12 +161,33 @@ function triggerDownload(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+const PRINT_CSS = `
+@page { size: A4; margin: 15mm; }
+@media print {
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  pre, figure, table, img, svg { page-break-inside: avoid; break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
+`;
+
+const BASE_STYLE = `
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.6; color: #111; }
+pre { background: #f4f4f5; padding: 1rem; border-radius: 6px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.9em; white-space: pre-wrap; word-break: break-word; }
+code { font-family: "SFMono-Regular", Consolas, monospace; }
+h1, h2, h3, h4 { line-height: 1.25; }
+table { border-collapse: collapse; }
+td, th { border: 1px solid #ddd; padding: 0.4rem 0.6rem; }
+img, svg { max-width: 100%; height: auto; }
+figure { margin: 0; }
+blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 1rem; color: #555; }
+`;
+
 function toStandaloneHtml(artifact: ExtractedArtifact): string {
   const title = escapeHtml(artifact.title);
-  let body: string;
   if (artifact.kind === 'html') {
-    return artifact.content;
+    return injectPrintStyles(artifact.content);
   }
+  let body: string;
   if (artifact.kind === 'markdown') {
     body = markdownToHtml(artifact.content);
   } else if (artifact.kind === 'svg') {
@@ -179,16 +200,7 @@ function toStandaloneHtml(artifact: ExtractedArtifact): string {
 <head>
 <meta charset="utf-8">
 <title>${title}</title>
-<style>
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.6; color: #111; }
-pre { background: #f4f4f5; padding: 1rem; border-radius: 6px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.9em; }
-code { font-family: "SFMono-Regular", Consolas, monospace; }
-h1, h2, h3, h4 { line-height: 1.25; }
-table { border-collapse: collapse; }
-td, th { border: 1px solid #ddd; padding: 0.4rem 0.6rem; }
-img, svg { max-width: 100%; height: auto; }
-blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 1rem; color: #555; }
-</style>
+<style>${BASE_STYLE}${PRINT_CSS}</style>
 </head>
 <body>
 ${body}
@@ -196,28 +208,100 @@ ${body}
 </html>`;
 }
 
-function openPrintWindow(artifact: ExtractedArtifact): void {
-  const html = toStandaloneHtml(artifact);
-  const win = window.open('', '_blank', 'noopener,noreferrer,width=900,height=700');
-  if (!win) {
-    downloadBlob(html, `${safeName(artifact.title)}.html`, 'text/html');
-    return;
+// Ensures user-supplied HTML documents pick up our @page / @media print rules.
+// Leaves the original markup untouched apart from a single injected <style> tag.
+function injectPrintStyles(html: string): string {
+  const styleTag = `<style data-artifact-print>${PRINT_CSS}</style>`;
+  if (/<\/head\s*>/i.test(html)) {
+    return html.replace(/<\/head\s*>/i, `${styleTag}</head>`);
   }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  const trigger = () => {
-    try {
-      win.focus();
-      win.print();
-    } catch {
-      /* ignore */
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1>${styleTag}`);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html([^>]*)>/i, `<html$1><head>${styleTag}</head>`);
+  }
+  return `<!doctype html><html><head>${styleTag}</head><body>${html}</body></html>`;
+}
+
+const LARGE_HTML_THRESHOLD = 1_500_000;
+
+function printViaIframe(artifact: ExtractedArtifact): void {
+  try {
+    const html = toStandaloneHtml(artifact);
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.style.cssText =
+      'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
+
+    let blobUrl: string | null = null;
+    let cleaned = false;
+    let safetyTimer: number | null = null;
+
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (safetyTimer !== null) {
+        window.clearTimeout(safetyTimer);
+        safetyTimer = null;
+      }
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+        blobUrl = null;
+      }
+    };
+
+    const triggerPrint = () => {
+      const win = iframe.contentWindow;
+      const doc = iframe.contentDocument;
+      if (!win || !doc) {
+        console.warn('[artifacts] print iframe has no contentWindow; falling back to download');
+        cleanup();
+        downloadBlob(html, `${safeName(artifact.title)}.html`, 'text/html');
+        return;
+      }
+      const images = Array.from(doc.images) as HTMLImageElement[];
+      const decodes = images.map((img) =>
+        typeof img.decode === 'function' ? img.decode().catch(() => {}) : Promise.resolve(),
+      );
+      void Promise.all(decodes).then(() => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            try {
+              win.addEventListener('afterprint', cleanup, { once: true });
+              win.focus();
+              win.print();
+              // Safety net: if afterprint never fires (some webviews), reclaim
+              // the iframe after a minute so we do not leak DOM nodes.
+              safetyTimer = window.setTimeout(cleanup, 60_000);
+            } catch (err) {
+              console.warn('[artifacts] iframe print failed; falling back to download', err);
+              cleanup();
+              downloadBlob(html, `${safeName(artifact.title)}.html`, 'text/html');
+            }
+          });
+        });
+      });
+    };
+
+    iframe.addEventListener('load', triggerPrint, { once: true });
+
+    if (html.length > LARGE_HTML_THRESHOLD) {
+      // Very large srcdoc values get truncated in some browsers. Use a blob URL
+      // instead so the iframe can still receive the full document.
+      const blob = new Blob([html], { type: 'text/html' });
+      blobUrl = URL.createObjectURL(blob);
+      iframe.src = blobUrl;
+    } else {
+      iframe.srcdoc = html;
     }
-  };
-  if (win.document.readyState === 'complete') {
-    setTimeout(trigger, 200);
-  } else {
-    win.addEventListener('load', () => setTimeout(trigger, 200));
+
+    document.body.appendChild(iframe);
+  } catch (err) {
+    console.warn('[artifacts] printViaIframe failed; falling back to download', err);
+    const html = toStandaloneHtml(artifact);
+    downloadBlob(html, `${safeName(artifact.title)}.html`, 'text/html');
   }
 }
 

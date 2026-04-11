@@ -47,7 +47,7 @@
 | **reveal.js** | HTML 기반 프레젠테이션 프레임워크 (70k+ GitHub stars) |
 | **Monaco** | VS Code의 코어 에디터 엔진 |
 | **xterm.js** | 브라우저 기반 터미널 에뮬레이터 라이브러리 |
-| **chokidar** | Node.js 파일 시스템 변경 감지 라이브러리 |
+| **@parcel/watcher** | 네이티브 FSEvents/inotify/ReadDirectoryChangesW 위에서 동작하는 크로스플랫폼 파일 시스템 감시 라이브러리 (ClaudeGUI가 chokidar v5 대신 채택 — ADR-024) |
 | **node-pty** | Node.js용 의사 터미널 바인딩 (Microsoft 유지관리) |
 | **Zustand** | 경량 React 상태 관리 라이브러리 |
 

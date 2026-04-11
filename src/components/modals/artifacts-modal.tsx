@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Copy, Download, Trash2, Check, Eye, Code2 } from 'lucide-react';
 import {
   Dialog,
@@ -95,15 +96,36 @@ function formatRelative(ts: number, now: number): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
+const MIN_MODAL_WIDTH = 640;
+const MIN_MODAL_HEIGHT = 480;
+const VIEWPORT_PADDING = 20;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+function clampSize(
+  size: { width: number; height: number },
+  viewportW: number,
+  viewportH: number,
+): { width: number; height: number } {
+  return {
+    width: clamp(size.width, MIN_MODAL_WIDTH, Math.max(MIN_MODAL_WIDTH, viewportW - VIEWPORT_PADDING)),
+    height: clamp(size.height, MIN_MODAL_HEIGHT, Math.max(MIN_MODAL_HEIGHT, viewportH - VIEWPORT_PADDING)),
+  };
+}
+
 export function ArtifactsModal() {
   const isOpen = useArtifactStore((s) => s.isOpen);
   const artifacts = useArtifactStore((s) => s.artifacts);
   const highlightedId = useArtifactStore((s) => s.highlightedId);
   const autoOpen = useArtifactStore((s) => s.autoOpen);
+  const modalSize = useArtifactStore((s) => s.modalSize);
   const close = useArtifactStore((s) => s.close);
   const remove = useArtifactStore((s) => s.remove);
   const clear = useArtifactStore((s) => s.clear);
   const setAutoOpen = useArtifactStore((s) => s.setAutoOpen);
+  const setModalSize = useArtifactStore((s) => s.setModalSize);
 
   const sorted = useMemo(
     () => [...artifacts].sort((a, b) => b.createdAt - a.createdAt),
@@ -160,10 +182,145 @@ export function ArtifactsModal() {
     exportArtifact(artifact, format);
   };
 
+  const dialogContentRef = useRef<HTMLDivElement | null>(null);
+  const resizeStateRef = useRef<{
+    startX: number;
+    startY: number;
+    startW: number;
+    startH: number;
+    frame: number | null;
+    pending: { width: number; height: number } | null;
+  } | null>(null);
+
+  // Clamp a persisted size down when the viewport becomes smaller than it.
+  useEffect(() => {
+    if (!isOpen || !modalSize) return;
+    const handler = () => {
+      const clamped = clampSize(modalSize, window.innerWidth, window.innerHeight);
+      if (clamped.width !== modalSize.width || clamped.height !== modalSize.height) {
+        setModalSize(clamped);
+      }
+    };
+    handler();
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, [isOpen, modalSize, setModalSize]);
+
+  const handleResizePointerMove = useCallback(
+    (e: PointerEvent) => {
+      const state = resizeStateRef.current;
+      if (!state) return;
+      // Radix centers the dialog with translate(-50%, -50%), so the box grows
+      // symmetrically around its center — doubling the delta makes the handle
+      // track the cursor 1:1.
+      const dx = (e.clientX - state.startX) * 2;
+      const dy = (e.clientY - state.startY) * 2;
+      const next = clampSize(
+        { width: state.startW + dx, height: state.startH + dy },
+        window.innerWidth,
+        window.innerHeight,
+      );
+      state.pending = next;
+      if (state.frame !== null) return;
+      state.frame = window.requestAnimationFrame(() => {
+        const s = resizeStateRef.current;
+        if (!s) return;
+        s.frame = null;
+        if (s.pending) setModalSize(s.pending);
+      });
+    },
+    [setModalSize],
+  );
+
+  const handleResizePointerUp = useCallback(
+    (e: PointerEvent) => {
+      const state = resizeStateRef.current;
+      if (state?.frame !== null && state?.frame !== undefined) {
+        window.cancelAnimationFrame(state.frame);
+      }
+      resizeStateRef.current = null;
+      window.removeEventListener('pointermove', handleResizePointerMove);
+      window.removeEventListener('pointerup', handleResizePointerUp);
+      window.removeEventListener('pointercancel', handleResizePointerUp);
+      document.body.style.userSelect = '';
+      const target = e.target as Element | null;
+      if (target && 'releasePointerCapture' in target) {
+        try {
+          (target as Element & {
+            releasePointerCapture: (id: number) => void;
+          }).releasePointerCapture(e.pointerId);
+        } catch {
+          /* no-op */
+        }
+      }
+    },
+    [handleResizePointerMove],
+  );
+
+  const handleResizeStart = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      const content = dialogContentRef.current;
+      if (!content) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = content.getBoundingClientRect();
+      resizeStateRef.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        startW: rect.width,
+        startH: rect.height,
+        frame: null,
+        pending: null,
+      };
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* no-op */
+      }
+      document.body.style.userSelect = 'none';
+      window.addEventListener('pointermove', handleResizePointerMove);
+      window.addEventListener('pointerup', handleResizePointerUp);
+      window.addEventListener('pointercancel', handleResizePointerUp);
+    },
+    [handleResizePointerMove, handleResizePointerUp],
+  );
+
+  useEffect(() => {
+    // Defensive cleanup if the modal unmounts mid-drag.
+    return () => {
+      window.removeEventListener('pointermove', handleResizePointerMove);
+      window.removeEventListener('pointerup', handleResizePointerUp);
+      window.removeEventListener('pointercancel', handleResizePointerUp);
+      document.body.style.userSelect = '';
+    };
+  }, [handleResizePointerMove, handleResizePointerUp]);
+
+  const contentStyle: React.CSSProperties = {
+    width: modalSize?.width ?? 'min(1024px, 90vw)',
+    height: modalSize?.height ?? 'min(720px, 80vh)',
+    maxWidth: 'calc(100vw - 20px)',
+    maxHeight: 'calc(100vh - 20px)',
+  };
+
+  const onRowKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>, id: string) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      setSelectedId(id);
+    } else if (e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      setSelectedId(id);
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && close()}>
-      <DialogContent className="max-h-[85vh] max-w-5xl overflow-hidden p-0">
-        <div className="flex h-[80vh] flex-col">
+      <DialogContent
+        ref={dialogContentRef}
+        className="relative overflow-hidden p-0"
+        style={contentStyle}
+      >
+        <div className="flex h-full flex-col">
           <DialogHeader className="border-b px-5 py-3">
             <DialogTitle className="text-base">Generated Content</DialogTitle>
             <DialogDescription className="text-xs">
@@ -213,11 +370,14 @@ export function ArtifactsModal() {
                     const active = a.id === selectedId;
                     return (
                       <li key={a.id}>
-                        <button
-                          type="button"
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={active}
                           onClick={() => setSelectedId(a.id)}
+                          onKeyDown={(e) => onRowKeyDown(e, a.id)}
                           className={cn(
-                            'flex w-full flex-col items-start gap-1 border-b px-3 py-2 text-left text-xs transition-colors',
+                            'group flex w-full cursor-pointer flex-col items-start gap-1 border-b px-3 py-2 text-left text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                             active ? 'bg-accent' : 'hover:bg-muted',
                           )}
                         >
@@ -231,12 +391,25 @@ export function ArtifactsModal() {
                               {kindLabel(a.kind)}
                             </span>
                             <span className="flex-1 truncate font-medium">{a.title}</span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                remove(a.id);
+                              }}
+                              onKeyDown={(e) => e.stopPropagation()}
+                              aria-label={`Delete ${a.title}`}
+                              title="Delete artifact"
+                              className="ml-1 shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-destructive group-hover:opacity-100"
+                            >
+                              <Trash2 className="h-3 w-3" aria-hidden="true" />
+                            </button>
                           </div>
                           <div className="flex w-full items-center justify-between text-[10px] text-muted-foreground">
                             <span className="truncate">{a.language || 'text'}</span>
                             <span>{formatRelative(a.createdAt, now)}</span>
                           </div>
-                        </button>
+                        </div>
                       </li>
                     );
                   })}
@@ -347,6 +520,23 @@ export function ArtifactsModal() {
               )}
             </section>
           </div>
+        </div>
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Resize Generated Content"
+          onPointerDown={handleResizeStart}
+          className="absolute bottom-0 right-0 z-10 flex h-4 w-4 cursor-se-resize items-end justify-end text-muted-foreground/60 hover:text-muted-foreground"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path
+              d="M11 6 L6 11 M11 9 L9 11"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+              fill="none"
+            />
+          </svg>
         </div>
       </DialogContent>
     </Dialog>

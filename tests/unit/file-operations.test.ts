@@ -7,6 +7,7 @@ import {
   readTextFile,
   writeTextFile,
   deleteEntry,
+  copyEntry,
   makeDirectory,
   renameEntry,
   statFile,
@@ -84,5 +85,74 @@ describe('file operations', () => {
     const s = await statFile(f);
     expect(s.isFile).toBe(true);
     expect(s.size).toBe(3);
+  });
+
+  it('refuses to delete a non-empty directory without recursive', async () => {
+    const d = path.join(root, 'full');
+    await fs.mkdir(d);
+    await fs.writeFile(path.join(d, 'inside.txt'), 'x');
+    await expect(deleteEntry(d)).rejects.toThrow();
+    expect((await fs.stat(d)).isDirectory()).toBe(true);
+  });
+
+  it('recursively deletes a non-empty directory when opted in', async () => {
+    const d = path.join(root, 'tree');
+    await fs.mkdir(path.join(d, 'sub'), { recursive: true });
+    await fs.writeFile(path.join(d, 'a.txt'), 'a');
+    await fs.writeFile(path.join(d, 'sub', 'b.txt'), 'b');
+    await deleteEntry(d, { recursive: true });
+    await expect(fs.stat(d)).rejects.toThrow();
+  });
+
+  describe('copyEntry', () => {
+    it('copies a single file to a new path', async () => {
+      const src = path.join(root, 'a.txt');
+      const dest = path.join(root, 'b.txt');
+      await fs.writeFile(src, 'hello');
+      const { writtenPath } = await copyEntry(src, dest);
+      expect(writtenPath).toBe(dest);
+      expect(await fs.readFile(dest, 'utf-8')).toBe('hello');
+      expect(await fs.readFile(src, 'utf-8')).toBe('hello');
+    });
+
+    it('recursively copies a directory tree', async () => {
+      const src = path.join(root, 'src');
+      await fs.mkdir(path.join(src, 'sub'), { recursive: true });
+      await fs.writeFile(path.join(src, 'a.txt'), 'a');
+      await fs.writeFile(path.join(src, 'sub', 'b.txt'), 'b');
+      const dest = path.join(root, 'dest');
+      await copyEntry(src, dest);
+      expect(await fs.readFile(path.join(dest, 'a.txt'), 'utf-8')).toBe('a');
+      expect(await fs.readFile(path.join(dest, 'sub', 'b.txt'), 'utf-8')).toBe('b');
+    });
+
+    it('disambiguates with " (n)" suffix when destination already exists', async () => {
+      const src = path.join(root, 'doc.txt');
+      await fs.writeFile(src, 'one');
+      const { writtenPath: first } = await copyEntry(src, src);
+      expect(first).toBe(path.join(root, 'doc (1).txt'));
+      const { writtenPath: second } = await copyEntry(src, src);
+      expect(second).toBe(path.join(root, 'doc (2).txt'));
+    });
+
+    it('preserves directory base names without an extension when disambiguating', async () => {
+      const src = path.join(root, 'folder');
+      await fs.mkdir(src);
+      await fs.writeFile(path.join(src, 'inside.txt'), 'x');
+      const { writtenPath } = await copyEntry(src, src);
+      expect(writtenPath).toBe(path.join(root, 'folder (1)'));
+      expect(
+        await fs.readFile(path.join(root, 'folder (1)', 'inside.txt'), 'utf-8'),
+      ).toBe('x');
+    });
+
+    it('rejects copying a directory into itself or a descendant', async () => {
+      const src = path.join(root, 'tree');
+      await fs.mkdir(path.join(src, 'inner'), { recursive: true });
+      await expect(copyEntry(src, src)).resolves.toBeDefined(); // suffix-disambiguated, not rejected
+      await expect(copyEntry(src, path.join(src, 'inner', 'tree'))).rejects.toThrow(
+        /Cannot copy a directory into itself/,
+      );
+    });
   });
 });

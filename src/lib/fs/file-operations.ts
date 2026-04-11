@@ -83,13 +83,66 @@ export async function writeTextFile(absolutePath: string, content: string): Prom
   return Buffer.byteLength(content, 'utf-8');
 }
 
-export async function deleteEntry(absolutePath: string): Promise<void> {
+export async function deleteEntry(
+  absolutePath: string,
+  options: { recursive?: boolean } = {},
+): Promise<void> {
+  const { recursive = false } = options;
   const stat = await fs.lstat(absolutePath);
   if (stat.isDirectory()) {
-    await fs.rmdir(absolutePath);
+    if (recursive) {
+      await fs.rm(absolutePath, { recursive: true, force: false });
+    } else {
+      await fs.rmdir(absolutePath);
+    }
   } else {
     await fs.unlink(absolutePath);
   }
+}
+
+async function uniqueDestination(destAbs: string): Promise<string> {
+  try {
+    await fs.lstat(destAbs);
+  } catch {
+    return destAbs;
+  }
+  const dir = path.dirname(destAbs);
+  const base = path.basename(destAbs);
+  const dot = base.lastIndexOf('.');
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  const ext = dot > 0 ? base.slice(dot) : '';
+  for (let i = 1; i < 1000; i++) {
+    const candidate = path.join(dir, `${stem} (${i})${ext}`);
+    try {
+      await fs.lstat(candidate);
+    } catch {
+      return candidate;
+    }
+  }
+  const err = new Error('Could not find a unique destination filename') as Error & { code: string };
+  err.code = 'EEXIST';
+  throw err;
+}
+
+export async function copyEntry(
+  srcAbs: string,
+  destAbs: string,
+): Promise<{ writtenPath: string }> {
+  const srcStat = await fs.lstat(srcAbs);
+  if (srcStat.isDirectory()) {
+    // dest === src is allowed and means "duplicate in place" — uniqueDestination
+    // will append a " (n)" suffix. Reject only when dest is strictly inside src.
+    const srcWithSep = srcAbs.endsWith(path.sep) ? srcAbs : srcAbs + path.sep;
+    if (destAbs !== srcAbs && destAbs.startsWith(srcWithSep)) {
+      const err = new Error('Cannot copy a directory into itself') as Error & { code: string };
+      err.code = 'EINVAL';
+      throw err;
+    }
+  }
+  const finalDest = await uniqueDestination(destAbs);
+  await fs.mkdir(path.dirname(finalDest), { recursive: true });
+  await fs.cp(srcAbs, finalDest, { recursive: true, force: false, errorOnExist: true });
+  return { writtenPath: finalDest };
 }
 
 export async function makeDirectory(absolutePath: string, recursive: boolean): Promise<void> {

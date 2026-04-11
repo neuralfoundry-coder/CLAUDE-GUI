@@ -156,7 +156,7 @@
 ### NFR-404: Node.js compatibility
 
 - Node.js **20.x LTS** or later shall be supported.
-- Compatibility with chokidar v5's ESM requirement shall be maintained.
+- The runtime shall be able to load `@parcel/watcher` v2 native binaries, node-pty prebuilds, and ESM dynamic imports.
 
 ---
 

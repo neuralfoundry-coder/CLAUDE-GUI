@@ -87,7 +87,7 @@ server.js
     ├── fs/                             ← 샌드박싱된 파일 시스템
     │   ├── resolve-safe.ts
     │   ├── file-operations.ts
-    │   └── watcher.ts                  (chokidar)
+    │   └── watcher.ts                  (@parcel/watcher)
     ├── claude/                         ← Agent SDK 래퍼
     │   ├── session-manager.ts
     │   ├── query-handler.ts
@@ -103,24 +103,36 @@ server.js
 
 ```
 src/components/panels/file-explorer/
-├── file-explorer-panel.tsx         # 컨테이너
-├── file-explorer-header.tsx        # 제목, 새 파일 버튼
-├── file-tree.tsx                   # react-arborist 래퍼
-├── file-tree-node.tsx              # 개별 노드 렌더러
+├── file-explorer-panel.tsx         # 컨테이너 (FR-208 업로드, 키보드 훅 마운트)
+├── file-tree.tsx                   # react-arborist 래퍼 + 인라인 편집 렌더
+├── file-context-menu.tsx           # 호이스팅된 단일 컨텍스트 메뉴 (FR-206)
+├── delete-confirm-dialog.tsx       # 삭제 확인 다이얼로그 (FR-202)
+├── use-file-actions.ts             # CRUD/clipboard 액션 훅
+├── use-file-keyboard.ts            # 트리 스코프 키보드 단축키 (FR-212)
+├── use-file-tree.ts                # 데이터 로딩 훅
+├── use-files-websocket.ts          # /ws/files 구독
 ├── file-icon.tsx                   # 확장자별 아이콘
 ├── git-status-indicator.tsx        # Git 상태 배지
-├── context-menu.tsx                # 우클릭 메뉴
-└── use-file-tree.ts                # 데이터 로딩 훅
+└── use-git-status.ts               # Git 상태 맵 fetch
 ```
+
+관련 전역 store:
+- `src/stores/use-file-context-menu-store.ts` — 컨텍스트 메뉴 상태 (`{ open, anchor, target, selectionPaths, scope }`)
+- `src/stores/use-file-clipboard-store.ts` — 인-앱 클립보드 (`{ paths, mode }`, FR-211)
 
 ### 주요 동작
 
-1. **데이터 로딩**: `useFileTree` 훅이 `/api/files?path=<root>`를 호출하여 트리 노드 생성
-2. **가상화**: `react-arborist`의 내장 가상 스크롤
-3. **Git 상태**: `/api/git/status` 호출로 파일별 상태 맵 생성 → 오버레이
-4. **실시간 갱신**: `/ws/files` WebSocket 이벤트로 트리 노드 업데이트
-5. **컨텍스트 메뉴**: Radix UI `@radix-ui/react-context-menu` 사용
-6. **OS 파일 드롭/붙여넣기 업로드 (FR-208)**: `FileExplorerPanel`의 루트 `div`는 `tabIndex={0}`을 가지며 `onDragEnter/onDragOver/onDragLeave/onDrop`과 `onPaste`를 구현한다. `e.dataTransfer.types`에 `'Files'`가 포함된 드래그만 수락해 react-arborist의 내부 노드 드래그와 충돌을 피한다. 드롭 또는 붙여넣기로 수집한 `File[]`는 `filesApi.upload(destDir, files)`를 통해 `POST /api/files/upload`로 전송되고, 성공 후 `refreshRoot()`로 트리를 즉시 갱신한다. 드래그 중에는 `ring-2 ring-primary` 경계와 "Drop files to upload to project root" 오버레이를 표시한다. 업로드 진행/실패 상태는 헤더의 상태 라벨(`uploading…` / `upload failed: <message>`)로 표시한다.
+1. **데이터 로딩**: `useFileTree` 훅이 `/api/files?path=<root>`를 호출하여 트리 노드 생성.
+2. **가상화**: `react-arborist`의 내장 가상 스크롤.
+3. **Git 상태**: `/api/git/status` 호출로 파일별 상태 맵 생성 → 오버레이.
+4. **실시간 갱신**: `/ws/files` WebSocket 이벤트로 트리 노드 갱신 (디바운스 + rAF 배치).
+5. **컨텍스트 메뉴 (FR-206)**: 노드 렌더러는 `<ContextMenu>`를 직접 들지 않고, `onContextMenu`에서 `useFileContextMenuStore.openAtNode()`를 호출하여 좌표·target·selectionPaths를 발행한다. 패널 루트의 단일 `<FileContextMenu>`가 controlled `open`과 invisible fixed-position trigger로 Radix DropdownMenu를 anchor한다. 가상화 리스트 재조정이나 노드 hover 리렌더가 메뉴 상태에 영향을 주지 않으므로, 우클릭 직후 마우스 이동만으로 메뉴가 닫히는 react-arborist + 노드 단위 ContextMenu의 알려진 결함이 해소된다. 해제는 `Esc`/바깥 클릭/다른 노드 우클릭 세 가지 경로뿐이다.
+6. **선택 모델 (FR-210)**: react-arborist 내장 selection을 사용한다. `Tree.onSelect`가 노드 배열을 발화하면 패널 컨테이너가 `selection`/`selectionRef` 상태로 보관해 키보드 훅과 컨텍스트 메뉴에 공급한다.
+7. **인라인 편집 (FR-202)**: 노드 렌더러는 `node.isEditing`일 때 `<input>`을 렌더하고 `Enter`/`Esc`/`onBlur`를 통해 `node.submit()` 또는 `node.reset()`을 호출한다. 새 파일/폴더는 패널이 placeholder 이름(` 2`, ` 3` …으로 충돌 회피)으로 즉시 생성한 뒤 `treeRef.beginRename(path)`로 인라인 편집에 진입시킨다.
+8. **인-앱 클립보드 (FR-211) / 키보드 단축키 (FR-212)**: `useFileActions`가 copy/cut/paste/duplicate/delete API를 한 곳에 모은다. `useFileKeyboard`는 `data-file-explorer-panel="true"` 컨테이너 안에 포커스가 있을 때만 활성화되어 위 액션과 트리 헬퍼(`tree.selectAll`, `tree.deselectAll`, `tree.edit(id)`)를 키 입력에 매핑한다. 잘라내기된 노드는 `italic + opacity-50`로 시각화한다.
+9. **트리 내부 드래그 이동/복사 (FR-203)**: react-arborist `onMove`를 와이어링한다. 네이티브 `dragstart`/`dragover`에서 `altKey`를 ref로 캡처해 기본 이동(`filesApi.rename`)과 Alt-복사(`filesApi.copy`)를 분기한다. 자기 자신/자손으로의 이동은 거부한다.
+10. **삭제 확인 (FR-202)**: `useDeleteConfirmStore.request(paths)`가 Promise를 반환하는 비동기 prompt 패턴을 제공하고, 패널 루트의 `<DeleteConfirmDialog>`가 다중 선택 시 영향 받는 경로 리스트와 함께 모달을 띄운다.
+11. **OS 파일 드롭/붙여넣기 업로드 (FR-208)**: `FileExplorerPanel`의 루트 `div`는 `tabIndex={0}`을 가지며 `onDragEnter/onDragOver/onDragLeave/onDrop`과 `onPaste`를 구현한다. `e.dataTransfer.types`에 `'Files'`가 포함된 드래그만 수락해 react-arborist의 내부 노드 드래그와 충돌을 피한다. 드롭 또는 붙여넣기로 수집한 `File[]`는 `filesApi.upload(destDir, files)`를 통해 `POST /api/files/upload`로 전송되고, 성공 후 `refreshRoot()`로 트리를 즉시 갱신한다. 드래그 중에는 `ring-2 ring-primary` 경계와 "Drop files to upload to project root" 오버레이를 표시한다.
 
 ## 2.4 EditorPanel 컴포넌트
 
@@ -299,38 +311,51 @@ term.loadAddon(new WebLinksAddon());
 
 ```
 src/components/panels/preview/
-├── preview-panel.tsx               # 컨테이너
-├── preview-header.tsx              # 타입 표시, 컨트롤
-├── preview-router.tsx              # 타입별 렌더러 선택
+├── preview-panel.tsx               # 컨테이너 + 헤더(소스/렌더 토글, 다운로드)
+├── preview-router.tsx              # 타입별 렌더러 선택 + viewMode 분기
 ├── html-preview.tsx                # iframe srcdoc
 ├── pdf-preview.tsx                 # react-pdf
 ├── markdown-preview.tsx            # react-markdown
 ├── image-preview.tsx               # 줌/팬
 ├── slide-preview.tsx               # reveal.js iframe
-└── use-preview-content.ts          # 콘텐츠 로딩
+├── source-preview.tsx              # highlight.js 기반 소스 뷰 (FR-614)
+├── live-html-preview.tsx           # 스트리밍 전용 경로
+└── preview-download-menu.tsx       # 즉시 다운로드 드롭다운
 ```
+
+`usePreviewStore`는 `currentFile`/`pageNumber`/`zoom`/`fullscreen` 외에 `viewMode: 'rendered' | 'source'` 필드를 유지한다(FR-614). 기본값은 `'rendered'`이며 `setFile` 호출 시 자동으로 `'rendered'`로 리셋되어 파일 전환 시 소스 뷰가 고착되지 않는다. `isSourceToggleable(type)` 헬퍼가 `html`/`markdown`/`slides`에만 토글을 허용한다.
 
 ### 라우터 로직
 
 ```typescript
 function PreviewRouter({ filePath, content }: Props) {
-  const ext = getExtension(filePath);
-  switch (ext) {
-    case 'html':
-      return isRevealSlide(content)
-        ? <SlidePreview content={content} />
-        : <HTMLPreview content={content} />;
-    case 'pdf':
-      return <PDFPreview path={filePath} />;
-    case 'md':
-    case 'markdown':
-      return <MarkdownPreview content={content} />;
-    case 'png': case 'jpg': case 'jpeg':
-    case 'gif': case 'svg': case 'webp':
-      return <ImagePreview path={filePath} />;
-    default:
-      return <UnsupportedPreview ext={ext} />;
-  }
+  const viewMode = usePreviewStore((s) => s.viewMode); // 'rendered' | 'source'
+  const type = detectPreviewType(filePath);
+
+  // 프리뷰 불가 타입 또는 선택 해제 → 완전한 빈 화면 (FR-601)
+  if (!filePath || type === 'none') return <div className="h-full w-full" aria-hidden />;
+
+  // 텍스트 기반 타입은 viewMode === 'source'이면 구문 강조 소스 뷰로 분기 (FR-614)
+  if (type === 'html')
+    return viewMode === 'source'
+      ? <SourcePreview content={content} language="html" />
+      : <HTMLPreview content={content} />;
+  if (type === 'markdown')
+    return viewMode === 'source'
+      ? <SourcePreview content={content} language="markdown" />
+      : <MarkdownPreview content={content} />;
+  if (type === 'slides')
+    return viewMode === 'source'
+      ? <SourcePreview content={content} language="html" />
+      : <SlidePreview content={content} />;
+
+  // 바이너리/렌더 전용 타입
+  if (type === 'pdf') return <PDFPreview path={filePath} />;
+  if (type === 'image') return <ImagePreview path={filePath} />;
+  if (type === 'docx') return <DocxPreview path={filePath} />;
+  if (type === 'xlsx') return <XlsxPreview path={filePath} />;
+  if (type === 'pptx') return <PptxPreview path={filePath} />;
+  return null;
 }
 ```
 
@@ -393,6 +418,12 @@ window.addEventListener('message', (e) => {
 - **Slides (`reveal-host.html`)**: `Reveal.initialize`를 고정 논리 크기(`width: 960, height: 700`)로 호출하고 `margin: 0.04`, `minScale: 0.05`, `maxScale: 2.0`을 지정해 어떤 가로세로 비율에서도 전체 슬라이드가 축소 배치되게 한다. `.reveal .slides > section`에는 `box-shadow: 0 0 0 1px rgba(255,255,255,0.28), 0 6px 24px rgba(0,0,0,0.45)`로 외곽선을 그린다.
 - **PDF (`pdf-preview.tsx`)**: 스크롤 컨테이너를 `ResizeObserver`로 관찰하고 첫 페이지 로드 시 `getViewport({ scale: 1 })`로 네이티브 크기를 캡처한다. 이후 `Page`에 `width = min(availableWidth, availableHeight × aspect)`을 전달하여 페이지가 컨테이너 안에 완전히 들어오도록 한다. 페이지 캔버스는 `ring-1 ring-border/70 shadow-md` 박스로 감싼다. 파일 경로가 바뀌면 네이티브 크기 캐시를 초기화한다.
 - **HTML / Live HTML / Markdown**: `bg-muted` 외곽 + 내부 `ring-1 ring-border/70 shadow-sm`로 콘텐츠 영역을 감싸 외부 UI 배경과 명확히 구분한다.
+
+### 소스/렌더 뷰 토글 (FR-614)
+
+텍스트 기반 포맷(`html`/`markdown`/`slides`)은 프리뷰 패널 헤더의 `Code`/`Eye` 토글 버튼으로 렌더 뷰와 소스 뷰를 전환할 수 있다. 버튼은 `preview-panel.tsx`의 헤더 영역(다운로드 메뉴 왼쪽)에 배치되며, `!showLive && isSourceToggleable(type)` 조건일 때만 노출된다. 라이브 HTML 스트리밍이 활성화된 동안에는 `live-html-preview.tsx` 내부의 기존 토글이 그대로 동작하고 헤더 토글은 숨겨진다(두 경로는 상호 배타적).
+
+소스 뷰 구현(`source-preview.tsx`)은 `highlight.js/lib/core`에 `xml`(HTML), `markdown` 언어만 등록한 뒤 `hljs.highlight()` 결과를 `<pre><code class="hljs language-...">`에 주입한다. 테마 CSS(`highlight.js/styles/github-dark.css`)는 `src/app/layout.tsx`에서 한 번만 import되며, 외곽 컨테이너는 FR-612 규칙(`bg-muted` + `ring-1 ring-border/70 shadow-sm`)을 따른다.
 
 ### 프리뷰 즉시 다운로드 (FR-613)
 
@@ -620,8 +651,8 @@ Claude가 스트리밍으로 전달한 코드·HTML·Markdown·SVG는 물론, Wr
 |------|------|
 | `src/lib/claude/artifact-extractor.ts` | 정규식 기반 텍스트 추출기. 펜스 코드 블록, 독립 `<!doctype html>` 문서, 독립 `<svg>` 요소를 추출하며 `classifyByPath`/`isBinaryKind`/`titleFromPath` 헬퍼로 확장자→kind 매핑과 바이너리 판별을 제공한다. 텍스트 기반 아티팩트는 `{messageId}:{index}` 안정 ID를 사용한다. |
 | `src/lib/claude/artifact-from-tool.ts` | `Write`/`Edit`/`MultiEdit` tool_use 블록을 아티팩트 레코드로 변환. Write는 `file_path` 확장자로 kind를 결정해 텍스트 본문을 인라인 스냅샷으로 저장하거나(`source: "inline"`) 바이너리는 `source: "file"`로 경로만 보관한다. Edit/MultiEdit은 기존 인라인 아티팩트에 `old_string → new_string` 패치를 적용한다. 모든 tool_use 아티팩트 ID는 `file:{absolutePath}` 형식이라 같은 파일에 대한 반복 호출이 한 항목으로 합쳐진다(FR-1008). |
-| `src/stores/use-artifact-store.ts` | zustand 스토어. `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn` 상태와 `extractFromMessage`/`ingestToolUse`/`findByFilePath`/`flushPendingOpen`/`open`/`close`/`remove`/`clear` 액션 제공. `persist` v2 미들웨어가 `claudegui-artifacts` 키에 최대 200개를 저장하며, `onRehydrateStorage` 훅이 복원된 `filePath`들을 서버 레지스트리에 재등록한다(FR-1009). |
-| `src/lib/claude/artifact-export.ts` | `copyArtifact`, `availableExports`, `exportArtifact`를 노출. 인라인 텍스트는 소스/HTML/Word(`.doc`)/PDF(`window.print()`)/PNG(SVG→`canvas.toBlob`) 내보내기를 제공하고, 파일 기반 바이너리 아티팩트는 `downloadBinaryFile`이 `/api/artifacts/raw` → `/api/files/raw` 폴백으로 원본 파일을 다운로드한다. |
+| `src/stores/use-artifact-store.ts` | zustand 스토어. `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn`, `modalSize` 상태와 `extractFromMessage`/`ingestToolUse`/`findByFilePath`/`flushPendingOpen`/`open`/`close`/`setAutoOpen`/`setModalSize`/`remove`/`clear` 액션 제공. `persist` v3 미들웨어가 `claudegui-artifacts` 키에 최대 200개의 아티팩트와 함께 `autoOpen`·`modalSize`를 영속화하며, `onRehydrateStorage` 훅이 복원된 `filePath`들을 서버 레지스트리에 재등록한다(FR-1009). |
+| `src/lib/claude/artifact-export.ts` | `copyArtifact`, `availableExports`, `exportArtifact`를 노출. 인라인 텍스트는 소스/HTML/Word(`.doc`)/PDF/PNG(SVG→`canvas.toBlob`) 내보내기를 제공한다. PDF는 `printViaIframe()`이 비가시 `<iframe>`에 `srcdoc`(또는 1.5MB 초과 시 blob URL)로 독립 HTML을 로드하고, 이미지 `decode()` 대기 + 2프레임 RAF 후 `contentWindow.print()`를 호출한 뒤 `afterprint`와 60초 안전 타이머로 정리한다. 생성 HTML은 `@page`/`@media print` 규칙을 포함한다. 파일 기반 바이너리 아티팩트는 `downloadBinaryFile`이 `/api/artifacts/raw` → `/api/files/raw` 폴백으로 원본 파일을 다운로드한다. |
 | `src/lib/claude/artifact-registry.ts` | 서버 측 인-프로세스 아티팩트 경로 레지스트리(최대 1024). `registerArtifactPath`, `isArtifactPathRegistered` 등을 제공한다. |
 | `src/lib/claude/artifact-url.ts` | 클라이언트 전용 URL/바이트 헬퍼. `/api/artifacts/raw`를 먼저 시도하고 실패 시 `/api/files/raw`로 폴백한다. |
 | `src/app/api/artifacts/register/route.ts` | `POST /api/artifacts/register`. `{ paths: [] }`를 받아 `fs.stat()` 검증 후 레지스트리에 등록. 레이트 리밋과 50MB 상한을 적용한다. |

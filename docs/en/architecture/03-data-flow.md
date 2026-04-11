@@ -82,7 +82,7 @@ User              Monaco Editor       useEditorStore       Server (REST)      Fi
 ### 3.2.2 External edit by Claude
 
 ```
-Claude CLI      File system       chokidar         Server (WS)     Browser         Monaco
+Claude CLI      File system       @parcel/watcher  Server (WS)     Browser         Monaco
    │                │                 │                │              │                │
    │ 1. file edit    │                 │                │              │                │
    │──────────────▶│                 │                 │              │                │
@@ -325,7 +325,7 @@ HtmlStreamExtractor.feedToolUse({name:'Write', input:{file_path, content}})
 ```
 
 - After the stream ends (`result`), `useLivePreviewStore.mode` may remain `live-html`, but `LiveHtmlPreview` switches its source from the buffer to the editor tab's `content` whenever a matching tab is open.
-- Edits made in Monaco flow into `useEditorStore.tabs[*].content` immediately, and `LiveHtmlPreview` re-renders (150 ms debounce) via Zustand subscription — no file save, disk write, or chokidar event is required.
+- Edits made in Monaco flow into `useEditorStore.tabs[*].content` immediately, and `LiveHtmlPreview` re-renders (150 ms debounce) via Zustand subscription — no file save, disk write, or `@parcel/watcher` event is required.
 - HTML generated via bare ` ```html ` code fences (no file path) leaves `generatedFilePath` as `null` and continues to use the buffer-based render path.
 
 ### Partial-edit preservation flow (FR-610)
@@ -399,8 +399,9 @@ User                Claude            Server          Browser (React)       ifra
   │                   │    (Edit tool)  │                 │                       │
   │                   │────────────────▶│                 │                       │
   │                   │                 │ 4. file write    │                       │
-  │                   │                 │ → chokidar      │                       │
-  │                   │                 │   detects        │                       │
+  │                   │                 │ → @parcel/      │                       │
+  │                   │                 │   watcher picks  │                       │
+  │                   │                 │   it up          │                       │
   │                   │                 │                 │                       │
   │                   │                 │ 5. /ws/files    │                       │
   │                   │                 │   change event  │                       │

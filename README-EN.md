@@ -29,11 +29,12 @@ A web-based IDE that wraps Anthropic's Claude CLI. A four-panel layout (file exp
   - Markdown (GFM, LaTeX, code highlighting)
   - Images (zoom/pan)
   - Presentations (reveal.js)
+  - **Source / rendered toggle** — HTML, Markdown, and Slides files flip instantly between the rendered view and a syntax-highlighted source view from a header button; selecting a non-previewable file leaves the panel fully blank (no help-text noise). (FR-601, FR-614)
 - **Conversational slide editing** — Ask Claude for changes in natural language and see them applied instantly via `Reveal.sync()` without an iframe reload; export to PPTX/PDF
-- **File explorer** — Virtualized tree (`react-arborist`), Git status indicators, drag-and-drop, context menu
-- **Real-time file sync** — chokidar detects filesystem changes and broadcasts them over WebSocket so the editor refreshes automatically
+- **File explorer** — Virtualized tree (`react-arborist`), Git status indicators, OS file drag-and-drop upload, **native-grade interactions**: multi-selection, inline rename, Cut/Copy/Paste/Duplicate, intra-tree drag move + Alt-copy, keyboard shortcuts (F2/Del/Cmd+C·X·V·D·A·N), and a hoisted single-instance context menu that no longer dismisses on mouse movement
+- **Real-time file sync** — `@parcel/watcher` detects filesystem changes through native FSEvents / inotify and broadcasts them over WebSocket so the editor refreshes automatically
 - **Command palette** — `Cmd+K` / `Ctrl+Shift+P` (cmdk-based), quick open (`Cmd+P`), panel toggles
-- **Generated Content gallery** — Automatically captures every HTML/SVG/Markdown/code block Claude writes *and* every file saved through Write/Edit tools, including images, PDFs, Word (`.docx`), Excel (`.xlsx`), and PowerPoint (`.pptx`). A session-scoped artifact registry (`/api/artifacts/*`) keeps captured paths reachable after you switch projects, so previews and "Original" downloads keep working. Dedicated viewers render each kind (sandboxed iframe, react-pdf, mammoth, SheetJS, and a JSZip-based PPTX slider), and inline text artifacts still export to Source / HTML / PDF / Word / PNG with one-click clipboard copy
+- **Generated Content gallery** — Automatically captures every HTML/SVG/Markdown/code block Claude writes *and* every file saved through Write/Edit tools, including images, PDFs, Word (`.docx`), Excel (`.xlsx`), and PowerPoint (`.pptx`). A session-scoped artifact registry (`/api/artifacts/*`) keeps captured paths reachable after you switch projects, so previews and "Original" downloads keep working. Dedicated viewers render each kind (sandboxed iframe, react-pdf, mammoth, SheetJS, and a JSZip-based PPTX slider), and inline text artifacts still export to Source / HTML / PDF / Word / PNG with one-click clipboard copy. Individual artifacts can be deleted straight from the list, the modal is user-resizable with its dimensions persisted to `localStorage`, and PDF export now prints through a hidden iframe with dedicated `@media print` CSS so the print dialog renders reliably
 
 ## Architecture at a Glance
 
@@ -45,7 +46,7 @@ Browser (Next.js + React)
 Custom Node.js server (server.js)
   ├── /ws/terminal  → node-pty
   ├── /ws/claude    → Claude Agent SDK
-  ├── /ws/files     → chokidar
+  ├── /ws/files     → @parcel/watcher
   └── /api/files/*  → fs (sandboxed)
 ```
 
@@ -68,7 +69,7 @@ Custom Node.js server (server.js)
 | Preview | react-pdf, react-markdown, reveal.js |
 | WebSocket | ws v8 (not socket.io) |
 | CLI integration | @anthropic-ai/claude-agent-sdk |
-| File watching | chokidar v5 (ESM) |
+| File watching | @parcel/watcher v2 (native FSEvents / inotify / RDCW) |
 | Command palette | cmdk |
 
 The full dependency list and rationale are in [docs/en/architecture/01-system-overview.md](./docs/en/architecture/01-system-overview.md).
@@ -77,7 +78,7 @@ The full dependency list and rationale are in [docs/en/architecture/01-system-ov
 
 | Tool | Minimum version | Notes |
 |------|-----------------|-------|
-| Node.js | 20.0+ | chokidar v5 ESM, node-pty |
+| Node.js | 20.0+ | `@parcel/watcher` / node-pty native prebuilds |
 | npm | 10.0+ | — |
 | Claude CLI | latest | `npm install -g @anthropic-ai/claude-code` |
 | Python 3 | 3.8+ | node-pty native build |
@@ -100,7 +101,29 @@ curl -fsSL https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main
 iwr -useb https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.ps1 | iex
 ```
 
-The script provisions Node.js 20+, the Claude CLI, the ClaudeGUI checkout, and the `claudegui` launcher. Every destructive step prompts for confirmation (`--yes` for non-interactive, `--dry-run` to only print the plan).
+The script provisions Node.js 20+, the Claude CLI, the ClaudeGUI checkout, the `claudegui` launcher **and a desktop icon**. Every destructive step prompts for confirmation (`--yes` for non-interactive, `--dry-run` to only print the plan, `--no-desktop-icon` / `-NoDesktopIcon` to skip the desktop shortcut).
+
+### Desktop icon (FR-1100)
+
+The one-line installer creates a per-OS desktop shortcut. Double-clicking it:
+
+1. Opens a fresh terminal/console window and boots `node server.js` (prod mode), streaming live logs.
+2. A background poller waits for `http://localhost:3000` to respond, then launches the **default web browser** at that URL.
+3. Closing the window or pressing `Ctrl+C` shuts the server down with it.
+
+| OS | Location | Form | Notes |
+|----|----------|------|-------|
+| macOS | `~/Desktop/ClaudeGUI.command` | runs in Terminal.app on double-click | First launch may require Right-click → Open due to Gatekeeper. Uses the default Terminal icon |
+| Linux | `~/Desktop/ClaudeGUI.desktop` | desktop-environment launcher (xdg) | `Icon=` field references the SVG mascot |
+| Windows | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` | runs in a PowerShell console window | Uses the `claudegui.ico` mascot |
+
+The same mascot is served as the **favicon** when you open `localhost:3000` directly in a browser (`src/app/icon.svg`).
+
+To regenerate icon assets after editing the SVG (macOS only):
+
+```bash
+node scripts/build-icons.mjs
+```
 
 ### Native app (`.dmg` / `.msi`)
 

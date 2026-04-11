@@ -26,9 +26,11 @@ export async function DELETE(req: NextRequest) {
 
   const p = req.nextUrl.searchParams.get('path');
   if (!p) return apiError('path required', 4400, 400);
+  const recursiveParam = req.nextUrl.searchParams.get('recursive');
+  const recursive = recursiveParam === '1' || recursiveParam === 'true';
   try {
     const abs = await resolveSafe(p);
-    await deleteEntry(abs);
+    await deleteEntry(abs, { recursive });
     return apiSuccess({ deleted: p });
   } catch (err) {
     return handleApiError(err);

@@ -94,10 +94,44 @@ Saves a file.
 
 #### `DELETE /api/files`
 
-Deletes a file or empty directory.
+Deletes a file or directory.
 
 **Query parameters**:
 - `path` (required)
+- `recursive` (optional, set to `1` or `true` to enable): allows deleting directories that contain children. When omitted, only empty directories are accepted. The file-explorer UI always sends `recursive=1`.
+
+#### `POST /api/files/copy`
+
+Copies a file or directory within the project-root sandbox. Used by the in-app clipboard paste (`Cmd/Ctrl+V`), Alt-drag, and Duplicate (`Cmd/Ctrl+D`) actions (FR-211).
+
+**Request body**:
+```json
+{ "srcPath": "src/foo.ts", "destPath": "src/bar/foo.ts" }
+```
+
+**Server validation**:
+- `resolveSafe(srcPath)` and `resolveSafe(destPath)` confine both paths to the project root. Denied segments (`.env`, `.git`, …) are blocked.
+- A request to copy a directory into itself or any descendant is rejected with `400 EINVAL`.
+- If the destination already exists, the copy is suffixed with ` (1)`, ` (2)`, … instead of overwriting (matching the FR-208 upload rule).
+- Implemented internally with `fs.cp(src, finalDest, { recursive: true, force: false, errorOnExist: true })`.
+
+**Response**:
+```json
+{
+  "success": true,
+  "data": {
+    "srcPath": "src/foo.ts",
+    "destPath": "src/bar/foo.ts",
+    "writtenPath": "src/bar/foo.ts"
+  }
+}
+```
+
+**Error codes**:
+- `400` — missing `srcPath`/`destPath`, identical paths, copy-into-self/descendant
+- `403` — sandbox escape / denied segment
+- `404` — source not found
+- `429` — rate limit
 
 #### `POST /api/files/mkdir`
 
@@ -499,7 +533,7 @@ Messages wrap the Agent SDK's `SDKMessage` union type as-is. The client branches
 
 ### 4.2.4 `/ws/files`
 
-Broadcasts chokidar file-change events.
+Broadcasts file-change events collected by `@parcel/watcher` (see ADR-024).
 
 #### Client → server
 
@@ -520,7 +554,7 @@ Broadcasts chokidar file-change events.
 }
 ```
 
-**Event types**: `add`, `change`, `unlink`, `addDir`, `unlinkDir`, `ready`
+**Event types**: `add`, `change`, `unlink`, `ready`, `error` — the native watcher's `create`/`update`/`delete` events are normalized to this shape, plus subscription ready / failure signals
 
 ---
 

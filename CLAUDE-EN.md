@@ -92,7 +92,7 @@ ClaudeGUI is a web-based IDE that wraps Anthropic's Claude CLI, providing a prof
 - **Preview**: react-pdf, react-markdown, reveal.js, iframe srcdoc
 - **WebSocket**: ws library (NOT socket.io)
 - **CLI Integration**: @anthropic-ai/claude-agent-sdk
-- **File Watching**: chokidar v5
+- **File Watching**: @parcel/watcher v2 (native FSEvents / inotify / RDCW)
 - **Command Palette**: cmdk
 
 ## Directory Structure
@@ -196,7 +196,7 @@ docs/
 - Endpoints:
   - `/ws/terminal` — PTY data (binary frames for output, JSON for resize)
   - `/ws/claude` — Agent SDK streaming (NDJSON events)
-  - `/ws/files` — chokidar file change notifications
+  - `/ws/files` — `@parcel/watcher` file change notifications
 - Reconnection: exponential backoff (1s initial, 30s cap)
 - Heartbeat: 29-second ping interval
 - Next.js HMR WebSocket (`/_next/webpack-hmr`) must be preserved in server.js upgrade handler
@@ -262,7 +262,7 @@ npm run build && NODE_ENV=production node server.js
 | `react-arborist` | Virtualized file tree |
 | `reveal.js` | HTML presentation engine |
 | `ws` | WebSocket server |
-| `chokidar` | File system watching |
+| `@parcel/watcher` | File system watching (native backend, ADR-024) |
 | `zustand` | State management |
 | `cmdk` | Command palette (Cmd+K) |
 | `react-pdf` | PDF rendering |
@@ -275,6 +275,6 @@ npm run build && NODE_ENV=production node server.js
 - `node-pty` needs native build tools (`python3`, `make`, `g++`)
 - Never combine `allow-scripts` + `allow-same-origin` in iframe sandbox
 - xterm.js has 50MB write buffer limit — implement watermark backpressure
-- chokidar v5 is ESM-only — requires Node.js 20+
+- Do not re-introduce `chokidar` — on macOS it falls back to `fs.watch` (one FD per directory) and hits the 256 per-process soft limit, crashing with `EMFILE` (ADR-024). Use `@parcel/watcher` which holds a single OS handle per root via FSEvents/inotify/RDCW.
 - Custom server disables Next.js Automatic Static Optimization
 - `server.js` must handle WebSocket upgrade for both HMR and app endpoints

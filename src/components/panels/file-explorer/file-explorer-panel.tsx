@@ -1,12 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, FilePlus, FolderPlus, ArrowUp, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { FileTree } from './file-tree';
+import { FileTree, type FileTreeHandle } from './file-tree';
 import { useFileTree } from './use-file-tree';
+import { useFileActions } from './use-file-actions';
+import { useFileKeyboard } from './use-file-keyboard';
+import { FileContextMenu } from './file-context-menu';
+import { DeleteConfirmDialog } from './delete-confirm-dialog';
 import { filesApi } from '@/lib/api-client';
 import { useProjectStore } from '@/stores/use-project-store';
+import { useFileContextMenuStore } from '@/stores/use-file-context-menu-store';
 import { cn } from '@/lib/utils';
 
 function collectFilesFromDataTransfer(dt: DataTransfer): File[] {
@@ -51,9 +56,15 @@ export function FileExplorerPanel() {
   const [dragDepth, setDragDepth] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [selection, setSelection] = useState<string[]>([]);
+  const treeRef = useRef<FileTreeHandle>(null);
+  const selectionRef = useRef<string[]>([]);
+  selectionRef.current = selection;
   const activeRoot = useProjectStore((s) => s.activeRoot);
   const openProject = useProjectStore((s) => s.openProject);
   const openParent = useProjectStore((s) => s.openParent);
+  const openContextMenuAtEmpty = useFileContextMenuStore((s) => s.openAtEmpty);
+  const actions = useFileActions(refreshRoot);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -68,7 +79,7 @@ export function FileExplorerPanel() {
       try {
         await filesApi.upload(destDir, files);
         // WS watcher will also fire, but a manual refresh keeps the tree
-        // immediately responsive without waiting for chokidar debouncing.
+        // immediately responsive without waiting on the watcher event batch.
         await refreshRoot();
       } catch (err) {
         setUploadError((err as Error).message);
@@ -138,25 +149,143 @@ export function FileExplorerPanel() {
     }
   };
 
-  const onNewFile = async () => {
-    const name = prompt('New file name');
-    if (!name) return;
-    try {
-      await filesApi.write(name, '');
-    } catch (err) {
-      alert(`Create failed: ${(err as Error).message}`);
-    }
-  };
+  const generateUniqueName = useCallback(
+    async (parentPath: string, baseName: string): Promise<string> => {
+      try {
+        const list = await filesApi.list(parentPath);
+        const existing = new Set(list.entries.map((e) => e.name));
+        if (!existing.has(baseName)) return baseName;
+        const dot = baseName.lastIndexOf('.');
+        const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+        const ext = dot > 0 ? baseName.slice(dot) : '';
+        for (let i = 2; i < 1000; i++) {
+          const candidate = `${stem} ${i}${ext}`;
+          if (!existing.has(candidate)) return candidate;
+        }
+      } catch {
+        /* ignore — fall through to base name */
+      }
+      return baseName;
+    },
+    [],
+  );
 
-  const onNewFolder = async () => {
-    const name = prompt('New folder name');
-    if (!name) return;
-    try {
-      await filesApi.mkdir(name);
-    } catch (err) {
-      alert(`Create failed: ${(err as Error).message}`);
-    }
-  };
+  const onNewFile = useCallback(
+    async (parentPath: string = '') => {
+      try {
+        const name = await generateUniqueName(parentPath, 'untitled.txt');
+        const targetPath = parentPath ? `${parentPath}/${name}` : name;
+        await filesApi.write(targetPath, '');
+        await refreshRoot();
+        // Immediately enter inline rename on the new node so the user can
+        // type a meaningful name. Wait one frame for the tree to mount it.
+        requestAnimationFrame(() => {
+          treeRef.current?.beginRename(targetPath);
+        });
+      } catch (err) {
+        alert(`Create failed: ${(err as Error).message}`);
+      }
+    },
+    [generateUniqueName, refreshRoot],
+  );
+
+  const onNewFolder = useCallback(
+    async (parentPath: string = '') => {
+      try {
+        const name = await generateUniqueName(parentPath, 'untitled folder');
+        const targetPath = parentPath ? `${parentPath}/${name}` : name;
+        await filesApi.mkdir(targetPath);
+        await refreshRoot();
+        requestAnimationFrame(() => {
+          treeRef.current?.beginRename(targetPath);
+        });
+      } catch (err) {
+        alert(`Create failed: ${(err as Error).message}`);
+      }
+    },
+    [generateUniqueName, refreshRoot],
+  );
+
+  const onTreeContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      // Only fire when the user right-clicked the empty area of the tree;
+      // node-level handlers stop propagation in file-tree.tsx.
+      e.preventDefault();
+      openContextMenuAtEmpty({ clientX: e.clientX, clientY: e.clientY });
+    },
+    [openContextMenuAtEmpty],
+  );
+
+  const onMove = useCallback(
+    async (args: {
+      dragIds: string[];
+      parentId: string | null;
+      index: number;
+      altKey: boolean;
+    }) => {
+      const { dragIds, parentId, altKey } = args;
+      const destDir = parentId ?? '';
+      const failed: Array<{ src: string; error: string }> = [];
+      for (const src of dragIds) {
+        const name = src.split('/').filter(Boolean).pop() ?? src;
+        const dest = destDir ? `${destDir}/${name}` : name;
+        if (src === dest) continue;
+        // Block moves into self/descendant.
+        if (
+          !altKey &&
+          (destDir === src || destDir.startsWith(src.endsWith('/') ? src : src + '/'))
+        ) {
+          failed.push({ src, error: 'Cannot move into itself' });
+          continue;
+        }
+        try {
+          if (altKey) {
+            await filesApi.copy(src, dest);
+          } else {
+            await filesApi.rename(src, dest);
+          }
+        } catch (err) {
+          failed.push({ src, error: (err as Error).message });
+        }
+      }
+      await refreshRoot();
+      if (failed.length > 0) {
+        alert(
+          `${failed.length} item(s) failed:\n` +
+            failed.map((f) => `${f.src}: ${f.error}`).join('\n'),
+        );
+      }
+    },
+    [refreshRoot],
+  );
+
+  const onRenameInline = useCallback(
+    async ({ id, name }: { id: string; name: string }) => {
+      const trimmed = name.trim();
+      if (!trimmed || trimmed === '.' || trimmed === '..' || /[\\/\0]/.test(trimmed)) {
+        alert('Invalid name');
+        return;
+      }
+      const parent = id.split('/').slice(0, -1).join('/');
+      const newPath = parent ? `${parent}/${trimmed}` : trimmed;
+      if (newPath === id) return;
+      try {
+        await filesApi.rename(id, newPath);
+        await refreshRoot();
+      } catch (err) {
+        alert(`Rename failed: ${(err as Error).message}`);
+      }
+    },
+    [refreshRoot],
+  );
+
+  useFileKeyboard({
+    treeRef,
+    actions,
+    selectionRef,
+    onNewFile,
+    onNewFolder,
+  });
 
   const isDragOver = dragDepth > 0;
   const statusText = uploading
@@ -168,6 +297,7 @@ export function FileExplorerPanel() {
   return (
     <div
       tabIndex={0}
+      data-file-explorer-panel="true"
       className={cn(
         'relative flex h-full flex-col border-r bg-background outline-none',
         isDragOver && 'ring-2 ring-inset ring-primary',
@@ -208,7 +338,7 @@ export function FileExplorerPanel() {
             variant="ghost"
             size="icon"
             className="h-6 w-6"
-            onClick={onNewFile}
+            onClick={() => void onNewFile('')}
             title="New file"
             aria-label="New file"
           >
@@ -218,7 +348,7 @@ export function FileExplorerPanel() {
             variant="ghost"
             size="icon"
             className="h-6 w-6"
-            onClick={onNewFolder}
+            onClick={() => void onNewFolder('')}
             title="New folder"
             aria-label="New folder"
           >
@@ -263,12 +393,27 @@ export function FileExplorerPanel() {
       ) : (
         <div className="border-b px-2 py-1 text-[11px] text-muted-foreground">(no project open)</div>
       )}
-      <FileTree
-        rootNodes={rootNodes}
-        loading={loading}
-        error={error}
-        loadSubtree={loadSubtree}
+      <div className="flex flex-1 flex-col" onContextMenu={onTreeContextMenu}>
+        <FileTree
+          ref={treeRef}
+          rootNodes={rootNodes}
+          loading={loading}
+          error={error}
+          loadSubtree={loadSubtree}
+          onActivateFile={actions.openFile}
+          onSelectionChange={setSelection}
+          onMove={onMove}
+          onRename={onRenameInline}
+        />
+      </div>
+      <FileContextMenu
+        actions={actions}
+        onRequestRename={(id) => treeRef.current?.beginRename(id)}
+        onRequestCreateFile={(parentPath) => void onNewFile(parentPath)}
+        onRequestCreateFolder={(parentPath) => void onNewFolder(parentPath)}
+        onRequestRefresh={() => void refreshRoot()}
       />
+      <DeleteConfirmDialog />
       {isDragOver && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-primary/10">
           <div className="flex items-center gap-2 rounded-md border border-primary bg-background px-3 py-2 text-xs text-primary shadow-md">

@@ -24,11 +24,12 @@
 - The CDN loader (`@monaco-editor/loader`) is used to keep it out of the initial bundle.
 - Offline environments require either a custom CDN mirror or local bundling.
 
-### TC-04: chokidar v5 is ESM-only
+### TC-04: `@parcel/watcher` native binary
 
-- chokidar v5 is ES Modules only.
-- Node.js 20 or later is mandatory; it cannot be imported via CommonJS `require()`.
-- `server.js` must either be ESM or use dynamic `import()`.
+- File watching is implemented with `@parcel/watcher` v2, a native addon backed by FSEvents (macOS), inotify (Linux), and ReadDirectoryChangesW (Windows).
+- A prebuilt binary is shipped for each supported OS × CPU combination (`darwin-x64`, `darwin-arm64`, `linux-x64-glibc`, `linux-x64-musl`, `linux-arm64-glibc`, `win32-x64`, …); npm picks the right one at install time.
+- On unsupported platforms the package falls back to building from source, which requires Python 3, `make`, and a C++ toolchain (`node-gyp`).
+- chokidar v5 is no longer used: from v4 onward it dropped the native fsevents path and falls back to `fs.watch` on macOS, which consumes one file descriptor per directory and crashes with `EMFILE` once the 256 FD per-process soft limit is reached (see ADR-024).
 
 ### TC-05: WebSocket / Next.js HMR conflict
 
@@ -117,7 +118,7 @@
 | `react-resizable-panels` | 2.0 | Panel layout | — |
 | `react-arborist` | 3.4 | File tree | — |
 | `ws` | 8.0 | WebSocket server | — |
-| `chokidar` | 5.0 | File watching | ESM-only |
+| `@parcel/watcher` | 2.5 | File watching (native FSEvents/inotify backend) | Source build required on unsupported platforms |
 | `reveal.js` | 5.0 | Presentations | — |
 | `zustand` | 5.0 | State management | — |
 | `react-pdf` | 10.0 | PDF rendering | pdf.js compatibility |

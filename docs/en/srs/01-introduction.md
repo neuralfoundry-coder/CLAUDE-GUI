@@ -49,7 +49,7 @@ Intended audience:
 | **reveal.js** | An HTML-based presentation framework (70k+ GitHub stars) |
 | **Monaco** | The core editor engine behind VS Code |
 | **xterm.js** | A browser-based terminal emulator library |
-| **chokidar** | A Node.js file system change-detection library |
+| **@parcel/watcher** | A cross-platform file system watcher backed by native FSEvents / inotify / ReadDirectoryChangesW (adopted by ClaudeGUI in place of chokidar v5 — see ADR-024) |
 | **node-pty** | Node.js pseudo-terminal bindings, maintained by Microsoft |
 | **Zustand** | A lightweight React state management library |
 

@@ -94,22 +94,45 @@ export async function GET(req: Request) {
 }
 ```
 
-### 5.2.3 Restrict the chokidar watch scope
+### 5.2.3 Restrict the `@parcel/watcher` watch scope
 
 ```typescript
-import chokidar from 'chokidar';
+import watcher from '@parcel/watcher';
 
-const watcher = chokidar.watch(PROJECT_ROOT, {
-  ignored: [
-    /(^|[/\\])\.(?!claude-project$)/,  // most dotfiles
-    /node_modules/,
-    /dist|build|\.next|out/,
-    /\.DS_Store/,
-  ],
-  followSymlinks: false,  // do not follow symlinks
-  cwd: PROJECT_ROOT,
-});
+const subscription = await watcher.subscribe(
+  PROJECT_ROOT,
+  (err, events) => {
+    if (err) return; // errors are broadcast separately
+    for (const ev of events) {
+      if (isIgnoredByWatcher(ev.path)) continue; // JS-side dotfile / .DS_Store filter
+      // ev.type: 'create' | 'update' | 'delete'
+      // ev.path: absolute path
+    }
+  },
+  {
+    // Native ignore — these subtrees are never scanned or subscribed to
+    ignore: [
+      '**/node_modules', '**/node_modules/**',
+      '**/.next',        '**/.next/**',
+      '**/.git',         '**/.git/**',
+      '**/.claude',      '**/.claude/**',
+      '**/dist',         '**/dist/**',
+      '**/build',        '**/build/**',
+      '**/out',          '**/out/**',
+      '**/coverage',     '**/coverage/**',
+      '**/test-results', '**/test-results/**',
+      '**/playwright-report', '**/playwright-report/**',
+      '**/.turbo',       '**/.turbo/**',
+      '**/.cache',       '**/.cache/**',
+      '**/.claude-worktrees', '**/.claude-worktrees/**',
+    ],
+  },
+);
 ```
+
+- `@parcel/watcher` uses the OS-native APIs (FSEvents / inotify / ReadDirectoryChangesW), so it never recursively descends symlinks — no explicit `followSymlinks: false` flag is needed.
+- The native ignore globs prevent the watcher from scanning `node_modules` and similarly heavy trees at all, which eliminates the FD-exhaustion `EMFILE` crash that chokidar v5 hits on macOS (see ADR-024).
+- `.claude-project` is intentionally **not** in the ignore list because it holds user-facing project settings; the general dotfile policy is enforced by the JS-side `isIgnoredByWatcher` filter.
 
 ---
 
