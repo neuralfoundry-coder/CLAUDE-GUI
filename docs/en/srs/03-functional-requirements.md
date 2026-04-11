@@ -145,6 +145,7 @@
   - **Control messages (both directions)**: `exit`, `error`, `resize`, `input`, `pause`, `resume` are sent as **text JSON frames**.
 - Output that happens to start with `{` (e.g. `cat package.json`) is never misinterpreted as a control frame.
 - The terminal pipeline shall stay fully separate from the Claude chat input. `/ws/terminal` and `/ws/claude` shall not share symbols or state.
+- The server shall spawn the shell in **login + interactive** mode. The shell resolution order, flag mapping, and environment variables are specified in `FR-410`.
 
 ### FR-402: ANSI escape code rendering
 
@@ -167,8 +168,13 @@
 
 ### FR-405: Buffer search
 
-- `Ctrl+F` shall search text within the terminal buffer.
-- The xterm.js `search` addon shall be used.
+- While the terminal panel has focus, pressing `Cmd/Ctrl+F` shall open a floating search overlay.
+- The overlay is anchored to the top-right of the terminal body and offers an input plus three toggles: match case (`Aa`), whole word (`W`), and regex (`.*`).
+- On query changes, after a 100 ms debounce, `searchAddon.findNext(query, opts)` performs an incremental search.
+- Key interaction: `Enter` (next), `Shift+Enter` (previous), `Esc` (close).
+- Closing the overlay calls `searchAddon.clearDecorations()` and restores focus to xterm.
+- xterm's `attachCustomKeyEventHandler` vetoes the `Cmd/Ctrl+F` keystroke so it is never written to the PTY.
+- Implementation: `src/components/panels/terminal/terminal-search-overlay.tsx` and `TerminalManager.findNext`/`findPrevious`/`clearSearchHighlight`.
 
 ### FR-406: Clickable URLs
 
@@ -201,12 +207,117 @@
   - The user explicitly clicking the tab's close button
   - The shell exiting on its own (`exit`, etc.) — the server emits `{type:"exit", code}`
   - Forced termination from a `BUFFER_OVERFLOW` overflow
+- **No auto-reconnect**: the terminal WebSocket does not automatically reconnect. An unexpected socket close transitions the session to `closed` and a `[connection to PTY lost]` marker line is written to the xterm buffer. Full policy in `FR-411`.
+- **Restart action**: when a session is `closed` or `exited`, the user may click an inline Restart button on the tab or the panel chip to spawn a new PTY under the same session ID. The existing xterm scrollback is preserved and a `─── restarted at HH:MM:SS ───` separator line is inserted.
 
 ### FR-409: Terminal focus management
 
 - Activating a terminal tab (by click or by creating a new tab) shall automatically focus xterm so the user can type without an extra click.
 - Re-expanding the panel shall restore focus to the active tab.
 - Tab labels shall show a visual indicator for the session status (`connecting` / `open` / `closed` / `exited`).
+
+### FR-410: Terminal shell initialization and environment
+
+- The server shall resolve, spawn, and environment-configure the shell via `server-handlers/terminal/shell-resolver.mjs` (`resolveShell()`, `shellFlags()`, `buildPtyEnv()`).
+- **Shell resolution order**:
+  1. `process.env.CLAUDEGUI_SHELL`, if set and the path exists.
+  2. POSIX: `$SHELL` → `/bin/zsh` → `/bin/bash` → `/bin/sh`.
+  3. Windows: `$COMSPEC` → `cmd.exe`. `CLAUDEGUI_SHELL=pwsh` etc. may be used to pick PowerShell.
+- **Flag mapping** (basename, lowercased, `.exe` suffix stripped before matching):
+  | Shell | Args |
+  |---|---|
+  | `zsh`, `bash`, `fish`, `sh`, `dash`, `ash`, `ksh` | `['-l', '-i']` (login + interactive) |
+  | `pwsh`, `powershell` | `['-NoLogo']` |
+  | `cmd` | `[]` |
+- **Environment variables**: `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=ClaudeGUI`, `TERM_PROGRAM_VERSION=<package.json version>`, `CLAUDEGUI_PTY=1`, `CLAUDEGUI_SHELL_PATH=<resolved shell>`. On POSIX, `LANG`/`LC_ALL` defaults to `en_US.UTF-8` only when neither is set (user value wins).
+- Next.js server-only variables (`NODE_OPTIONS`, `ELECTRON_RUN_AS_NODE`, `NEXT_TELEMETRY_DISABLED`, `__NEXT_PRIVATE_*`, etc.) are defensively stripped.
+- `CLAUDEGUI_EXTRA_PATH`, if set, is prepended to `PATH`.
+- Because the shell runs as login + interactive, user dotfiles (`.zshrc`, `.zprofile`, `.bashrc`, `.bash_profile`) are sourced automatically. Consequently `claude`, `nvm`, `pyenv`, `brew`, user prompts, completions, and aliases all work inside the GUI terminal.
+
+### FR-411: Terminal session durability policy
+
+- The terminal WebSocket (`/ws/terminal`) **does not** auto-reconnect. An unexpected close transitions the session to `closed` and writes a notice line to the xterm buffer.
+- This release does not introduce a server-side session registry or ID-based re-attach. For a local desktop app, the added complexity is not justified by the gain; the primary disconnect causes (server process death, HMR cycles) are not addressed by a session registry.
+- Users recover sessions via one of two paths:
+  - **Restart**: when the session is `closed`/`exited`, the inline Restart icon on the tab, the floating Restart chip in the panel body, or the `Cmd/Ctrl+Shift+R` shortcut spawns a new PTY under the same session ID. The xterm scrollback is preserved and a separator line is inserted.
+  - **Close & New**: close the tab and open a new one. Session ID and scrollback are discarded.
+- `ReconnectingWebSocket` continues to serve other channels (`/ws/claude`, `/ws/files`). The terminal channel uses `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`).
+- Related ADR: [ADR-019](./README.md).
+
+### FR-412: Clipboard and paste UX
+
+- Right-clicking the xterm host shall open a Radix `ContextMenu` with Copy, Paste, Select All, Clear, and Find… items.
+- Copy is enabled only when there is an active selection (`term.hasSelection()`); it calls `navigator.clipboard.writeText` with the current selection.
+- Paste reads from `navigator.clipboard.readText` and sends the result to the PTY via `TerminalManager.paste(id, text)`. If the paste exceeds **10 MB**, a confirmation prompt is shown.
+- If a single input event exceeds **4 KB**, `sendInput` splits it into 4 KB slices and dispatches one `{type:'input'}` frame per slice, yielding between slices via `queueMicrotask`. This bounds JSON wrapping overhead and prevents head-of-line stalls for large pastes.
+- xterm v5 automatically enables bracketed paste mode when a TTY application requests `\e[?2004h` (which zsh/bash/vim/emacs do by default). The client does not interfere with this behavior.
+
+### FR-413: Terminal tab metadata
+
+- **Rename**: double-clicking a tab label swaps it for an inline `<input>`. Enter commits, Escape cancels, blur commits. Sessions that have been renamed are marked `customName: true`.
+- **CWD label**: the tab label appends the current PTY cwd basename separated by `·` (e.g. `Terminal 1 · src`). Basenames longer than 20 characters are ellipsized. The full path is exposed via the tab's `title` attribute.
+- **OSC 7**: `TerminalManager` registers `term.parser.registerOscHandler(7, …)` to consume the shell's OSC 7 sequences (`\e]7;file://host/path\e\\`), updates the session's `cwd` field, and propagates the change through a listener. Malformed payloads (URL parse failure) are ignored.
+- **Shell helper auto-injection**: 250 ms after the socket opens, the manager sends a one-time input frame containing an OSC 7 emitter snippet. The snippet detects `ZSH_VERSION` or `BASH_VERSION` and installs itself into either zsh's `precmd_functions` or bash's `PROMPT_COMMAND`. The command is prefixed with a leading space to keep it out of shell history for users with `HISTCONTROL=ignorespace`. Injection happens exactly once per session lifetime and is not repeated on Restart.
+- **Project change banner**: when `useProjectStore.activeRoot` changes and at least one existing tab has a `cwd` different from the new root, a non-intrusive banner is rendered at the top of the terminal panel. The banner offers "Open new tab here" and "Dismiss" actions. It does not auto-inject `cd` (which could corrupt in-progress shell state). Dismissal applies only to the current active root; a subsequent change re-shows the banner.
+
+### FR-414: Server-side terminal session registry with reconnect replay (ADR-019/020)
+
+- The server manages every PTY lifecycle through the `TerminalSessionRegistry` singleton in `server-handlers/terminal/session-registry.mjs`. This preserves ADR-019 points (a), (d), (e) and supersedes (b) and (c). Rationale recorded in ADR-020.
+- **Registry responsibilities**:
+  - Register each PTY under a UUID and accumulate output into a 256 KB ring buffer.
+  - Track attach / detach counts. Cancel the GC timer on attach; restart it (30-minute grace period) on detach.
+  - `destroy(id)` kills the PTY and removes the record.
+  - When the PTY exits on its own, record the exit code and auto-destroy 1 second later.
+- **Protocol changes**:
+  - Clients may append `?sessionId=<uuid>` to the `/ws/terminal` upgrade URL. If the session exists in the registry, the server attaches; otherwise it spawns a new PTY and registers it.
+  - Immediately after attach, the server sends a `{type:"session", id, replay: boolean}` text frame. When `replay` is `true`, the next binary frame contains the ring-buffer snapshot taken at attach time.
+  - On receiving `replay: true`, the client calls `term.clear()` before the replay binary frame arrives.
+  - To destroy the server-side session immediately, the client sends a `{type:"close"}` control frame. Plain `ws.close` performs a detach only (the PTY stays alive).
+- **Lifetime rules**:
+  - `ws.close` (page reload, dropped network, HMR cycle) → detach, PTY preserved, 30-minute GC timer starts.
+  - Reconnecting with the same `sessionId` within 30 minutes re-attaches, cancels GC, and replays the ring buffer.
+  - After the 30-minute window, the PTY is killed and evicted. A subsequent client-side reconnect spawns a fresh PTY and the client surfaces `[previous session was evicted — started a fresh shell]`.
+  - Closing the tab via the UI close button sends `{type:"close"}` → server destroys immediately.
+  - When the PTY exits (`exit`), the server sends an `exit` frame and destroys the record 1 second later.
+- **Relation to Restart**: The `FR-408` Restart action no longer tears down the server-side session. It simply opens a new socket with the same `sessionId`, replays the ring buffer, and continues. Restart is now the single path for recovering from any disconnection.
+- **Durability bound**: the registry lives in process memory. All sessions are lost if the server process restarts. Persistence is future work.
+
+### FR-415: File explorer context menu (Open terminal here / Reveal in Finder)
+
+- Each node in the file explorer (`src/components/panels/file-explorer/file-tree.tsx`) shall open a Radix `ContextMenu` on right-click. Menu items:
+  - **Open terminal here** — creates a new terminal session with the selected directory (or the parent directory when a file is selected) as its initial cwd. If the terminal panel is collapsed, it auto-expands. Server protocol: the WebSocket URL carries `?cwd=<path>`, and the server rejects paths outside the active project root via `resolveSafe`-equivalent validation.
+  - **Reveal in Finder / File Explorer** — launches the platform-native file manager. macOS uses `open -R <abs>`, Windows uses `explorer <abs>` for directories and `explorer /select,<abs>` for files, Linux uses `xdg-open <dirname>`. Implementation: `POST /api/files/reveal`. Paths are validated via `resolveSafe`; missing paths return 404.
+  - Rename / Copy path / Delete remain unchanged.
+
+### FR-416: Background tab unread-output indicator
+
+- A small dot indicator shall appear on inactive terminal tab labels whenever their PTY emits output. Activating the tab (`setActiveSession`) clears the indicator immediately.
+- `TerminalManager` calls `emitActivity(inst)` on every `writePtyBytes` / `writePtyChunk`, and the store's `markUnread(id)` action sets `unread: true` only when the target session is not currently active.
+
+### FR-417: File path auto-linking in terminal output
+
+- File paths in PTY output (`src/foo.ts`, `./bar.py:42`, `/abs/baz.rs:10:4`, `C:\path\x.cs:7`) shall be rendered as clickable links via xterm's `registerLinkProvider`.
+- Clicks invoke `TerminalManager.fileLinkHandler`, which `AppShell` wires to `useEditorStore.openFile(path, { line, col })`. Relative paths are resolved against the session's `cwd` (tracked via OSC 7). A project-root prefix is stripped so the resulting path is acceptable to `resolveSafe`.
+- The Monaco editor watches `useEditorStore.pendingReveal` and, when set, calls `revealLineInCenter` + `setPosition` on the matching tab before clearing the reveal.
+
+### FR-418: Split terminal view (2-pane horizontal)
+
+- The user shall be able to split the terminal body into two horizontal panes via `Cmd/Ctrl+D`. Each pane owns its own active session.
+- Store fields: `splitEnabled: boolean`, `primarySessionId: string | null`, `secondarySessionId: string | null`, `activePaneIndex: 0 | 1`. `activeSessionId` stays synced with whichever pane `activePaneIndex` points to.
+- User interaction:
+  - Focus switching: `Cmd/Ctrl+[` / `Cmd/Ctrl+]` or clicking a pane (mouseDown).
+  - The active pane is visually indicated by a 1 px sky-500 ring.
+  - Keyboard shortcuts (new tab, close, find, clear, restart, tab nav) all target the **active pane**'s session.
+  - The tab bar remains singular; clicking a tab assigns that session to the currently active pane.
+  - Toggling split on picks an existing alternate session for pane 1 or spawns a new one. Toggling split off leaves pane 1's session alive in the background tab list (it is never auto-closed).
+- `closeSession` reshuffles pane assignments: the vacated pane falls back to another available session, and if both panes would point at the same session the secondary pane borrows a different one. If pane 1 ends up empty, split mode auto-collapses.
+
+### FR-419: Terminal theme sync and font settings
+
+- Terminal colors shall follow `useLayoutStore.theme` (`dark` / `light` / `high-contrast` / `retro-green`). `TerminalManager` declares `TERMINAL_THEMES` mapping each app theme to an xterm `ITheme`, and subscribes to the layout store on boot so `setTheme(theme)` propagates to every live instance.
+- Terminal font family and ligature toggle are persisted in `useSettingsStore` as `terminalFontFamily` / `terminalFontLigatures` (defaults: `JetBrains Mono, Menlo, monospace` / `false`). On change the manager re-applies `term.options.fontFamily` to every instance and triggers `fit()`.
+- A `terminalCopyOnSelect` setting (default `false`) mirrors the xterm selection to the system clipboard via `onSelectionChange` → `navigator.clipboard.writeText`.
+- All three settings are exposed as Command Palette commands: "Terminal: Set Font Family…", "Terminal: Enable/Disable Font Ligatures", "Terminal: Enable/Disable Copy-on-Select".
 
 ---
 
@@ -324,6 +435,17 @@
 - A separate `cliInstalled: false` indicator is shown when the CLI is not on `PATH`.
 - Clicking an unauthenticated badge opens a modal guiding the user to run `claude login`.
 - Implementation: `src/lib/claude/auth-status.ts`, `GET /api/auth/status`, `src/components/layout/auth-badge.tsx`.
+
+### FR-511: Prompt @ file/directory references
+
+- Typing `@` in the Claude prompt input shall open an autocomplete popover for referencing files and directories inside the active project (parity with the Claude Code CLI built-in feature).
+- Candidates are collected by recursively calling `GET /api/files` from the active project root (`useProjectStore.activeRoot`) up to a depth of 3, and include both files and directories. Hidden / protected files (`.env`, `.git`, `.claude`, …) follow the default filtering policy of `/api/files`.
+- An overlay (`MentionPopover`) above the textarea shows up to 20 candidates. Ranking: exact match > full-path prefix > basename prefix > substring > subsequence.
+- Trigger rule: a literal `@` is treated as a mention only when it is at the start of the text or preceded by whitespace (so email-like strings such as `user@domain` are not treated as mentions). Any whitespace between `@` and the cursor closes the mention.
+- Keyboard: `ArrowUp` / `ArrowDown` move the selection, `Enter` / `Tab` accept, `Escape` closes. While the popover is open, `Enter` accepts the selection instead of submitting the message.
+- On accept, the input's `@<query>` token is replaced with `@<project-relative-path>`; directories get a trailing `/`. A space is auto-inserted after the token if none exists, and the cursor moves after the insertion.
+- When the prompt is sent, `@` references are passed verbatim to the Claude Agent SDK via `sendQuery(prompt)`. Reference resolution / file-content expansion is delegated to the SDK / CLI's standard grammar; the GUI performs no client-side preprocessing.
+- Implementation: `src/lib/fs/list-project-files.ts`, `src/components/panels/claude/use-file-mentions.ts`, `src/components/panels/claude/mention-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
 ### FR-520: Native application run mode (v0.3)
 
@@ -478,6 +600,30 @@
 ### FR-805: Customize keyboard shortcuts
 
 - A settings screen shall allow users to rebind keyboard shortcuts.
+
+### FR-806: Terminal keyboard shortcuts
+
+The following shortcuts are active **only when the terminal panel has focus** (except `Cmd+Shift+Enter`, which is active when the editor has focus). Focus scope is determined by `src/hooks/use-keyboard-shortcut.ts::isFocusInsideTerminal()`, which walks up from `document.activeElement` looking for the `data-terminal-panel="true"` attribute.
+
+| Key (macOS / other) | Action |
+|---|---|
+| `Cmd+T` / `Ctrl+T` | New terminal tab |
+| `Cmd+W` / `Ctrl+W` | Close active tab |
+| `Cmd+1..9` / `Ctrl+1..9` | Activate tab N |
+| `Ctrl+Tab` | Next tab |
+| `Ctrl+Shift+Tab` | Previous tab |
+| `Cmd+F` / `Ctrl+F` | Toggle search overlay (`FR-405`) |
+| `Cmd+K` / `Ctrl+K` | Clear active terminal buffer (`term.clear()`) |
+| `Cmd+Shift+R` / `Ctrl+Shift+R` | Restart active session (`FR-408`/`FR-411`/`FR-414`) |
+| `Cmd+D` / `Ctrl+D` | Toggle terminal split view (`FR-418`) |
+| `Cmd+]` / `Ctrl+]` · `Cmd+[` / `Ctrl+[` | Cycle active pane when split mode is on |
+| `Cmd+Shift+Enter` / `Ctrl+Shift+Enter` | **Run editor selection (or current line) in the active terminal**; focus stays in the editor |
+
+**Implementation notes**:
+
+- On boot, `TerminalManager.attachCustomKeyEventHandler` vetoes the reserved combinations so xterm never writes them to the PTY.
+- The global shortcut handler (`src/hooks/use-global-shortcuts.ts`) listens for the same combinations and dispatches `useTerminalStore` actions.
+- `Cmd+K` arbitration: when focus is inside the terminal, the Command Palette (`FR-801`) `Cmd+K` handler becomes a no-op and the buffer-clear action takes over. Outside the terminal, the palette still opens as before.
 
 ---
 

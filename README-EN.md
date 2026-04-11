@@ -158,12 +158,47 @@ NODE_ENV=development
 
 | Shortcut | Action |
 |----------|--------|
-| `Cmd/Ctrl + K` | Command palette |
+| `Cmd/Ctrl + K` | Command palette (clears the terminal buffer when the terminal is focused) |
 | `Cmd/Ctrl + P` | Quick open file |
 | `Cmd/Ctrl + B` | Toggle sidebar |
 | `Cmd/Ctrl + J` | Toggle terminal |
 | `Cmd/Ctrl + S` | Save file |
-| `Ctrl + F` (in terminal) | Search terminal buffer |
+
+### Terminal shortcuts (when the terminal has focus)
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd/Ctrl + T` | New terminal tab |
+| `Cmd/Ctrl + W` | Close active tab |
+| `Cmd/Ctrl + 1..9` | Activate tab N |
+| `Ctrl + Tab` / `Ctrl + Shift + Tab` | Next / previous tab |
+| `Cmd/Ctrl + F` | Toggle search overlay |
+| `Cmd/Ctrl + K` | Clear active terminal buffer |
+| `Cmd/Ctrl + Shift + R` | Restart active session |
+| `Cmd/Ctrl + D` | Toggle 2-pane horizontal split |
+| `Cmd/Ctrl + [` · `]` | Cycle active pane when split is on |
+| `Cmd/Ctrl + Shift + Enter` (when editor focused) | Run editor selection / current line in the active terminal |
+
+## Terminal
+
+The built-in terminal spawns a real **login + interactive** shell (`['-l','-i']`), so the same dotfiles you rely on in Terminal.app — `.zshrc`, `.zprofile`, `.bashrc` — are sourced automatically. That means `claude`, `nvm`, `pyenv`, `brew`, your custom prompt, and your aliases all work immediately in a new tab.
+
+- **Shell override**: set `CLAUDEGUI_SHELL=/opt/homebrew/bin/fish` (or any absolute shell path) to override the default shell.
+- **Extra PATH**: `CLAUDEGUI_EXTRA_PATH=/custom/bin` is prepended to `PATH` before the shell launches.
+- **Tab rename**: double-click the tab label to edit inline. Enter commits, Escape cancels.
+- **CWD label**: the tab label shows the current directory basename after a `·` separator, updated live via OSC 7 whenever you `cd`.
+- **Session durability**: PTYs live in a server-side registry in process memory. If the WebSocket drops (browser reload, HMR, network blip), **reconnecting within 30 minutes with the same session ID restores the shell state and the last 256 KB of scrollback**. Clicking the tab close button or typing `exit` destroys the session immediately.
+- **Restart**: if the shell exits or the connection drops, a Restart button appears on the tab. Clicking it reconnects through the session registry, restoring the original PTY (within the grace window) or spawning a fresh shell (after GC).
+- **Split terminal**: `Cmd/Ctrl+D` splits the body into two horizontal panes. Each pane owns its own active session; all keyboard shortcuts target the active pane. Cycle with `Cmd/Ctrl+[` / `]` or click.
+- **Search**: `Cmd/Ctrl+F` opens a floating overlay with case-sensitive, whole-word, and regex toggles.
+- **File path links**: path-shaped output like `src/foo.ts:42:10` becomes a clickable link that opens the file in the editor at the given line/column.
+- **Editor → terminal**: select text in the editor and press `Cmd/Ctrl+Shift+Enter` to run the selection (or the current line) in the active terminal. Focus stays in the editor.
+- **Background tab indicator**: inactive tabs show a blue dot next to the label when they receive new output.
+- **Context menu**: right-click for Copy / Paste / Select All / Clear / Find…. Pastes larger than 10 MB prompt for confirmation and are sent in 4 KB chunks.
+- **Theme and font**: the terminal palette follows the app theme (`dark` / `light` / `high-contrast` / `retro-green`). Font family, ligatures, and copy-on-select live under the Command Palette (`Terminal: …`).
+- **File explorer integration**: right-click any file or folder to access **Open terminal here** (spawns a new tab in that directory) and **Reveal in Finder / File Explorer** (opens the native file manager with the entry selected).
+
+**PATH troubleshooting**: if `which claude` or `which node` fails in a new tab, first verify that your dotfiles export the expected directories to `PATH`. `echo $SHELL` shows which shell was actually spawned.
 
 ## Project Structure
 

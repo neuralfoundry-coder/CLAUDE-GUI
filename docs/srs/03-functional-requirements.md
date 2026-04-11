@@ -143,6 +143,7 @@
   - **제어 메시지 (양방향)**: `exit`, `error`, `resize`, `input`, `pause`, `resume`은 **텍스트 JSON 프레임**으로 전송된다.
 - 출력 내용이 우연히 `{`로 시작해도(`cat package.json` 등) 제어 프레임으로 오인되지 않는다.
 - 터미널 파이프라인은 Claude 채팅 입력과 완전히 분리되어야 한다. `/ws/terminal`과 `/ws/claude`는 심볼 수준에서도 교차 의존이 없어야 한다.
+- 서버는 쉘을 **로그인 + 인터랙티브** 모드로 spawn해야 한다. 구체적인 쉘 해결 순서, 플래그 매핑, 환경 변수는 `FR-410`에서 정의한다.
 
 ### FR-402: ANSI 이스케이프 코드 렌더링
 
@@ -165,8 +166,13 @@
 
 ### FR-405: 버퍼 검색
 
-- `Ctrl+F`로 터미널 버퍼 내 텍스트 검색을 지원해야 한다.
-- xterm.js `search` 애드온을 활용한다.
+- 터미널 패널이 포커스인 상태에서 `Cmd/Ctrl+F`를 누르면 플로팅 검색 오버레이가 열려야 한다.
+- 오버레이는 터미널 본문 우상단에 표시되며, 입력 필드와 다음 토글을 갖는다: 대소문자 구분(`Aa`), 단어 단위(`W`), 정규식(`.*`).
+- 입력 변경 시 100 ms 디바운스 후 `searchAddon.findNext(query, opts)`로 인크리멘털 검색을 수행한다.
+- 키 인터랙션: `Enter`(다음), `Shift+Enter`(이전), `Esc`(닫기).
+- 오버레이를 닫으면 `searchAddon.clearDecorations()`을 호출하고 xterm에 포커스를 복원한다.
+- xterm의 `attachCustomKeyEventHandler`가 `Cmd/Ctrl+F` 입력을 veto해 PTY로 전달되지 않게 한다.
+- 구현: `src/components/panels/terminal/terminal-search-overlay.tsx`, `src/lib/terminal/terminal-manager.ts`의 `findNext`/`findPrevious`/`clearSearchHighlight`.
 
 ### FR-406: 클릭 가능한 URL
 
@@ -199,12 +205,117 @@
   - 사용자가 명시적으로 탭 close 버튼을 누름
   - 쉘이 스스로 종료(`exit` 등) — 서버가 `{type:"exit", code}` 제어 프레임을 전송
   - `BUFFER_OVERFLOW` 초과로 인한 강제 종료
+- **자동 재연결 없음**: 터미널 WebSocket은 자동 재연결하지 않는다. 소켓이 예기치 않게 닫히면 세션 상태가 `closed`로 전이되고, xterm 버퍼에 `[connection to PTY lost]` 마커 라인이 기록된다. 상세 정책은 `FR-411`.
+- **Restart 액션**: 세션이 `closed` 또는 `exited` 상태일 때 사용자는 탭 또는 패널의 Restart 버튼을 눌러 동일한 세션 ID를 유지하면서 새 PTY를 연결할 수 있다. 기존 xterm 스크롤백은 보존되며 `─── restarted at HH:MM:SS ───` separator 라인이 삽입된다.
 
 ### FR-409: 터미널 포커스 관리
 
 - 터미널 탭을 활성화하면(탭 클릭 또는 신규 생성) xterm에 자동으로 포커스가 전달되어 사용자가 추가 클릭 없이 타이핑할 수 있어야 한다.
 - 패널을 접었다가 다시 펴면 활성 탭에 포커스가 복원되어야 한다.
 - 탭 라벨에는 세션 상태(`connecting` / `open` / `closed` / `exited`)를 시각적으로 구분하는 인디케이터를 표시한다.
+
+### FR-410: 터미널 쉘 초기화 및 환경 변수
+
+- 서버는 `server-handlers/terminal/shell-resolver.mjs`의 `resolveShell()`·`shellFlags()`·`buildPtyEnv()`로 쉘을 결정해 spawn해야 한다.
+- **쉘 해결 순서**:
+  1. `process.env.CLAUDEGUI_SHELL`이 설정되고 경로가 실제 존재하면 사용한다.
+  2. POSIX: `$SHELL` → `/bin/zsh` → `/bin/bash` → `/bin/sh` 순으로 탐색한다.
+  3. Windows: `$COMSPEC` → `cmd.exe`. `CLAUDEGUI_SHELL=pwsh` 등으로 PowerShell을 지정할 수 있다.
+- **플래그 매핑** (쉘 basename 소문자, `.exe` 접미사 제거 후 매칭):
+  | Shell | Args |
+  |---|---|
+  | `zsh`, `bash`, `fish`, `sh`, `dash`, `ash`, `ksh` | `['-l', '-i']` (로그인 + 인터랙티브) |
+  | `pwsh`, `powershell` | `['-NoLogo']` |
+  | `cmd` | `[]` |
+- **환경 변수**: `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=ClaudeGUI`, `TERM_PROGRAM_VERSION=<package.json version>`, `CLAUDEGUI_PTY=1`, `CLAUDEGUI_SHELL_PATH=<resolved shell>`. POSIX에서 `LANG`/`LC_ALL`이 비어 있으면 `en_US.UTF-8`을 적용한다(사용자 값 우선).
+- `NODE_OPTIONS`, `ELECTRON_RUN_AS_NODE`, `NEXT_TELEMETRY_DISABLED`, `__NEXT_PRIVATE_*` 등 Next.js 서버 전용 변수는 방어적으로 strip한다.
+- `CLAUDEGUI_EXTRA_PATH`가 설정되어 있으면 `PATH` 앞에 prepend한다.
+- 쉘은 로그인 + 인터랙티브 모드로 시작하므로 `.zshrc`·`.zprofile`·`.bashrc`·`.bash_profile` 등 사용자 dotfile이 자동 소스된다. 그 결과 `claude`, `nvm`, `pyenv`, `brew`, 사용자 프롬프트, 자동완성, alias가 GUI 터미널에서도 정상 동작한다.
+
+### FR-411: 터미널 세션 지속성 정책
+
+- 터미널 WebSocket(`/ws/terminal`)은 **자동 재연결하지 않는다**. 연결이 예기치 않게 끊어지면 세션은 `closed` 상태가 되고, xterm 버퍼에 안내 라인이 기록된다.
+- 서버 측 세션 레지스트리나 ID 기반 재부착은 이 버전에서 도입하지 않는다. 로컬 데스크톱 앱 특성상 복잡도 대비 이득이 작고, 주요 단절 원인(서버 프로세스 종료, HMR 사이클)은 세션 레지스트리로 해결되지 않는다.
+- 사용자는 다음 두 경로로 세션을 복구할 수 있다:
+  - **Restart**: `closed`/`exited` 상태에서 탭 인라인 Restart 버튼 또는 패널 내 플로팅 Restart 버튼, 혹은 단축키 `Cmd/Ctrl+Shift+R`을 통해 동일한 세션 ID로 새 PTY를 spawn한다. xterm 스크롤백은 보존되며 separator 라인이 삽입된다.
+  - **Close & New**: 탭을 닫고 새 탭을 연다. 세션 ID와 스크롤백은 폐기된다.
+- `ReconnectingWebSocket`은 `/ws/claude`·`/ws/files` 등 다른 채널용으로 유지되며, 터미널 전용으로는 `src/lib/terminal/terminal-socket.ts`의 `TerminalSocket`을 사용한다.
+- 관련 ADR: [ADR-019](./README.md).
+
+### FR-412: 클립보드 및 붙여넣기 UX
+
+- xterm 호스트를 우클릭하면 Radix `ContextMenu` 기반 컨텍스트 메뉴가 열려야 하며, 메뉴 항목은 Copy, Paste, Select All, Clear, Find…으로 구성된다.
+- Copy는 현재 선택(`term.hasSelection()`)이 있을 때만 활성화되며 `navigator.clipboard.writeText`로 복사한다.
+- Paste는 `navigator.clipboard.readText`로 읽은 뒤 `TerminalManager.paste(id, text)`를 통해 PTY로 전송한다. 붙여넣기 크기가 **10 MB**를 초과하면 사용자 확인 다이얼로그를 띄운다.
+- 사용자 입력이 **4 KB**를 초과하면 `sendInput` 헬퍼가 4 KB 슬라이스로 나눠 여러 개의 `{type:'input'}` 프레임을 `queueMicrotask` 사이에 분산 전송한다. 이는 대용량 붙여넣기의 JSON 오버헤드와 단일 프레임 지연을 완화한다.
+- xterm v5는 TTY 애플리케이션이 `\e[?2004h`를 요청하면 자동으로 bracketed paste mode를 활성화한다(zsh/bash/vim/emacs 모두 기본). 클라이언트는 이 동작을 방해하지 않는다.
+
+### FR-413: 터미널 탭 메타데이터
+
+- **Rename**: 탭 라벨을 더블클릭하면 인라인 `<input>`으로 전환되어 이름을 편집할 수 있다. Enter 저장, Esc 취소, blur 저장. 한 번 이상 rename된 세션은 `customName: true`로 기록된다.
+- **CWD 라벨**: 탭 라벨에 현재 PTY의 cwd basename을 `·` 구분자와 함께 표시한다(`Terminal 1 · src`). basename이 20자 초과이면 생략부호(`…`)로 자른다. 전체 경로는 탭 `title` 속성에 노출된다.
+- **OSC 7**: `TerminalManager`는 `term.parser.registerOscHandler(7, …)`로 쉘의 OSC 7 (`\e]7;file://host/path\e\\`) 이벤트를 수신해 세션의 `cwd` 필드를 갱신하고 store에 전파한다. `URL` 파싱이 실패하면 무시한다.
+- **쉘 헬퍼 자동 주입**: 소켓이 open된 후 250 ms 뒤에 매니저가 한 번 입력 프레임으로 OSC 7 emitter 스니펫을 전송한다. 이 스니펫은 `ZSH_VERSION`/`BASH_VERSION`을 감지해 zsh의 `precmd_functions` 또는 bash의 `PROMPT_COMMAND`에 설치된다. 선행 공백이 붙어 있어 `HISTCONTROL=ignorespace` 사용자의 히스토리에는 남지 않는다. 주입은 세션 생명주기 동안 1회만 수행되며, Restart 시에도 재주입되지 않는다.
+- **프로젝트 전환 배너**: `useProjectStore.activeRoot`가 변경되었고 기존 탭 중 하나의 `cwd`가 새 활성 루트와 불일치하면, 터미널 패널 상단에 비침습 배너가 표시된다. 배너는 "Open new tab here" / "Dismiss" 액션을 제공한다. 자동 `cd` 주입은 수행하지 않는다(실행 중 프로세스 훼손 방지). Dismiss는 현재 활성 루트에 대해서만 유효하며, 활성 루트가 다시 변경되면 재등장한다.
+
+### FR-414: 서버측 터미널 세션 레지스트리 및 재연결 재생 (ADR-019/020)
+
+- 서버는 `server-handlers/terminal/session-registry.mjs`의 `TerminalSessionRegistry` 싱글턴에서 모든 PTY의 생명주기를 관리한다. 이 결정은 ADR-019(a)·(d)·(e)를 유지하고 (b)·(c)를 supersede한다. 근거는 ADR-020 참조.
+- **레지스트리 책임**:
+  - 각 PTY를 UUID로 등록하고, 256 KB 링 버퍼에 출력을 누적한다.
+  - 클라이언트 attach / detach를 카운트한다. attach 시 GC 타이머를 취소, detach 시 GC 타이머를 재시작(30분 grace period).
+  - `destroy(id)` 호출 시 PTY kill + 레지스트리에서 제거.
+  - PTY가 자체 종료(`exit`)하면 exit 코드를 기록하고 1초 후 자동 destroy한다.
+- **프로토콜 변경**:
+  - 클라이언트는 WS 업그레이드 URL에 `?sessionId=<uuid>`를 포함할 수 있다. 서버는 해당 세션이 레지스트리에 존재하면 attach, 아니면 새로 spawn 후 등록한다.
+  - 서버는 attach 직후 `{type:"session", id, replay: boolean}` 텍스트 프레임을 송신한다. `replay: true`이면 바로 다음에 링 버퍼 스냅샷이 단일 바이너리 프레임으로 이어진다.
+  - 클라이언트는 `replay: true` 수신 시 `term.clear()`로 xterm 버퍼를 비우고 이어지는 바이너리 프레임을 받는다.
+  - 클라이언트가 서버측 세션을 즉시 파괴하려면 `{type:"close"}` 제어 프레임을 송신한다. WS close 이벤트만으로는 detach가 수행되며 PTY는 살아있다.
+- **수명 규칙**:
+  - `ws.close`(예: 페이지 새로고침, 네트워크 끊김, HMR 사이클) → detach, PTY 유지, 30분 GC 타이머 시작.
+  - 30분 내 같은 sessionId로 재연결 시 attach, GC 취소, 링 버퍼 재생.
+  - 30분 경과 시 PTY kill + 레지스트리 제거. 사용자가 그 이후에 재연결하면 서버는 새 PTY를 spawn하고 `[previous session was evicted — started a fresh shell]` 배너를 클라이언트가 표시한다.
+  - 사용자가 탭 close 버튼을 누르면 클라이언트가 `{type:"close"}`를 송신 → 서버가 즉시 destroy.
+  - PTY가 자체 종료(`exit`)하면 서버가 exit 프레임 송신 후 1초 뒤 destroy.
+- **Restart와의 관계**: `FR-408` Restart 액션은 이제 기존 세션을 즉시 destroy 하지 않는다. 대신 새 소켓을 동일 `sessionId`로 재연결해 링 버퍼를 재생한다. 사용자는 Restart를 "끊긴 터미널 연결 회복"의 단일 경로로 사용할 수 있다.
+- **수명 보장**: 세션 레지스트리는 프로세스 메모리에만 존재한다. 서버 프로세스 재시작 시 모든 세션이 손실된다. 영속화는 미래 작업이다.
+
+### FR-415: 파일 탐색기 컨텍스트 메뉴 (Open terminal here / Reveal in Finder)
+
+- 파일 탐색기(`src/components/panels/file-explorer/file-tree.tsx`)의 각 노드는 우클릭 시 Radix `ContextMenu`를 열어야 한다. 메뉴 항목:
+  - **Open terminal here** — 해당 디렉토리(파일이면 상위 디렉토리)를 초기 cwd로 하는 새 터미널 세션을 생성한다. 터미널 패널이 접혀 있으면 자동으로 펼친다. 서버 프로토콜은 WS URL의 `?cwd=<path>` 쿼리 파라미터를 통해 전달되며, 서버는 `resolveSafe` 동등 로직으로 프로젝트 루트 밖의 경로를 거부한다.
+  - **Reveal in Finder / File Explorer** — 플랫폼별 네이티브 파일 관리자를 실행한다. macOS는 `open -R <abs>`, Windows는 디렉토리 `explorer <abs>` 또는 파일 `explorer /select,<abs>`, Linux는 `xdg-open <dirname>`. 구현: `POST /api/files/reveal` 라우트. 경로는 `resolveSafe`로 검증되며 존재하지 않으면 404.
+  - Rename / Copy path / Delete는 기존 동작을 유지한다.
+
+### FR-416: 백그라운드 탭 미확인 출력 인디케이터
+
+- 비활성 터미널 탭이 PTY 출력을 받으면 탭 라벨에 작은 원형 인디케이터가 표시되어야 한다. 사용자가 해당 탭을 활성화(setActiveSession)하면 즉시 제거된다.
+- `TerminalManager`는 `writePtyBytes`/`writePtyChunk` 시점마다 `emitActivity(inst)`를 호출하고, 스토어의 `markUnread(id)` 액션이 활성 세션이 아닐 때만 `unread: true`로 플래그를 설정한다.
+
+### FR-417: 터미널 출력 내 파일 경로 자동 링크
+
+- PTY 출력에 포함된 파일 경로 (`src/foo.ts`, `./bar.py:42`, `/abs/baz.rs:10:4`, `C:\path\x.cs:7`) 는 xterm `registerLinkProvider`를 통해 클릭 가능한 링크로 표시되어야 한다.
+- 클릭 시 `TerminalManager.fileLinkHandler`가 호출되며, `AppShell`은 이를 `useEditorStore.openFile(path, { line, col })`에 연결한다. 상대 경로는 세션의 `cwd`(OSC 7로 추적) 기준으로 resolve 된다. 프로젝트 루트 접두사는 스트립되어 `resolveSafe`가 받아들일 수 있는 경로로 변환된다.
+- Monaco 편집기는 `pendingReveal` 필드(`useEditorStore`)를 감시하며, 파일이 열리면 `revealLineInCenter` + `setPosition`으로 해당 라인을 중앙에 표시하고 포커스한다.
+
+### FR-418: 터미널 스플릿 뷰 (2-pane 수평 분할)
+
+- 사용자는 `Cmd/Ctrl+D`로 터미널 본문을 2개의 수평 분할 pane으로 나눌 수 있어야 한다. 각 pane은 독립적인 활성 세션을 가진다.
+- 스토어 필드: `splitEnabled: boolean`, `primarySessionId: string | null`, `secondarySessionId: string | null`, `activePaneIndex: 0 | 1`. `activeSessionId`는 `activePaneIndex`의 pane이 참조하는 세션으로 동기화된다.
+- 사용자 인터랙션:
+  - 활성 pane 전환: `Cmd/Ctrl+[` / `Cmd/Ctrl+]` 또는 pane 클릭(mouseDown).
+  - 활성 pane은 1px sky-500 ring으로 시각 구분한다.
+  - 키보드 단축키(새 탭, 닫기, 검색, clear, restart, tab 이동)는 모두 **활성 pane**의 세션을 대상으로 동작한다.
+  - 탭 바는 단일이며, 탭 클릭은 현재 활성 pane에 해당 세션을 할당한다.
+  - Split 토글 시: 활성화하면 pane 1에 할당할 기존 세션을 찾거나 새 세션을 생성한다. 비활성화하면 pane 1 세션은 백그라운드 탭으로 유지되며 자동으로 닫히지 않는다.
+- `closeSession`은 pane 할당을 자동으로 재정렬한다: 닫힌 세션이 있던 pane에 다른 세션을 fallback으로 배정하고, 두 pane이 같은 세션을 가리키게 되면 대체 세션을 배정한다. pane 1이 비게 되면 split 모드가 자동 비활성화된다.
+
+### FR-419: 터미널 테마 동기화 및 폰트 설정
+
+- 터미널 색상은 `useLayoutStore.theme` (`dark` / `light` / `high-contrast` / `retro-green`)을 따라야 한다. `TerminalManager`는 `TERMINAL_THEMES` 상수로 각 앱 테마에 대한 xterm `ITheme`을 정의하며, boot 시 `useLayoutStore` 구독을 통해 `setTheme(theme)`을 모든 인스턴스에 전파한다.
+- 터미널 폰트 패밀리와 ligature 토글은 `useSettingsStore`의 영속 필드 `terminalFontFamily` / `terminalFontLigatures`로 관리된다. 기본값은 `JetBrains Mono, Menlo, monospace` / `false`. 변경 시 매니저가 모든 인스턴스에 `term.options.fontFamily`를 재적용하고 `fit()`을 트리거한다.
+- `terminalCopyOnSelect` 설정(기본 `false`)이 켜지면 xterm의 `onSelectionChange` 이벤트에서 `navigator.clipboard.writeText`로 현재 선택을 자동 복사한다.
+- 3가지 설정 모두 Command Palette 커맨드로 접근 가능하다 ("Terminal: Set Font Family…", "Terminal: Enable/Disable Font Ligatures", "Terminal: Enable/Disable Copy-on-Select").
 
 ---
 
@@ -313,6 +424,17 @@
 - CLI 미설치 상태도 구분하여 표시 (`cliInstalled: false`) 한다.
 - 미인증 시 배지 클릭으로 `claude login` 안내 모달을 표시한다.
 - 구현: `src/lib/claude/auth-status.ts`, `GET /api/auth/status`, `src/components/layout/auth-badge.tsx`.
+
+### FR-511: 프롬프트 @ 파일/디렉토리 참조
+
+- Claude 프롬프트 입력창에서 사용자가 `@` 문자를 입력하면 프로젝트 내 파일과 디렉토리를 자동완성으로 참조할 수 있어야 한다 (Claude Code CLI 표준 기능 재현).
+- 후보 목록은 현재 활성 프로젝트 루트(`useProjectStore.activeRoot`)를 기준으로 `GET /api/files`를 재귀 호출해 깊이 3까지 크롤링하여 수집하며, 파일과 디렉토리를 모두 포함한다. 숨김/보호 파일(`.env`, `.git`, `.claude` 등)은 `/api/files`의 기본 필터 정책을 따른다.
+- 입력창 상단 오버레이(`MentionPopover`)에 최대 20개의 후보가 표시된다. 후보 순위는 `path`에 대한 완전 일치 > 전체 prefix 일치 > 파일명 prefix 일치 > 부분 문자열 일치 > 서브시퀀스 일치 순으로 정해진다.
+- 멘션 트리거 규칙: `@` 앞 문자가 공백이거나 `@`가 문자열 시작일 때에만 멘션으로 간주한다 (이메일 형태 `user@domain` 등 제외). 공백이 개입되면 멘션이 종료된다.
+- 키보드 조작: `ArrowUp`/`ArrowDown`으로 후보 이동, `Enter`/`Tab`으로 선택, `Escape`로 닫기. 드롭다운이 열려 있는 동안 `Enter`는 메시지 제출 대신 후보 선택으로 동작한다.
+- 선택된 항목은 입력창의 `@<query>` 토큰을 `@<프로젝트 상대 경로>` 형태로 치환하며, 디렉토리의 경우 뒤에 `/`를 덧붙인다. 토큰 뒤에 공백이 없으면 공백 한 칸을 자동 삽입하고 커서를 삽입 지점 뒤로 이동한다.
+- 프롬프트 전송 시 `@` 참조는 원문 그대로 Claude Agent SDK(`sendQuery(prompt)`)에 전달된다. 참조 해석·파일 내용 첨부는 SDK/CLI의 표준 문법 처리에 위임하며, GUI에서는 별도의 preprocessing을 수행하지 않는다.
+- 구현: `src/lib/fs/list-project-files.ts`, `src/components/panels/claude/use-file-mentions.ts`, `src/components/panels/claude/mention-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
 ### FR-520: 네이티브 앱 실행 모드 (v0.3)
 
@@ -467,6 +589,30 @@
 ### FR-805: 키보드 단축키 커스터마이징
 
 - 사용자가 키보드 단축키를 재설정할 수 있는 설정 화면을 제공해야 한다.
+
+### FR-806: 터미널 키보드 단축키
+
+다음 단축키는 **터미널 패널이 포커스인 경우에만** 활성화된다(단, `Cmd+Shift+Enter`는 에디터 포커스일 때 동작). 포커스 스코프는 `src/hooks/use-keyboard-shortcut.ts`의 `isFocusInsideTerminal()`로 판정하며, `data-terminal-panel="true"` 속성을 가진 조상 노드의 존재를 확인한다.
+
+| Key (macOS / 기타) | 동작 |
+|---|---|
+| `Cmd+T` / `Ctrl+T` | 새 터미널 탭 |
+| `Cmd+W` / `Ctrl+W` | 활성 탭 닫기 |
+| `Cmd+1..9` / `Ctrl+1..9` | N번 탭 활성화 |
+| `Ctrl+Tab` | 다음 탭 |
+| `Ctrl+Shift+Tab` | 이전 탭 |
+| `Cmd+F` / `Ctrl+F` | 검색 오버레이 토글 (`FR-405`) |
+| `Cmd+K` / `Ctrl+K` | 활성 터미널 버퍼 clear (`term.clear()`) |
+| `Cmd+Shift+R` / `Ctrl+Shift+R` | 활성 세션 Restart (`FR-408`/`FR-411`/`FR-414`) |
+| `Cmd+D` / `Ctrl+D` | 터미널 스플릿 토글 (`FR-418`) |
+| `Cmd+]` / `Ctrl+]` · `Cmd+[` / `Ctrl+[` | 스플릿 모드에서 활성 pane 전환 |
+| `Cmd+Shift+Enter` / `Ctrl+Shift+Enter` | **에디터 선택 영역(또는 현재 라인)을 활성 터미널에 실행** (포커스는 에디터에 유지) |
+
+**구현 세부**:
+
+- `TerminalManager`는 부팅 시 `attachCustomKeyEventHandler`로 위 조합을 veto하여 xterm이 PTY에 해당 키를 기록하지 않게 한다.
+- 글로벌 단축키 핸들러(`src/hooks/use-global-shortcuts.ts`)가 동일한 조합을 감지해 `useTerminalStore` 액션을 디스패치한다.
+- `Cmd+K` 충돌 중재: 터미널 포커스 시 Command Palette(`FR-801`)의 `Cmd+K` 핸들러는 no-op 처리되며, 터미널 버퍼 clear가 동작한다. 그 외 포커스에서는 기존대로 커맨드 팔레트가 열린다.
 
 ---
 

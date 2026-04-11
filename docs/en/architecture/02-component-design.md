@@ -198,25 +198,38 @@ function acceptDiff(tabId: string) {
 `TerminalPanel` follows a **thin-attach pattern** so that React's lifecycle cannot touch PTY processes. Both the xterm.js `Terminal` instance and the WebSocket connection are owned by a `TerminalManager` singleton that lives outside the component tree; React components merely supply a DOM host.
 
 - **Owner**: `TerminalManager` singleton (`src/lib/terminal/terminal-manager.ts`)
-- **Attach point**: `XTerminalAttach` (`src/components/panels/terminal/x-terminal.tsx`)
-- **Container + tab UI**: `TerminalPanel` (`src/components/panels/terminal/terminal-panel.tsx`)
-- **State**: `useTerminalStore` (`src/stores/use-terminal-store.ts`) — tab list, active session ID, session status (`connecting` / `open` / `closed` / `exited`)
-- **Framing helpers**: `src/lib/terminal/terminal-framing.ts`
+- **Attach point**: `XTerminalAttach` (`src/components/panels/terminal/x-terminal.tsx`) — the host div is wrapped in a Radix `ContextMenu`
+- **Container + tab UI**: `TerminalPanel` (`src/components/panels/terminal/terminal-panel.tsx`) — inline rename, cwd label, unread indicator, project-change banner, Restart chip, split-pane renderer
+- **Search overlay**: `TerminalSearchOverlay` (`src/components/panels/terminal/terminal-search-overlay.tsx`)
+- **State**: `useTerminalStore` (`src/stores/use-terminal-store.ts`) — tab list, active session ID, session status (`connecting` / `open` / `closed` / `exited`), cwd, displayName, unread, searchOverlayOpen, splitEnabled, primarySessionId, secondarySessionId, activePaneIndex
+- **Socket wrapper**: `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`) — no auto-reconnect. When a reconnect is needed the manager opens a new socket carrying the `serverSessionId` via URL query (FR-414).
+- **Server-side session registry**: `server-handlers/terminal/session-registry.mjs` (`TerminalSessionRegistry` singleton) — manages PTY lifetime, 256 KB ring buffer, 30-minute GC, and transient/exit listener fan-out. ADR-020.
+- **Shell resolver**: `server-handlers/terminal/shell-resolver.mjs` (`resolveShell`, `shellFlags`, `buildPtyEnv`)
+- **File explorer integration**: `src/app/api/files/reveal/route.ts` (Reveal in Finder/Explorer), `filesApi.reveal`, and the `file-tree.tsx` context menu's `Open terminal here` (WS URL `?cwd=<path>`)
+- **Editor integration**: the module-level `activeMonacoEditor` reference and `getActiveEditorSelectionOrLine()` in `src/components/panels/editor/monaco-editor-wrapper.tsx`, and `useEditorStore.pendingReveal` (consumed by the link provider via `revealLineInCenter`)
+- **Framing helpers**: `src/lib/terminal/terminal-framing.ts` — now includes `TerminalCloseControl` (client → server) and `TerminalSessionServerControl` (server → client)
 
-The manager emits session-status events; the store subscribes and reflects them in the tab labels.
+The manager emits two event streams:
+- `SessionListener` — status/exitCode changes
+- `CwdListener` — OSC 7 cwd updates
+
+The store subscribes to each and reflects them in the tab labels, status indicators, and cwd suffixes.
 
 ### TerminalManager lifecycle
 
 | Event | Behavior |
 |---|---|
-| App boot (`app-shell.tsx`) | `terminalManager.boot()` is called once. It subscribes to `useLayoutStore.fontSize` and registers an HMR hot-dispose hook. |
-| Session creation | Store `createSession` → `terminalManager.ensureSession(id)`. xterm is constructed and the WebSocket is opened (PTY spawns here). `term.open()` is deferred. |
-| React attach | `XTerminalAttach`'s `useEffect` → `terminalManager.attach(id, host)`. The manager appends its persistent `<div>` into `host`, calls `term.open()` on first attach only, waits for a non-zero rect with `requestAnimationFrame`, runs `fit()`, sends a resize frame, and calls `focus()`. |
-| Tab switch | Store `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. |
+| App boot (`app-shell.tsx`) | `terminalManager.boot()` is called once. It subscribes to `useLayoutStore.fontSize`, registers a reserved-key predicate (`Cmd+T/W/F/K`, `Cmd+Shift+R`, `Ctrl+Tab`, `Cmd+1..9`) consumed by `attachCustomKeyEventHandler`, and installs an HMR hot-dispose hook. |
+| Session creation | Store `createSession` → `terminalManager.ensureSession(id)`. xterm is constructed (the `SearchAddon` instance is kept on the `TerminalInstance`, and an OSC 7 handler is registered via `term.parser.registerOscHandler(7, …)`); a `TerminalSocket` is opened (PTY spawns here). `term.open()` is deferred. |
+| Socket open | The `createSocket` `onOpen` callback sends an initial `resize` frame. On the first open, it schedules `injectShellHelpers(inst)` 250 ms later to install the OSC 7 emitter snippet via a single `{type:"input"}` frame. |
+| React attach | `XTerminalAttach`'s `useEffect` → `terminalManager.attach(id, host)`. The manager appends its persistent `<div>` into `host`, calls `term.open()` on first attach only, waits for a non-zero rect with `requestAnimationFrame`, runs `fit()`, sends a resize frame, and calls `focus()`. The WebGL addon is lazy-loaded at this point. |
+| Tab switch | Store `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. `searchOverlayOpen` is reset to false. |
 | Font-size change | Manager subscription callback → `setFontSize(px)` → sets `term.options.fontSize` and re-fits every instance. No PTY restart. |
 | Panel collapse | `<TerminalPanel>` unmounts → `XTerminalAttach.useEffect` cleanup → `terminalManager.detach(id)`. The manager unparents its persistent `<div>` but keeps xterm and the WS alive. |
+| Unexpected socket close | The `createSocket` `onClose` callback transitions status to `closed` and writes `[connection to PTY lost]` to the xterm buffer. **No reconnect attempt**. |
+| Shell exit | Server sends `{type:"exit", code}` control frame → `applyServerControl` transitions status to `exited`. The tab remains until the user closes it. |
+| Restart | `restartSession(id)` — permitted only when `closed`/`exited`. Keeps the xterm buffer (no `dispose`), inserts a `─── restarted at HH:MM:SS ───` separator, resets `pendingBytes`/`paused`/`exitCode`, sets status `connecting`, and calls `createSocket(inst)` again. `helpersInjected=true` ensures the OSC 7 snippet is not re-injected. |
 | Tab close | Store `closeSession(id)` → `terminalManager.closeSession(id)` → ws.close (server kills PTY). Then `term.dispose()` and removal from the map. |
-| Shell exit | Server sends `{type:"exit", code}` control frame → manager writes the banner and marks status `exited`. The tab remains until the user closes it. |
 
 ### Addon setup
 
@@ -255,6 +268,29 @@ term.loadAddon(new WebLinksAddon());
 ### Resize sync
 
 The manager calls `fitAddon.fit()` on first attach, tab activation, panel re-expand, and font-size change. PTYs are spawned at a default 120×30 which the first `fit()` overrides. A `{type:'resize', cols, rows}` control frame is sent only when the resulting dimensions differ from the previous send.
+
+### Shell initialization and environment (FR-410)
+
+Before spawning the PTY, the server calls three helpers from `server-handlers/terminal/shell-resolver.mjs` in order:
+
+1. `resolveShell(env, platform)` — resolves the shell in the order `CLAUDEGUI_SHELL` → `$SHELL`/`$COMSPEC` → platform defaults.
+2. `shellFlags(shellPath)` — returns `['-l','-i']` for `zsh`/`bash`/`fish`/`sh` family shells, `['-NoLogo']` for `pwsh`/`powershell`, and `[]` for `cmd`. This is what makes the user's dotfiles run, so PATH, aliases, and prompts come alive.
+3. `buildPtyEnv(shellPath, baseEnv, platform)` — adds `TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `CLAUDEGUI_PTY`, `CLAUDEGUI_SHELL_PATH` and defensively strips Next.js server-only variables (`NODE_OPTIONS`, `ELECTRON_RUN_AS_NODE`, `NEXT_TELEMETRY_DISABLED`, `__NEXT_PRIVATE_*`).
+
+The terminal handler then forwards the returned `{ shell, args, env }` together with ProjectContext's active root (`getActiveRoot()`) to `pty.spawn`. Per-session cwd is subsequently tracked through the OSC 7 pathway.
+
+### Keyboard arbitration (FR-806)
+
+Terminal shortcuts use a **hybrid routing** pattern:
+
+- `TerminalManager` installs an xterm `attachCustomKeyEventHandler` that returns `false` for reserved combinations so xterm never writes them to the PTY.
+- The same combinations are observed by a window-level keydown listener in `src/hooks/use-global-shortcuts.ts`, which dispatches `useTerminalStore` actions (createSession, closeActiveSession, toggleSearchOverlay, clearActiveBuffer, restartActiveSession, next/prev/activateTabByIndex) only when `isFocusInsideTerminal()` returns true.
+- `isFocusInsideTerminal()` walks up from `document.activeElement` via `closest('[data-terminal-panel="true"]')`. xterm routes input through a hidden textarea, so this scoping is stable.
+- `Cmd+K` arbitration: when focus is inside the terminal, the Command Palette (`FR-801`) `Cmd+K` handler early-returns. Elsewhere the palette opens as before.
+
+### Search overlay (FR-405)
+
+The `TerminalInstance` retains its `searchAddon` so `findNext`, `findPrevious`, and `clearDecorations` can be exposed as public manager methods. `TerminalSearchOverlay` owns its toggle state (match case / whole word / regex) and a 100 ms debounced incremental search. On close, it clears decorations and returns focus to xterm via `terminalManager.activate(id)`.
 
 ## 2.6 PreviewPanel Component
 
@@ -405,6 +441,16 @@ export async function* handleQuery({
   }
 }
 ```
+
+### ClaudeChatPanel — prompt @ mentions (FR-511)
+
+The input area in `src/components/panels/claude/claude-chat-panel.tsx` supports `@` autocomplete. On every user keystroke, `detectMention(value, cursor)` (`use-file-mentions.ts`) checks whether an `@` token sits immediately before the cursor. A literal `@` is only treated as a mention when it is at the start of the text or preceded by whitespace, so email-like strings are not misdetected.
+
+Candidates are collected by `listProjectFiles()` (`src/lib/fs/list-project-files.ts`), which recursively walks `GET /api/files` up to depth 3 and includes both files and directories. The `useFileMentions` hook re-crawls whenever `useProjectStore.activeRoot` changes. Filtering is done by the pure `filterMentionCandidates()` function with the ranking: exact match > full-path prefix > basename prefix > substring > subsequence, capped at 20 results.
+
+The dropdown (`MentionPopover`) is placed `absolute bottom-full` inside a `relative` wrapper around the textarea, so it floats above the edit area. Keyboard handling (↑/↓/Enter/Tab/Escape) in `claude-chat-panel.tsx`'s `onKeyDown` intercepts those keys only while the mention popover is open; when it is closed, `Enter` continues to submit the message as before. Accepting a candidate replaces the `@<query>` token with `@<project-relative path>` (with a trailing `/` for directories) and moves the caret past the insertion point.
+
+`@` references are forwarded to the Claude Agent SDK verbatim via `sendQuery(prompt)` — the GUI never expands the reference into file content itself. Reference resolution is delegated to the CLI / SDK's standard grammar.
 
 ## 2.8 State Management (Zustand Stores)
 

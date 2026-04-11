@@ -196,25 +196,38 @@ function acceptDiff(tabId: string) {
 `TerminalPanel`은 React 수명주기가 PTY 프로세스를 건드리지 못하게 만들기 위해 **얇은 attach 패턴**을 따른다. xterm.js `Terminal` 인스턴스와 WebSocket 연결은 모두 컴포넌트 트리 바깥의 `TerminalManager` 싱글턴이 소유하며, React 컴포넌트는 단지 DOM 호스트를 제공할 뿐이다.
 
 - **소유**: `TerminalManager` 싱글턴(`src/lib/terminal/terminal-manager.ts`)
-- **attach point**: `XTerminalAttach`(`src/components/panels/terminal/x-terminal.tsx`)
-- **컨테이너 + 탭 UI**: `TerminalPanel`(`src/components/panels/terminal/terminal-panel.tsx`)
-- **상태**: `useTerminalStore`(`src/stores/use-terminal-store.ts`) — 탭 목록, 활성 세션 ID, 세션 상태(`connecting`/`open`/`closed`/`exited`)
-- **프레이밍 헬퍼**: `src/lib/terminal/terminal-framing.ts`
+- **attach point**: `XTerminalAttach`(`src/components/panels/terminal/x-terminal.tsx`) — Radix `ContextMenu`로 감싼 호스트 div
+- **컨테이너 + 탭 UI**: `TerminalPanel`(`src/components/panels/terminal/terminal-panel.tsx`) — 인라인 rename, cwd 라벨, unread 인디케이터, 프로젝트 전환 배너, Restart 칩, 스플릿 pane 렌더러
+- **검색 오버레이**: `TerminalSearchOverlay`(`src/components/panels/terminal/terminal-search-overlay.tsx`)
+- **상태**: `useTerminalStore`(`src/stores/use-terminal-store.ts`) — 탭 목록, 활성 세션 ID, 세션 상태(`connecting`/`open`/`closed`/`exited`), cwd, displayName, unread, searchOverlayOpen, splitEnabled, primarySessionId, secondarySessionId, activePaneIndex
+- **소켓 래퍼**: `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`) — 자동 재연결 없음 (ReconnectingWebSocket 대비). 재연결이 필요할 때는 매니저가 `serverSessionId`를 URL에 실어 새 소켓을 연다(FR-414).
+- **서버측 세션 레지스트리**: `server-handlers/terminal/session-registry.mjs` (`TerminalSessionRegistry` 싱글턴) — PTY 수명·링 버퍼(256 KB)·GC(30분)·transient/exit 리스너 fan-out 관리. ADR-020.
+- **쉘 해결기**: `server-handlers/terminal/shell-resolver.mjs` (`resolveShell`, `shellFlags`, `buildPtyEnv`)
+- **파일 탐색기 통합**: `src/app/api/files/reveal/route.ts` (Reveal in Finder/Explorer), `filesApi.reveal`, `file-tree.tsx` 컨텍스트 메뉴의 `Open terminal here` (WS URL에 `?cwd=<path>` 쿼리)
+- **에디터 통합**: `src/components/panels/editor/monaco-editor-wrapper.tsx`의 module-level `activeMonacoEditor` 레퍼런스와 `getActiveEditorSelectionOrLine()`, 그리고 `useEditorStore.pendingReveal`(링크 프로바이더에서 `revealLineInCenter`)
+- **프레이밍 헬퍼**: `src/lib/terminal/terminal-framing.ts` — `TerminalCloseControl`(클라→서버), `TerminalSessionServerControl`(서버→클라) 포함
 
-매니저가 세션 상태 변화를 이벤트로 emit 하면 스토어가 이를 구독해 탭 라벨에 반영한다.
+매니저는 두 종류의 이벤트를 emit한다:
+- `SessionListener` → 상태/exitCode 변화
+- `CwdListener` → OSC 7 cwd 변경
+
+스토어가 각 이벤트를 구독해 탭 라벨·상태 인디케이터·cwd 접미어를 갱신한다.
 
 ### TerminalManager 수명주기
 
 | 이벤트 | 동작 |
 |---|---|
-| 앱 부트 (`app-shell.tsx`) | `terminalManager.boot()` 1회 호출. `useLayoutStore.subscribe`로 `fontSize` 변화를 구독. HMR 핫디스포즈 등록. |
-| 세션 생성 | 스토어 `createSession` → `terminalManager.ensureSession(id)`. xterm 생성 + WS 연결(이 시점에 PTY 스폰). `term.open()`은 아직 호출하지 않음. |
-| React attach | `XTerminalAttach`의 `useEffect` → `terminalManager.attach(id, host)`. 매니저가 소유한 persistent `<div>`를 host에 append 후 첫 호출에 한해 `term.open()`. `requestAnimationFrame`으로 non-zero size를 기다려 `fit()` → resize 전송 → `focus()`. |
-| 탭 전환 | 스토어 `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. |
+| 앱 부트 (`app-shell.tsx`) | `terminalManager.boot()` 1회 호출. `useLayoutStore.subscribe`로 `fontSize` 변화를 구독. `attachCustomKeyEventHandler`에 전달할 예약 키 predicate을 등록(`Cmd+T/W/F/K`, `Cmd+Shift+R`, `Ctrl+Tab`, `Cmd+1..9`). HMR 핫디스포즈 등록. |
+| 세션 생성 | 스토어 `createSession` → `terminalManager.ensureSession(id)`. xterm 생성(SearchAddon 인스턴스를 저장해 두고, `term.parser.registerOscHandler(7, …)`로 OSC 7 리스너 등록) + `TerminalSocket` 연결(이 시점에 PTY 스폰). `term.open()`은 아직 호출하지 않음. |
+| 소켓 open | `createSocket`의 `onOpen` 콜백이 `resize` 프레임을 송신. 첫 open인 경우 250 ms 뒤에 `injectShellHelpers(inst)`가 OSC 7 emitter 스니펫을 `{type:"input"}` 프레임으로 1회 주입. |
+| React attach | `XTerminalAttach`의 `useEffect` → `terminalManager.attach(id, host)`. 매니저가 소유한 persistent `<div>`를 host에 append 후 첫 호출에 한해 `term.open()`. `requestAnimationFrame`으로 non-zero size를 기다려 `fit()` → resize 전송 → `focus()`. WebGL 애드온은 이 시점에 지연 로드. |
+| 탭 전환 | 스토어 `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. searchOverlayOpen은 false로 리셋. |
 | 폰트 크기 변경 | 매니저 구독 콜백 → `setFontSize(px)` → 모든 인스턴스의 `term.options.fontSize` 변경 + `fit()`. PTY 재시작 없음. |
 | 패널 collapse | `<TerminalPanel>` unmount → `XTerminalAttach.useEffect` cleanup → `terminalManager.detach(id)`. 매니저는 persistent `<div>`를 DOM에서 떼어내기만 하고 xterm/WS는 유지. |
+| 소켓 unexpected close | `createSocket`의 `onClose` 콜백이 status를 `closed`로 전이, xterm 버퍼에 `[connection to PTY lost]` 라인 기록. **재연결 시도 없음**. |
+| 쉘 종료 | 서버가 `{type:"exit", code}` 제어 프레임 전송 → `applyServerControl`이 status를 `exited`로 전이. 탭은 사용자가 닫을 때까지 유지. |
+| Restart | `restartSession(id)` — `closed`/`exited`에서만 허용. xterm `dispose` 없이 스크롤백 유지, `─── restarted at HH:MM:SS ───` separator 삽입, pendingBytes/paused/exitCode 리셋, status `connecting`, `createSocket(inst)` 재호출. `helpersInjected=true`이므로 OSC 7 스니펫은 재주입되지 않는다. |
 | 탭 닫기 | 스토어 `closeSession(id)` → `terminalManager.closeSession(id)` → ws.close (서버가 PTY kill). `term.dispose()` 후 map에서 제거. |
-| 쉘 종료 | 서버가 `{type:"exit", code}` 제어 프레임 전송 → 매니저가 배너 렌더 + status = `exited`. 탭은 사용자가 닫을 때까지 유지. |
 
 ### 애드온 구성
 
@@ -253,6 +266,29 @@ term.loadAddon(new WebLinksAddon());
 ### 리사이즈 동기화
 
 첫 attach와 탭 활성화·panel 재오픈·폰트 변경 시마다 매니저가 `fitAddon.fit()`을 호출한다. PTY는 기본 120×30으로 스폰되며 첫 fit 결과가 이를 덮어쓴다. 크기가 실제로 달라진 경우에만 `{type:'resize', cols, rows}` 제어 프레임을 전송한다.
+
+### 쉘 초기화와 환경 변수 (FR-410)
+
+서버 측에서 PTY를 spawn하기 전에 `server-handlers/terminal/shell-resolver.mjs`의 세 헬퍼가 순서대로 호출된다:
+
+1. `resolveShell(env, platform)` — `CLAUDEGUI_SHELL` → `$SHELL`/`$COMSPEC` → 플랫폼별 대체 순으로 쉘을 결정한다.
+2. `shellFlags(shellPath)` — `zsh`/`bash`/`fish`/`sh` 계열은 `['-l','-i']`, `pwsh`/`powershell`은 `['-NoLogo']`, `cmd`는 `[]`를 반환한다. 이로써 dotfile이 자동 소스되어 사용자 PATH·alias·프롬프트가 살아난다.
+3. `buildPtyEnv(shellPath, baseEnv, platform)` — `TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `CLAUDEGUI_PTY`, `CLAUDEGUI_SHELL_PATH`를 덧붙이고, `NODE_OPTIONS`·`ELECTRON_RUN_AS_NODE`·`NEXT_TELEMETRY_DISABLED`·`__NEXT_PRIVATE_*` 등 Next.js 서버 전용 변수는 strip한다.
+
+터미널 핸들러는 반환된 `{ shell, args, env }`와 ProjectContext의 활성 루트(`getActiveRoot()`)를 `pty.spawn`에 그대로 전달한다. 세션별 cwd는 OSC 7 경로로 추적된다.
+
+### 키보드 중재 (FR-806)
+
+터미널 단축키는 **하이브리드 라우팅**을 사용한다:
+
+- `TerminalManager`가 xterm의 `attachCustomKeyEventHandler`로 예약 키 조합을 감지하면 `false`를 반환해 xterm이 PTY에 해당 키를 기록하지 못하게 한다.
+- 동일한 조합은 `src/hooks/use-global-shortcuts.ts`에서 window-level keydown 리스너가 포착하고, `isFocusInsideTerminal()`이 참인 경우에만 `useTerminalStore` 액션(createSession, closeActiveSession, toggleSearchOverlay, clearActiveBuffer, restartActiveSession, next/prev/activateTabByIndex)을 디스패치한다.
+- `isFocusInsideTerminal()`은 `document.activeElement`에서 `closest('[data-terminal-panel="true"]')`로 스코프를 판정한다. xterm이 내부적으로 hidden textarea에 입력을 라우팅하므로 이 방식이 안정적이다.
+- `Cmd+K` 충돌: 포커스가 터미널 안일 때 Command Palette(`FR-801`)의 `Cmd+K` 핸들러는 즉시 early-return 한다. 밖에 있으면 원래대로 팔레트가 열린다.
+
+### 검색 오버레이 (FR-405)
+
+`TerminalInstance.searchAddon` 인스턴스를 유지해 `findNext`/`findPrevious`/`clearDecorations`를 공개 메서드로 노출한다. `TerminalSearchOverlay` 컴포넌트가 토글 상태(대소문자/단어/regex)와 100 ms 디바운스된 인크리멘털 검색을 관리한다. 닫힐 때 데코레이션을 제거하고 `terminalManager.activate(id)`로 xterm에 포커스를 복원한다.
 
 ## 2.6 PreviewPanel 컴포넌트
 
@@ -403,6 +439,16 @@ export async function* handleQuery({
   }
 }
 ```
+
+### ClaudeChatPanel — 프롬프트 @ 멘션 (FR-511)
+
+`src/components/panels/claude/claude-chat-panel.tsx`의 입력 영역은 `@` 자동완성을 지원한다. 사용자 키 입력마다 `detectMention(value, cursor)`(`use-file-mentions.ts`)가 커서 직전의 `@` 토큰 유무를 확인한다. `@` 앞이 공백이거나 문자열 시작이 아니면 무시되어 이메일 형태의 문자열은 멘션으로 인식되지 않는다.
+
+후보 목록은 `listProjectFiles()`(`src/lib/fs/list-project-files.ts`)가 `GET /api/files`를 재귀 호출(깊이 3, 파일+디렉토리)하여 수집하며, `useFileMentions` 훅이 `useProjectStore.activeRoot` 변경 시마다 재크롤링한다. 필터링은 `filterMentionCandidates()`가 순수 함수로 수행한다 (정확 일치 > 전체 prefix > 파일명 prefix > 부분 문자열 > 서브시퀀스 순, 최대 20개).
+
+드롭다운(`MentionPopover`)은 `textarea`의 `relative` 컨테이너 안에서 `absolute bottom-full`로 배치되어 편집 영역 위쪽에 떠 있는다. 키보드 처리(↑/↓/Enter/Tab/Escape)는 `claude-chat-panel.tsx`의 `onKeyDown`에서 멘션이 열려 있을 때만 가로채며, 닫혀 있을 때의 Enter는 기존대로 메시지를 제출한다. 선택 결과는 `@<project-relative path>` (디렉토리는 뒤에 `/`) 형태로 원 토큰을 치환한 뒤 커서를 삽입 지점 뒤로 이동시킨다.
+
+`@` 참조는 Claude Agent SDK(`sendQuery(prompt)`)에 원문 그대로 전달된다 — GUI는 참조를 파일 내용으로 미리 확장하지 않으며, 해석은 CLI/SDK의 표준 문법 처리에 위임한다.
 
 ## 2.8 상태 관리 (Zustand Stores)
 

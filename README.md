@@ -156,12 +156,47 @@ NODE_ENV=development
 
 | 단축키 | 동작 |
 |--------|------|
-| `Cmd/Ctrl + K` | 커맨드 팔레트 |
+| `Cmd/Ctrl + K` | 커맨드 팔레트 (터미널 포커스 시에는 터미널 버퍼 clear) |
 | `Cmd/Ctrl + P` | 빠른 파일 열기 |
 | `Cmd/Ctrl + B` | 사이드바 토글 |
 | `Cmd/Ctrl + J` | 터미널 토글 |
 | `Cmd/Ctrl + S` | 파일 저장 |
-| `Ctrl + F` (터미널 내) | 터미널 버퍼 검색 |
+
+### 터미널 단축키 (터미널 포커스 시)
+
+| 단축키 | 동작 |
+|--------|------|
+| `Cmd/Ctrl + T` | 새 터미널 탭 |
+| `Cmd/Ctrl + W` | 활성 탭 닫기 |
+| `Cmd/Ctrl + 1..9` | N번 탭 활성화 |
+| `Ctrl + Tab` / `Ctrl + Shift + Tab` | 다음 / 이전 탭 |
+| `Cmd/Ctrl + F` | 터미널 버퍼 검색 오버레이 |
+| `Cmd/Ctrl + K` | 활성 터미널 clear |
+| `Cmd/Ctrl + Shift + R` | 활성 세션 Restart |
+| `Cmd/Ctrl + D` | 2-pane 수평 스플릿 토글 |
+| `Cmd/Ctrl + [` · `]` | 스플릿 모드에서 활성 pane 전환 |
+| `Cmd/Ctrl + Shift + Enter` (에디터 포커스 시) | 에디터 선택 / 현재 라인을 활성 터미널에 실행 |
+
+## 터미널
+
+ClaudeGUI의 내장 터미널은 실제 터미널 앱과 동일한 **로그인 + 인터랙티브** 쉘(`['-l','-i']`)을 구동해, `.zshrc`·`.zprofile`·`.bashrc` 등 사용자 dotfile이 자동으로 소스된다. 따라서 `claude`, `nvm`, `pyenv`, `brew` 같은 PATH 기반 도구와 사용자 프롬프트·alias·자동완성이 새 탭에서 바로 동작한다.
+
+- **쉘 오버라이드**: `CLAUDEGUI_SHELL=/opt/homebrew/bin/fish` 등 환경변수로 기본 쉘을 덮어쓸 수 있다.
+- **PATH 추가**: `CLAUDEGUI_EXTRA_PATH=/custom/bin`을 지정하면 해당 디렉토리가 PATH 앞에 prepend된다.
+- **탭 rename**: 탭 라벨을 더블클릭하면 인라인 편집으로 전환된다. Enter 저장, Esc 취소.
+- **cwd 라벨**: 쉘에서 `cd`할 때마다 탭 라벨의 `·` 뒤에 현재 디렉토리 basename이 실시간 표시된다(OSC 7 기반).
+- **세션 지속성**: 서버측 세션 레지스트리가 PTY를 프로세스 메모리에 유지한다. 브라우저 새로고침·HMR 사이클·네트워크 끊김 등으로 WS가 닫혀도 **30분 동안 같은 sessionId로 재연결하면 쉘 상태와 최근 256 KB 스크롤백이 복원**된다. 탭 close 버튼을 누르거나 `exit`이 실행되면 즉시 파괴된다.
+- **Restart**: 쉘이 종료되거나 연결이 끊기면 탭에 Restart 버튼이 표시된다. 누르면 세션 레지스트리를 통해 재연결하여 기존 PTY를 복원한다(grace 기간 내) 또는 새 쉘을 spawn한다(GC 이후).
+- **스플릿 터미널**: `Cmd/Ctrl+D`로 본문을 2개의 수평 pane으로 나눌 수 있다. 각 pane은 자체 활성 세션을 가지며, 모든 키보드 단축키는 활성 pane을 대상으로 동작한다. pane 전환은 `Cmd/Ctrl+[`/`]` 또는 클릭.
+- **검색**: `Cmd/Ctrl+F`로 플로팅 오버레이가 열리며, 대소문자·단어 단위·정규식 토글을 지원한다.
+- **파일 경로 링크**: 터미널 출력에 포함된 `src/foo.ts:42:10` 같은 경로는 자동으로 클릭 가능한 링크가 되며, 클릭 시 에디터에서 해당 라인/컬럼으로 이동한다.
+- **에디터 → 터미널**: 에디터에서 텍스트를 선택하고 `Cmd/Ctrl+Shift+Enter`를 누르면 선택 영역(또는 현재 라인)이 활성 터미널에 그대로 실행된다. 포커스는 에디터에 유지된다.
+- **백그라운드 탭 인디케이터**: 비활성 탭이 출력을 받으면 라벨 옆에 파란 점 인디케이터가 표시된다.
+- **우클릭 메뉴**: Copy / Paste / Select All / Clear / Find… 기본 메뉴를 제공한다. 대용량 붙여넣기(10 MB 초과)는 확인 프롬프트 후 4 KB 청크로 분할 전송된다.
+- **테마/폰트**: 터미널 색상은 앱 테마(`dark`/`light`/`high-contrast`/`retro-green`)를 따라 자동 전환된다. 폰트 패밀리·ligature·copy-on-select는 Command Palette의 "Terminal: …" 커맨드로 변경할 수 있다.
+- **파일 탐색기 통합**: 파일/폴더 우클릭 → **Open terminal here**로 해당 위치에서 새 터미널을 열 수 있다. **Reveal in Finder / File Explorer**는 네이티브 파일 관리자에서 해당 항목을 선택 상태로 연다.
+
+**PATH 트러블슈팅**: 새 탭에서 `which claude`, `which node`가 실패하면 사용자 dotfile이 해당 경로를 PATH에 추가하고 있는지 먼저 확인한다. `echo $SHELL` 출력으로 실제 spawn된 쉘을 확인할 수 있다.
 
 ## 프로젝트 구조
 
