@@ -118,6 +118,15 @@
 }
 ```
 
+#### `GET /api/files/raw`
+
+파일을 바이너리로 응답한다 (이미지, PDF 뷰어용).
+
+**쿼리 파라미터**:
+- `path` (필수)
+
+**응답**: 파일 내용 (Content-Type은 확장자 기반 자동 감지). 50MB 초과 시 413.
+
 #### `GET /api/files/stat`
 
 파일 메타데이터를 조회한다.
@@ -140,11 +149,11 @@
 }
 ```
 
-### 4.1.2 Git API (선택)
+### 4.1.2 Git API
 
 #### `GET /api/git/status`
 
-프로젝트 Git 상태를 조회한다.
+프로젝트 Git 상태를 조회한다. Git 저장소가 아니면 `isRepo: false`를 반환한다.
 
 **응답**:
 ```json
@@ -152,6 +161,7 @@
   "success": true,
   "data": {
     "branch": "main",
+    "isRepo": true,
     "files": {
       "src/auth.ts": "modified",
       "src/new.ts": "untracked",
@@ -160,6 +170,10 @@
   }
 }
 ```
+
+파일 상태 값: `modified`, `added`, `deleted`, `renamed`, `untracked`, `conflicted`
+
+내부 구현은 `git status --porcelain` + `git rev-parse --abbrev-ref HEAD`를 `child_process.exec`로 호출한다. 구현 위치: `src/lib/fs/git-status.ts`.
 
 ### 4.1.3 세션 API
 
@@ -320,76 +334,90 @@ Claude Agent SDK와 연결된다.
 
 #### 서버 → 클라이언트
 
-**어시스턴트 메시지**:
+메시지는 Agent SDK의 `SDKMessage` 유니언 타입을 그대로 래핑한다. 클라이언트는 `data.type`으로 분기 처리한다.
+
+**시스템 init** (세션 시작):
+```json
+{
+  "type": "message",
+  "requestId": "req-123",
+  "data": {
+    "type": "system",
+    "subtype": "init",
+    "session_id": "abc-123",
+    "cwd": "/path/to/project",
+    "model": "claude-opus-4-6",
+    "tools": ["Bash", "Edit", "Read", "..."],
+    "permissionMode": "default"
+  }
+}
+```
+
+**어시스턴트 메시지** (content 블록 배열에 text/tool_use 혼재):
 ```json
 {
   "type": "message",
   "requestId": "req-123",
   "data": {
     "type": "assistant",
-    "content": "Let me check the login function..."
+    "message": {
+      "content": [
+        { "type": "text", "text": "I'll edit the file now." },
+        { "type": "tool_use", "id": "toolu_01...", "name": "Edit", "input": { "file_path": "src/auth.ts", "old_string": "...", "new_string": "..." } }
+      ],
+      "usage": { "input_tokens": 3, "output_tokens": 17 }
+    },
+    "session_id": "abc-123"
   }
 }
 ```
 
-**스트리밍 델타**:
+**사용자 메시지** (도구 실행 결과, UI에 표시하지 않음):
 ```json
 {
   "type": "message",
-  "requestId": "req-123",
   "data": {
-    "type": "stream_event",
-    "delta": "partial text..."
+    "type": "user",
+    "message": { "content": [{ "type": "tool_result", "tool_use_id": "toolu_...", "content": "ok" }] }
   }
 }
 ```
 
-**도구 호출 알림**:
-```json
-{
-  "type": "tool_call",
-  "requestId": "req-123",
-  "data": {
-    "tool": "Edit",
-    "args": {
-      "file_path": "src/auth.ts",
-      "old_string": "...",
-      "new_string": "..."
-    }
-  }
-}
-```
-
-**권한 요청**:
+**권한 요청** (SDK `canUseTool` 콜백에서 발행):
 ```json
 {
   "type": "permission_request",
   "requestId": "perm-456",
   "tool": "Bash",
-  "args": {
-    "command": "npm test"
-  },
-  "reason": "Claude wants to run tests"
+  "args": { "command": "npm test" },
+  "danger": "safe"
 }
 ```
+`danger`는 `safe` | `warning` | `danger` 중 하나. 서버에서 위험 패턴(`rm -rf`, `sudo`, `curl ... | sh` 등) 매칭으로 결정된다.
 
-**최종 결과**:
+**최종 결과** (Agent SDK `SDKResultMessage`):
 ```json
 {
   "type": "result",
   "requestId": "req-123",
   "data": {
-    "cost_usd": 0.05,
+    "type": "result",
+    "subtype": "success",
+    "result": "최종 어시스턴트 응답 텍스트",
+    "total_cost_usd": 0.008,
+    "duration_ms": 1985,
+    "num_turns": 1,
+    "session_id": "abc-123",
     "usage": {
-      "input_tokens": 1200,
-      "output_tokens": 800,
-      "cache_read_tokens": 500
+      "input_tokens": 3,
+      "output_tokens": 17,
+      "cache_read_input_tokens": 15165
     },
-    "session_id": "abc123",
-    "duration_ms": 4500
+    "permission_denials": []
   }
 }
 ```
+`subtype`: `success`, `error_during_execution`, `error_max_turns`, `error_max_budget_usd`, `error_max_structured_output_retries`.
 
 **에러**:
 ```json

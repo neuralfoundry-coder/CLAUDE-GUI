@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Header } from './header';
 import { StatusBar } from './status-bar';
@@ -9,15 +10,41 @@ import { TerminalPanel } from '@/components/panels/terminal/terminal-panel';
 import { PreviewPanel } from '@/components/panels/preview/preview-panel';
 import { ClaudeChatPanel } from '@/components/panels/claude/claude-chat-panel';
 import { PermissionRequestModal } from '@/components/modals/permission-request-modal';
+import { PermissionRulesModal } from '@/components/modals/permission-rules-modal';
+import { ProjectPickerModal } from '@/components/modals/project-picker-modal';
+import { LoginPromptModal } from '@/components/modals/login-prompt-modal';
 import { CommandPalette } from '@/components/command-palette/command-palette';
+import { useSettingsStore } from '@/stores/use-settings-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
+import { useProjectStore } from '@/stores/use-project-store';
+import { useEditorStore } from '@/stores/use-editor-store';
+import { usePreviewStore } from '@/stores/use-preview-store';
 import { useTheme } from '@/hooks/use-theme';
 import { useKeyboardShortcut } from '@/hooks/use-keyboard-shortcut';
 import { useGlobalShortcuts } from '@/hooks/use-global-shortcuts';
+import { getClaudeClient } from '@/lib/websocket/claude-client';
+import { getFilesClient } from '@/lib/websocket/files-client';
+import { useState } from 'react';
 
 export function AppShell() {
   useTheme();
   useGlobalShortcuts();
+  const [projectPickerOpen, setProjectPickerOpen] = useState(false);
+  const [loginPromptOpen, setLoginPromptOpen] = useState(false);
+
+  useEffect(() => {
+    // Boot shared WebSocket clients so connection status updates early.
+    getClaudeClient();
+    getFilesClient().start();
+    void useProjectStore.getState().refresh();
+
+    const unsubscribe = getFilesClient().subscribeProjectChange((evt) => {
+      useProjectStore.getState().applyRemoteChange(evt.root);
+      useEditorStore.getState().resetAll();
+      usePreviewStore.getState().setFile(null);
+    });
+    return unsubscribe;
+  }, []);
 
   const fileExplorerCollapsed = useLayoutStore((s) => s.fileExplorerCollapsed);
   const terminalCollapsed = useLayoutStore((s) => s.terminalCollapsed);
@@ -31,7 +58,10 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden">
-      <Header />
+      <Header
+        onOpenProjectPicker={() => setProjectPickerOpen(true)}
+        onOpenLoginPrompt={() => setLoginPromptOpen(true)}
+      />
       <div className="flex-1 overflow-hidden">
         <PanelGroup direction="horizontal" autoSaveId="claudegui-root">
           {!fileExplorerCollapsed && (
@@ -73,7 +103,16 @@ export function AppShell() {
       </div>
       <StatusBar />
       <PermissionRequestModal />
+      <PermissionRulesModalHost />
+      <ProjectPickerModal open={projectPickerOpen} onOpenChange={setProjectPickerOpen} />
+      <LoginPromptModal open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
       <CommandPalette />
     </div>
   );
+}
+
+function PermissionRulesModalHost() {
+  const open = useSettingsStore((s) => s.rulesModalOpen);
+  const close = useSettingsStore((s) => s.closeRulesModal);
+  return <PermissionRulesModal open={open} onOpenChange={(v) => !v && close()} />;
 }

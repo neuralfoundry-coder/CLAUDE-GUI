@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'VT323';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local('VT323'), url('/fonts/vt323.woff2') format('woff2');
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -66,6 +74,55 @@
     --border: 0 0% 50%;
     --input: 0 0% 20%;
     --ring: 60 100% 50%;
+  }
+
+  .retro-green {
+    --background: 120 100% 3%;
+    --foreground: 120 100% 78%;
+    --card: 120 100% 5%;
+    --card-foreground: 120 100% 80%;
+    --popover: 120 100% 4%;
+    --popover-foreground: 120 100% 82%;
+    --primary: 120 100% 60%;
+    --primary-foreground: 120 100% 5%;
+    --secondary: 120 30% 12%;
+    --secondary-foreground: 120 100% 82%;
+    --muted: 120 30% 10%;
+    --muted-foreground: 120 60% 55%;
+    --accent: 150 100% 55%;
+    --accent-foreground: 120 100% 5%;
+    --destructive: 0 100% 62%;
+    --destructive-foreground: 120 100% 5%;
+    --border: 120 60% 22%;
+    --input: 120 30% 12%;
+    --ring: 120 100% 60%;
+  }
+
+  .retro-green body,
+  .retro-green input,
+  .retro-green textarea,
+  .retro-green button,
+  .retro-green pre,
+  .retro-green code {
+    font-family: 'VT323', 'IBM Plex Mono', 'Courier New', monospace;
+  }
+
+  .retro-green body {
+    text-shadow: 0 0 2px hsl(120 100% 50% / 0.35);
+  }
+
+  .retro-scanlines body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9998;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 2px,
+      rgba(0, 0, 0, 0.08) 3px
+    );
   }
 
   * {

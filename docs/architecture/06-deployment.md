@@ -67,6 +67,9 @@ NODE_ENV=development
 {
   "scripts": {
     "dev": "node server.js",
+    "run:local": "bash scripts/dev.sh",
+    "run:clean": "bash scripts/dev.sh --clean --build",
+    "run:debug": "bash scripts/dev.sh --verbose --trace",
     "build": "next build",
     "start": "NODE_ENV=production node server.js",
     "lint": "next lint",
@@ -76,6 +79,101 @@ NODE_ENV=development
   }
 }
 ```
+
+### 로컬 구동 스크립트 — `scripts/dev.sh` (v0.3)
+
+`node server.js`를 직접 실행하는 대신, 클린/인스톨/타입체크/린트/테스트/빌드/실행을 **단일 스크립트로 통합**한 런처이다. 기본은 **포그라운드** 실행이며, `--background`로 detach하면 PID 파일과 로그 파일이 생성되어 `--stop`/`--restart`/`--status`/`--tail` 라이프사이클 커맨드로 관리할 수 있다. 모든 서버 측 로그는 **모듈별 디버그 필터**로 색상 분리된다.
+
+**파일 구성**:
+- `scripts/dev.sh` — macOS / Linux bash 런처
+- `scripts/dev.ps1` — Windows PowerShell 대응판
+- `src/lib/debug.mjs` — 모듈 필터 + 색상 매핑 + 선택적 스택 트레이스 (`server.js`와 `server-handlers/*.mjs`가 `createDebug('<module>')`로 사용)
+
+**디버그 모듈 태그** (`CLAUDEGUI_DEBUG`):
+| 모듈 | 출처 | 출력 내용 |
+|------|------|----------|
+| `server` | `server.js` | 부팅, 셧다운, 업그레이드 에러 |
+| `project` | `src/lib/project/project-context.mjs` | 런타임 루트 전환, 리스너 알림, 상태 파일 영속화 |
+| `files` | `server-handlers/files-handler.mjs` | chokidar 워처 생성/재시작, 파일 이벤트, 클라이언트 연결 |
+| `terminal` | `server-handlers/terminal-handler.mjs` | node-pty 스폰/종료, WS 수명 |
+| `claude` | `server-handlers/claude-handler.mjs` | Agent SDK 쿼리 시작/결과/에러, 권한 요청 |
+
+각 모듈은 ANSI 팔레트에서 고유 색상을 자동 할당받으며, 로그 라인은 `HH:MM:SS.mmm LEVEL [module] message` 형태로 기록된다. `--trace`를 추가하면 `.trace(...)` 호출 시 짧은 스택 스냅샷이 함께 출력되며 Node 프로세스는 `--trace-warnings --stack-trace-limit=100`으로 부팅한다.
+
+**옵션 카테고리**:
+
+| 카테고리 | 옵션 |
+|---------|------|
+| 준비 | `--clean` `--install` `--check` `--lint` `--test` `--build` `--all-checks` |
+| 실행 모드 | `--dev` (기본) `--prod` (NODE_ENV=production, 빌드 필수) |
+| 서버 | `--host <addr>` `--port <n>` `--project <path>` `--kill-port` |
+| 디버그 | `--debug <list>` `--verbose` `--trace` `--log-level <lvl>` `--inspect` `--inspect-brk` `--log-file <path>` `--log-truncate` `--no-color` |
+| 백그라운드/라이프사이클 | `--background` / `-b` `--stop` `--restart` `--status` `--tail` `--pid-file <path>` `--force-kill` |
+| 편의 | `--open` `-h` / `--help` |
+
+**상태 경로** (환경변수로 오버라이드 가능):
+| 경로 | 기본값 | 환경변수 |
+|------|--------|----------|
+| 상태 디렉토리 | `~/.claudegui` | `CLAUDEGUI_STATE_DIR` |
+| PID 파일 | `~/.claudegui/claudegui.pid` | `CLAUDEGUI_PID_FILE` |
+| 기본 로그 파일 | `~/.claudegui/logs/claudegui.log` | `CLAUDEGUI_LOG_DIR` |
+
+**실행 예시**:
+
+```bash
+# --- 포그라운드 (기본) ---
+./scripts/dev.sh                                   # 빠른 dev 부팅
+./scripts/dev.sh --clean --build                   # 완전 재빌드 후 실행
+./scripts/dev.sh --prod --port 8080                # prod 모드 (NODE_ENV=production)
+./scripts/dev.sh --all-checks --prod --verbose     # 타입체크+린트+테스트+빌드+prod+전체디버그
+./scripts/dev.sh --debug files,claude,project      # 특정 모듈만 디버그 로그 출력
+./scripts/dev.sh --verbose --trace                 # 전체 모듈 + 스택 트레이스
+./scripts/dev.sh --inspect --debug claude          # Node inspector + Claude 모듈 필터
+./scripts/dev.sh --project ~/code/myproj --open    # 초기 프로젝트 지정 + 브라우저 자동 열기
+./scripts/dev.sh --log-file /tmp/gui.log           # 터미널 + 파일 동시 기록 (tee)
+
+# --- 백그라운드 (detached) ---
+./scripts/dev.sh --background --verbose            # 분리 실행 + 자동 로그 파일
+./scripts/dev.sh --background --tail               # 분리 후 즉시 로그 팔로우
+./scripts/dev.sh --background --log-file /tmp/gui.log --log-truncate
+
+# --- 라이프사이클 ---
+./scripts/dev.sh --status                          # pid, pidfile, uptime, listen 포트
+./scripts/dev.sh --tail                            # 기존 로그 팔로우 (서버는 계속 실행)
+./scripts/dev.sh --stop                            # SIGTERM → 5s 대기 → SIGKILL
+./scripts/dev.sh --stop --force-kill               # 즉시 SIGKILL
+./scripts/dev.sh --restart --debug '*'             # stop 후 백그라운드 재시작
+./scripts/dev.sh --help                            # 전체 옵션 참조
+```
+
+**포그라운드 vs 백그라운드 동작 비교**:
+
+| 항목 | 포그라운드 (기본) | 백그라운드 (`--background`) |
+|------|------------------|----------------------------|
+| `exec node server.js` | 현재 셸을 대체 (Ctrl+C로 종료) | `nohup` + `setsid`로 detach |
+| PID 파일 | 생성 안 함 | `~/.claudegui/claudegui.pid` 기록 |
+| 로그 파일 | `--log-file` 지정 시에만 tee | 기본 자동 생성, stdout/stderr 리다이렉트 |
+| 종료 방법 | Ctrl+C (SIGINT) | `--stop` (SIGTERM → 필요 시 SIGKILL) |
+| 상태 조회 | 없음 (셸이 서버 세션) | `--status` |
+| 재시작 | 수동 | `--restart` (stop + bg 시작) |
+| 이중 실행 방지 | 없음 (포트 충돌만) | PID 파일 기반, `already running` 차단 |
+
+**로그 파일 포맷**: 백그라운드 시작 시 로그 파일은 append 모드(`--log-truncate`로 덮어쓰기)로 기록되며, 각 시작마다 다음과 같은 헤더가 추가되어 재시작 히스토리를 분리한다.
+
+```
+========================================================
+ ClaudeGUI dev start @ 2026-04-11 13:57:50
+ host=127.0.0.1 port=3471 project=(cwd) debug=files,project
+========================================================
+13:57:51 INFO [server]  ClaudeGUI ready on http://127.0.0.1:3471 (mode=dev)
+13:57:52 LOG  [files]   client connected, total= 1
+13:57:52 INFO [files]   starting watcher on /.../project-a
+...
+```
+
+**Windows 대응**: `scripts/dev.ps1`이 동일한 옵션(`-Background`/`-Stop`/`-Restart`/`-Status`/`-Tail` 등 PowerShell 스위치 네이밍)을 제공한다. 상세는 `.\scripts\dev.ps1 -Help` 참조.
+
+**CLAUDE.md 개발 워크플로와의 관계**: 이 런처는 Mandatory Workflow의 "변경 후" 단계 중 타입체크/린트/테스트/빌드를 한 커맨드로 묶어 실행할 수 있게 한다. CI가 아닌 로컬 개발 중에도 `--all-checks --build`를 전제 조건으로 실행한 뒤 서버를 기동하는 식으로 활용할 수 있다.
 
 ---
 

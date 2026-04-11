@@ -1,0 +1,90 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tauri-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            node-target: aarch64-apple-darwin
+            bundle: dmg
+          - os: macos-13
+            target: x86_64-apple-darwin
+            node-target: x86_64-apple-darwin
+            bundle: dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            node-target: x86_64-pc-windows-msvc
+            bundle: msi
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install system deps (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew update
+          brew install unzip || true
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Run unit tests + lint + type-check
+        run: |
+          npm run lint
+          npm run type-check
+          npm test
+
+      - name: Fetch bundled Node runtime
+        shell: bash
+        run: |
+          chmod +x installer/tauri/scripts/fetch-node.sh
+          bash installer/tauri/scripts/fetch-node.sh ${{ matrix.node-target }}
+
+      - name: Rebuild native modules for bundled Node
+        shell: bash
+        run: |
+          # node-pty rebuild happens inside prepare-bundle.sh via npm ci --omit=dev
+          echo "Native rebuild handled in prepare-bundle.sh"
+
+      - name: Tauri build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: installer/tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'ClaudeGUI ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}

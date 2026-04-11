@@ -9,9 +9,25 @@ const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 3000);
 
+// Lazy-load the module-based debug helper (ESM). Fallback to console.* if
+// the dynamic import fails so we never crash on a missing helper.
+let dbg = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  trace: console.log.bind(console),
+};
+(async () => {
+  try {
+    const { createDebug } = await import('./src/lib/debug.mjs');
+    dbg = createDebug('server');
+  } catch {
+    /* keep fallback */
+  }
+})();
+
 const app = next({ dev, hostname, port });
-const nextHandler = app.getRequestHandler();
-const upgradeHandler = app.getUpgradeHandler();
 
 const ALLOWED_ORIGINS = new Set([
   `http://${hostname}:${port}`,
@@ -29,12 +45,24 @@ function verifyOrigin(req) {
 async function main() {
   await app.prepare();
 
+  // NextCustomServer attaches its own `upgrade` listener to our HTTP server on
+  // first request (via `setupWebSocketHandler`), which conflicts with our own
+  // routing of /ws/* endpoints. We short-circuit that setup and route
+  // `/_next/*` upgrades explicitly below.
+  if (app && typeof app === 'object') {
+    app.didWebSocketSetup = true;
+  }
+
+  // Resolve handlers after prepare() so internal `this` context is fully bound.
+  const nextHandler = app.getRequestHandler();
+  const upgradeHandler = typeof app.getUpgradeHandler === 'function' ? app.getUpgradeHandler() : null;
+
   const server = http.createServer(async (req, res) => {
     try {
       const parsedUrl = parse(req.url || '/', true);
       await nextHandler(req, res, parsedUrl);
     } catch (err) {
-      console.error('[server] request handler error', err);
+      dbg.error('request handler error', err);
       res.statusCode = 500;
       res.end('internal server error');
     }
@@ -104,8 +132,17 @@ async function main() {
     const { pathname } = parse(req.url || '/');
 
     // Preserve Next.js HMR WebSocket in dev
-    if (pathname === '/_next/webpack-hmr') {
-      upgradeHandler(req, socket, head);
+    if (pathname && pathname.startsWith('/_next')) {
+      if (upgradeHandler) {
+        try {
+          upgradeHandler(req, socket, head);
+        } catch (err) {
+          dbg.error('next upgrade handler error', err);
+          socket.destroy();
+        }
+      } else {
+        socket.destroy();
+      }
       return;
     }
 
@@ -135,11 +172,11 @@ async function main() {
   });
 
   server.listen(port, hostname, () => {
-    console.info(`> ClaudeGUI ready on http://${hostname}:${port}`);
+    dbg.info(`ClaudeGUI ready on http://${hostname}:${port} (mode=${dev ? 'dev' : 'prod'})`);
   });
 
   const shutdown = () => {
-    console.info('[server] shutting down...');
+    dbg.info('shutting down');
     clearInterval(heartbeat);
     [wssTerminal, wssClaude, wssFiles].forEach((wss) => {
       wss.clients.forEach((client) => {
@@ -160,6 +197,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[server] fatal error', err);
+  dbg.error('fatal error', err);
   process.exit(1);
 });

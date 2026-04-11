@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ClaudeGUI",
+  "version": "0.3.0",
+  "identifier": "com.claudegui.app",
+  "build": {
+    "beforeBuildCommand": "bash ../scripts/prepare-bundle.sh",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ClaudeGUI",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "msi"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/server.js",
+      "resources/server-handlers/**/*",
+      "resources/.next/**/*",
+      "resources/public/**/*",
+      "resources/node_modules/**/*",
+      "resources/package.json",
+      "resources/installer-runtime/**/*"
+    ],
+    "externalBin": ["binaries/node"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "entitlements": "./entitlements.plist",
+      "exceptionDomain": "",
+      "signingIdentity": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "wix": {
+        "language": "en-US"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/anthropics/ClaudeGUI/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

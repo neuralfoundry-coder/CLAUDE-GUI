@@ -38,7 +38,7 @@ export class ReconnectingWebSocket {
       this.scheduleReconnect();
       return;
     }
-    this.ws.addEventListener('open', (e) => {
+    this.ws.addEventListener('open', () => {
       this.backoff = this.initialBackoff;
       this.handlers.onOpen?.(this.ws!);
     });

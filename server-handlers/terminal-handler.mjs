@@ -1,14 +1,27 @@
 import os from 'node:os';
 import path from 'node:path';
+import { getActiveRoot } from '../src/lib/project/project-context.mjs';
+import { createDebug } from '../src/lib/debug.mjs';
 
+const dbg = createDebug('terminal');
 const BATCH_INTERVAL_MS = 16;
+
+function buildPtyEnv() {
+  const env = { ...process.env };
+  const extra = process.env.CLAUDEGUI_EXTRA_PATH;
+  if (extra) {
+    const sep = process.platform === 'win32' ? ';' : ':';
+    env.PATH = `${extra}${sep}${env.PATH ?? ''}`;
+  }
+  return env;
+}
 
 async function loadPty() {
   try {
     const mod = await import('node-pty');
     return mod.default ?? mod;
   } catch (err) {
-    console.error('[terminal-handler] failed to load node-pty', err);
+    dbg.error('failed to load node-pty', err);
     return null;
   }
 }
@@ -26,13 +39,20 @@ export default async function terminalHandler(ws, _req) {
     return;
   }
 
-  const cwd = path.resolve(process.env.PROJECT_ROOT || os.homedir());
-  const ptyProcess = pty.spawn(defaultShell(), [], {
+  let cwd;
+  try {
+    cwd = getActiveRoot();
+  } catch {
+    cwd = path.resolve(os.homedir());
+  }
+  const shell = defaultShell();
+  dbg.info('spawning PTY', { shell, cwd });
+  const ptyProcess = pty.spawn(shell, [], {
     name: 'xterm-256color',
     cols: 120,
     rows: 30,
     cwd,
-    env: process.env,
+    env: buildPtyEnv(),
   });
 
   let batch = [];
@@ -64,6 +84,7 @@ export default async function terminalHandler(ws, _req) {
   });
 
   ptyProcess.onExit(({ exitCode }) => {
+    dbg.info('PTY exited', { exitCode });
     flush();
     if (ws.readyState === ws.OPEN) {
       try {
@@ -110,6 +131,7 @@ export default async function terminalHandler(ws, _req) {
   });
 
   ws.on('close', () => {
+    dbg.log('ws closed, killing PTY');
     if (batchTimer) clearTimeout(batchTimer);
     try {
       ptyProcess.kill();
@@ -119,6 +141,6 @@ export default async function terminalHandler(ws, _req) {
   });
 
   ws.on('error', (err) => {
-    console.error('[terminal-handler] ws error', err);
+    dbg.error('ws error', err);
   });
 }

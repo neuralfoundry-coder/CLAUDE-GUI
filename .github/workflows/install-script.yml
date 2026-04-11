@@ -1,0 +1,60 @@
+name: install-script
+
+on:
+  push:
+    paths:
+      - 'scripts/install/**'
+      - '.github/workflows/install-script.yml'
+  pull_request:
+    paths:
+      - 'scripts/install/**'
+      - '.github/workflows/install-script.yml'
+
+jobs:
+  shellcheck:
+    name: shellcheck + dry-run (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            sudo apt-get update && sudo apt-get install -y shellcheck
+          else
+            brew install shellcheck
+          fi
+
+      - name: Run shellcheck
+        run: |
+          shellcheck scripts/install/install.sh
+          shellcheck scripts/install/uninstall.sh
+
+      - name: Dry-run install.sh
+        run: bash scripts/install/install.sh --dry-run --yes
+
+  powershell-syntax:
+    name: PowerShell syntax (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          $errors = $null
+          $tokens = $null
+          $files = @('scripts/install/install.ps1', 'scripts/install/uninstall.ps1')
+          foreach ($f in $files) {
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f).Path, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+            Write-Host "OK: $f"
+          }

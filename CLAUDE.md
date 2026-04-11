@@ -1,5 +1,7 @@
 # CLAUDE.md - ClaudeGUI Project Conventions
 
+> **Bilingual documentation policy (MANDATORY)**: 모든 문서는 한국어(본 파일, `README.md`, `docs/srs/`, `docs/architecture/`)와 영어(`CLAUDE-EN.md`, `README-EN.md`, `docs/en/srs/`, `docs/en/architecture/`)로 **동시에** 작성·갱신·삭제되어야 한다. 한쪽만 갱신된 커밋은 미완료로 간주한다. 자세한 규칙은 아래 [Bilingual Documentation Policy](#bilingual-documentation-policy) 참조.
+
 ## Mandatory Workflow for Feature Changes
 
 **Every feature change (new feature, modification, refactor, or bug fix affecting behavior) MUST follow this workflow. No exceptions.**
@@ -19,12 +21,55 @@ All of the following steps are required. Do not mark work as complete until ever
 3. **Verify in `tests/`** — Add or update unit, integration, or E2E tests that cover the change. Run the full relevant test suite and confirm it passes. Never mark the change complete with failing tests.
 4. **Apply database migrations (only if applicable)** — ClaudeGUI v1.0 does **not** use a persistent database; session data is managed by Claude CLI under `~/.claude/projects/` and UI preferences are stored in `localStorage`. If a future change introduces a persistent schema, create a `migrations/` directory, add a migration file, and apply it to both local and production environments. Until then this step does not apply.
 5. **Update `README.md`** — Reflect the change in the project README: new features, changed setup steps, updated commands, new environment variables, or updated screenshots.
+6. **Update English mirrors (MANDATORY)** — In the **same change**, update every English counterpart that mirrors a Korean document you touched:
+   - `docs/srs/*.md` → `docs/en/srs/*.md` (same file name, same section structure)
+   - `docs/architecture/*.md` → `docs/en/architecture/*.md`
+   - `README.md` → `README-EN.md`
+   - `CLAUDE.md` → `CLAUDE-EN.md`
+   A change is **not complete** until both language versions are in sync. See [Bilingual Documentation Policy](#bilingual-documentation-policy).
 
 ### Enforcement
 
 - When asked to make a change, explicitly confirm that you have reviewed `docs/srs/` and `docs/architecture/` before writing code.
-- At the end of a change, explicitly list which docs/tests/README files were updated, or state that no update was required and why.
+- At the end of a change, explicitly list which docs/tests/README files were updated — including both Korean and English mirrors — or state that no update was required and why.
 - If you skip any step, you must state the reason in the response.
+- **Never land a Korean-only or English-only documentation change.** If you touch `docs/srs/03-functional-requirements.md`, you must also touch `docs/en/srs/03-functional-requirements.md`. Same for every other mirrored file.
+
+---
+
+## Bilingual Documentation Policy
+
+ClaudeGUI maintains **all** user-facing documentation in both Korean (primary authoring language) and English (mirror). Both versions are first-class: neither may drift from the other.
+
+### Mirrored file pairs
+
+| Korean (source) | English (mirror) |
+|-----------------|------------------|
+| `CLAUDE.md` | `CLAUDE-EN.md` |
+| `README.md` | `README-EN.md` |
+| `docs/srs/*.md` | `docs/en/srs/*.md` |
+| `docs/architecture/*.md` | `docs/en/architecture/*.md` |
+
+- `docs/research/` is a historical planning archive and is **not** mirrored.
+- Code comments and commit messages remain in English (see Git Conventions).
+
+### Rules
+
+1. **Simultaneous updates.** Every edit that touches a Korean document in the mirrored list must, in the same commit, update the corresponding English file with an equivalent change. The reverse also holds.
+2. **Structural parity.** Section headings, ordering, tables, code blocks, ADR IDs, and FR/NFR/UC identifiers must match 1:1 between the two versions. Do not renumber in one language without doing it in the other.
+3. **New files.** When creating a new Korean document under `docs/srs/` or `docs/architecture/`, create the English counterpart under `docs/en/srs/` or `docs/en/architecture/` at the same path in the same commit.
+4. **Deletions and renames.** When deleting or renaming a Korean file, perform the same operation on its English mirror in the same commit.
+5. **Technical terms, identifiers, and code** (function names, file paths, environment variables, package names, shell commands) stay untranslated in both versions.
+6. **Links** should point to the same-language counterpart where possible (e.g., `CLAUDE-EN.md` links to `README-EN.md`, Korean docs link to Korean docs).
+7. **Discrepancy is a bug.** If you discover that the Korean and English versions have drifted, treat it as a defect and fix both to a single consistent state before continuing with feature work.
+
+### Checklist (apply at the end of every change)
+
+- [ ] Every Korean file I edited has a matching English update in this commit.
+- [ ] Every English file I edited has a matching Korean update in this commit.
+- [ ] New files were created in both languages (or neither).
+- [ ] Deleted files were removed from both languages (or neither).
+- [ ] Section structure, tables, and IDs match between the two versions.
 
 ---
 
@@ -56,7 +101,9 @@ src/
 │   ├── layout.tsx
 │   ├── page.tsx
 │   └── api/                # REST API route handlers
+│       ├── auth/
 │       ├── files/
+│       ├── project/
 │       └── sessions/
 ├── components/
 │   ├── ui/                 # shadcn/ui primitives (do not modify)
@@ -65,21 +112,31 @@ src/
 │   │   ├── editor/
 │   │   ├── terminal/
 │   │   └── preview/
-│   ├── layout/             # App shell, panel group, header
+│   ├── layout/             # App shell, panel group, header, auth badge
+│   ├── modals/             # Permission, project picker, login prompt
 │   └── command-palette/    # cmdk integration
 ├── hooks/                  # Custom React hooks
 ├── stores/                 # Zustand store slices
 ├── lib/                    # Utility functions, helpers
 │   ├── websocket/          # WS client manager
 │   ├── fs/                 # File system utilities (server-side)
-│   └── claude/             # Agent SDK wrapper
+│   ├── project/            # Runtime ProjectContext singleton (ADR-016)
+│   └── claude/             # Agent SDK wrapper + html-stream-extractor
 ├── types/                  # Shared TypeScript type definitions
 └── styles/                 # Global CSS (Tailwind base)
 server.js                   # Custom Node.js server (WS + Next.js)
+scripts/
+├── install/                # One-line install scripts (macOS/Linux/Windows)
+└── installer-runtime/      # Tauri in-app helpers (ensure-claude-cli, …)
+installer/
+└── tauri/                  # Tauri v2 native installer (.dmg/.msi) (ADR-018)
 docs/
 ├── research/               # Planning & research documents
-├── srs/                    # Software Requirements Specification
-└── architecture/           # Architecture design documents
+├── srs/                    # Software Requirements Specification (Korean)
+├── architecture/           # Architecture design documents (Korean)
+└── en/                     # English mirrors
+    ├── srs/
+    └── architecture/
 ```
 
 ## Code Conventions

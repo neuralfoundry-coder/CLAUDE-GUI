@@ -479,6 +479,18 @@ interface TerminalState {
 ### useClaudeStore
 
 ```typescript
+interface SessionStats {
+  sessionId: string;
+  model: string | null;
+  numTurns: number | null;
+  durationMs: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  lastUpdated: number | null;
+}
+
 interface ClaudeState {
   sessions: ClaudeSession[];
   activeSessionId: string | null;
@@ -486,6 +498,8 @@ interface ClaudeState {
   pendingPermissionRequest: PermissionRequest | null;
   totalCost: Record<string, number>;
   tokenUsage: Record<string, { input: number; output: number }>;
+  // 세션별 컨텍스트/사용량 스냅샷 (SDK가 실제로 전달한 값만 채워진다)
+  sessionStats: Record<string, SessionStats>;
 
   sendQuery(prompt: string): Promise<void>;
   resumeSession(id: string): void;
@@ -493,6 +507,23 @@ interface ClaudeState {
   respondToPermission(approved: boolean): void;
 }
 ```
+
+`sessionStats`는 Agent SDK가 보낸 `system.init` 이벤트(모델 이름)와 `result` 이벤트
+(`num_turns`, `duration_ms`, `usage.*`, `total_cost_usd`)만을 기반으로 누적 저장된다.
+SDK가 값을 주지 않은 필드는 `null`로 유지되며, UI에서는 "-"로 표시한다. 컨텍스트 윈도우
+크기 같은 값은 하드코딩하지 않고, 오직 실제 응답에 담긴 값만 노출한다.
+
+#### SessionInfoBar (Claude 패널)
+
+`src/components/panels/claude/session-info-bar.tsx`는 `useClaudeStore`에서 활성 세션의
+`SessionStats`를 구독하여 Claude 채팅 패널 하단에 접이식 바 형태로 렌더링한다.
+
+- 접힘(기본): `{model} · {turns} turns · {tokens} tok · {cost} · {updated}` 한 줄 (높이 h-6)
+- 펼침: 세션 ID, 모델, 턴 수, 소요 시간, 입력/출력/캐시 읽기 토큰, 누적 비용, 마지막 업데이트 시각
+- 편집 영역을 가리지 않도록 기본 상태는 접힘이며, chevron 토글 상태는 `localStorage`
+  키 `claudegui-session-info-expanded`에 저장한다.
+- 별도 폴링 없이 WebSocket으로 도착하는 SDK 이벤트마다 갱신되고, "업데이트 경과 시간"만
+  1초 간격 `setInterval`로 재계산한다.
 
 ### usePreviewStore
 

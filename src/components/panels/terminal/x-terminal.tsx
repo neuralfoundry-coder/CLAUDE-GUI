@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { ReconnectingWebSocket } from '@/lib/websocket/reconnecting-ws';
 import { useLayoutStore } from '@/stores/use-layout-store';
+import { useConnectionStore } from '@/stores/use-connection-store';
 
 const HIGH_WATERMARK = 100 * 1024;
 const LOW_WATERMARK = 10 * 1024;
@@ -55,8 +56,10 @@ export function XTerminal({ sessionId }: XTerminalProps) {
       rws = new ReconnectingWebSocket({
         url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/terminal`,
         onOpen: (ws) => {
+          useConnectionStore.getState().setStatus('terminal', 'open');
           ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
         },
+        onClose: () => useConnectionStore.getState().setStatus('terminal', 'closed'),
         onMessage: (event) => {
           const data = event.data as string | ArrayBuffer;
           const text = typeof data === 'string' ? data : new TextDecoder().decode(data);

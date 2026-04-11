@@ -13,30 +13,51 @@ export function EditorTabBar() {
   if (tabs.length === 0) return null;
 
   return (
-    <div className="scrollbar-thin flex h-8 items-center overflow-x-auto border-b bg-muted">
-      {tabs.map((tab) => (
-        <button
-          key={tab.id}
-          onClick={() => setActiveTab(tab.id)}
-          className={cn(
-            'flex h-8 items-center gap-1.5 border-r px-3 text-xs hover:bg-accent',
-            activeTabId === tab.id && 'bg-background',
-          )}
-        >
-          <span className="truncate">{tab.path.split('/').pop()}</span>
-          {tab.dirty && <span className="h-1.5 w-1.5 rounded-full bg-foreground" />}
-          <span
-            role="button"
-            className="ml-1 rounded p-0.5 hover:bg-muted-foreground/20"
-            onClick={(e) => {
-              e.stopPropagation();
-              closeTab(tab.id);
-            }}
+    <div
+      className="scrollbar-thin flex h-8 items-center overflow-x-auto border-b bg-muted"
+      aria-label="Open files"
+    >
+      {tabs.map((tab) => {
+        const name = tab.path.split('/').pop() ?? tab.path;
+        const isActive = activeTabId === tab.id;
+        return (
+          <div
+            key={tab.id}
+            className={cn(
+              'flex h-8 shrink-0 items-center gap-1.5 border-r px-3 text-xs',
+              isActive && 'bg-background',
+              !isActive && 'hover:bg-accent',
+            )}
           >
-            <X className="h-3 w-3" />
-          </span>
-        </button>
-      ))}
+            <button
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className="flex items-center gap-1.5 bg-transparent"
+              aria-label={`Activate ${name}`}
+              aria-current={isActive ? 'page' : undefined}
+            >
+              <span className="truncate">{name}</span>
+              {tab.dirty && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-foreground"
+                  aria-label="unsaved changes"
+                />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(tab.id);
+              }}
+              aria-label={`Close ${name}`}
+              className="ml-1 rounded p-0.5 hover:bg-muted-foreground/20"
+            >
+              <X className="h-3 w-3" aria-hidden="true" />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -5,6 +5,9 @@
   "description": "Web-based IDE wrapping Claude CLI with 4-panel layout",
   "scripts": {
     "dev": "node server.js",
+    "run:local": "bash scripts/dev.sh",
+    "run:clean": "bash scripts/dev.sh --clean --build",
+    "run:debug": "bash scripts/dev.sh --verbose --trace",
     "build": "next build",
     "start": "NODE_ENV=production node server.js",
     "lint": "next lint",
@@ -34,7 +37,7 @@
     "lucide-react": "^0.400.0",
     "monaco-editor": "^0.52.0",
     "next": "^14.2.0",
-    "node-pty": "^1.0.0",
+    "node-pty": "^1.2.0-beta.12",
     "pino": "^9.0.0",
     "pptxgenjs": "^3.12.0",
     "react": "^18.3.0",
@@ -56,6 +59,7 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
     "@playwright/test": "^1.47.0",
     "@testing-library/jest-dom": "^6.5.0",
     "@testing-library/react": "^16.0.0",

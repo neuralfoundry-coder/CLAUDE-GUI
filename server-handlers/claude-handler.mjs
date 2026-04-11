@@ -1,6 +1,9 @@
 import path from 'node:path';
+import { getActiveRoot } from '../src/lib/project/project-context.mjs';
+import { createDebug } from '../src/lib/debug.mjs';
 
-const DANGEROUS_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit']);
+const dbg = createDebug('claude');
+
 const DANGER_PATTERNS = [
   /\brm\s+-[rfR]+/,
   /\bsudo\b/,
@@ -10,13 +13,15 @@ const DANGER_PATTERNS = [
   /\/System\//,
 ];
 
-function assessDanger(args) {
-  if (args && typeof args === 'object') {
-    const cmd = args.command || args.file_path || '';
-    if (typeof cmd === 'string') {
-      for (const p of DANGER_PATTERNS) {
-        if (p.test(cmd)) return 'danger';
-      }
+function assessDanger(toolName, input) {
+  if (!input || typeof input !== 'object') return 'safe';
+  const strings = [];
+  if (typeof input.command === 'string') strings.push(input.command);
+  if (typeof input.file_path === 'string') strings.push(input.file_path);
+  if (toolName === 'Bash' && strings.length === 0) return 'warning';
+  for (const s of strings) {
+    for (const p of DANGER_PATTERNS) {
+      if (p.test(s)) return 'danger';
     }
   }
   return 'safe';
@@ -27,7 +32,7 @@ async function loadAgentSdk() {
     const mod = await import('@anthropic-ai/claude-agent-sdk');
     return mod;
   } catch (err) {
-    console.error('[claude-handler] failed to load Agent SDK', err);
+    dbg.error('failed to load Agent SDK', err);
     return null;
   }
 }
@@ -39,23 +44,9 @@ export default async function claudeHandler(ws, _req) {
     return;
   }
 
-  const cwd = path.resolve(process.env.PROJECT_ROOT || process.cwd());
   const pendingPermissions = new Map();
   let currentAbort = null;
-
-  const requestPermission = (requestId, tool, args) =>
-    new Promise((resolve) => {
-      pendingPermissions.set(requestId, resolve);
-      ws.send(
-        JSON.stringify({
-          type: 'permission_request',
-          requestId,
-          tool,
-          args,
-          danger: assessDanger(args),
-        }),
-      );
-    });
+  let permissionCounter = 0;
 
   const send = (msg) => {
     if (ws.readyState === ws.OPEN) {
@@ -67,38 +58,70 @@ export default async function claudeHandler(ws, _req) {
     }
   };
 
+  const requestPermission = (toolName, input) =>
+    new Promise((resolve) => {
+      permissionCounter += 1;
+      const requestId = `perm-${Date.now()}-${permissionCounter}`;
+      pendingPermissions.set(requestId, resolve);
+      send({
+        type: 'permission_request',
+        requestId,
+        tool: toolName,
+        args: input,
+        danger: assessDanger(toolName, input),
+      });
+    });
+
+  const canUseTool = async (toolName, input, { signal }) => {
+    dbg.info('canUseTool', toolName);
+    if (signal.aborted) {
+      return { behavior: 'deny', message: 'Aborted by user', interrupt: true };
+    }
+    const approved = await requestPermission(toolName, input);
+    dbg.info('permission', toolName, approved ? 'allow' : 'deny');
+    if (approved) {
+      return { behavior: 'allow', updatedInput: input };
+    }
+    return { behavior: 'deny', message: 'Denied by user via ClaudeGUI' };
+  };
+
   const runQuery = async (msg) => {
     const { requestId, prompt, sessionId, options = {} } = msg;
     const abort = new AbortController();
     currentAbort = abort;
 
+    let cwd;
     try {
-      const stream = sdk.query({
-        prompt,
+      cwd = getActiveRoot();
+    } catch {
+      cwd = path.resolve(process.cwd());
+    }
+    dbg.info('query start', { requestId, sessionId: sessionId ?? '(new)', cwd });
+
+    try {
+      const queryOptions = {
         cwd,
-        sessionId,
-        signal: abort.signal,
-        ...options,
-      });
+        canUseTool,
+        abortController: abort,
+        permissionMode: 'default',
+        ...(sessionId ? { resume: sessionId } : {}),
+        ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+        ...(options.model ? { model: options.model } : {}),
+      };
+
+      const stream = sdk.query({ prompt, options: queryOptions });
 
       for await (const event of stream) {
         if (abort.signal.aborted) break;
 
-        if (event.type === 'tool_use' || event.type === 'tool_call') {
-          const tool = event.tool || event.name;
-          if (DANGEROUS_TOOLS.has(tool)) {
-            const permRequestId = `${requestId}-perm-${Date.now()}`;
-            const approved = await requestPermission(permRequestId, tool, event.args || event.input);
-            if (!approved) {
-              send({ type: 'error', requestId, message: 'Permission denied by user', code: 4403 });
-              return;
-            }
-          }
-          send({ type: 'tool_call', requestId, data: { tool, args: event.args || event.input } });
-          continue;
-        }
-
+        dbg.trace('event', event.type);
         if (event.type === 'result') {
+          dbg.info('query result', {
+            requestId,
+            subtype: event.subtype,
+            costUsd: event.total_cost_usd,
+            durationMs: event.duration_ms,
+          });
           send({ type: 'result', requestId, data: event });
           continue;
         }
@@ -106,9 +129,23 @@ export default async function claudeHandler(ws, _req) {
         send({ type: 'message', requestId, data: event });
       }
     } catch (err) {
-      send({ type: 'error', requestId, message: String(err?.message || err), code: 5501 });
+      if (err?.name === 'AbortError') {
+        dbg.warn('query aborted', requestId);
+        send({ type: 'error', requestId, message: 'Aborted', code: 4499 });
+      } else {
+        dbg.error('query failed', err);
+        send({ type: 'error', requestId, message: String(err?.message || err), code: 5501 });
+      }
     } finally {
       currentAbort = null;
+      for (const resolve of pendingPermissions.values()) {
+        try {
+          resolve(false);
+        } catch {
+          /* ignore */
+        }
+      }
+      pendingPermissions.clear();
     }
   };
 
@@ -135,11 +172,12 @@ export default async function claudeHandler(ws, _req) {
   });
 
   ws.on('close', () => {
+    dbg.log('ws closed');
     currentAbort?.abort();
     pendingPermissions.clear();
   });
 
   ws.on('error', (err) => {
-    console.error('[claude-handler] ws error', err);
+    dbg.error('ws error', err);
   });
 }

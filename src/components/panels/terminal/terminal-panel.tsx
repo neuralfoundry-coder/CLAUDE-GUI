@@ -20,37 +20,49 @@ export function TerminalPanel() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="flex h-7 items-center border-b bg-muted">
-        {sessions.map((sess) => (
-          <button
-            key={sess.id}
-            onClick={() => setActiveSession(sess.id)}
-            className={cn(
-              'flex h-7 items-center gap-1 border-r px-3 text-xs hover:bg-accent',
-              activeSessionId === sess.id && 'bg-background',
-            )}
-          >
-            <span>{sess.name}</span>
-            <span
-              role="button"
-              className="ml-1 rounded p-0.5 hover:bg-muted-foreground/20"
-              onClick={(e) => {
-                e.stopPropagation();
-                closeSession(sess.id);
-              }}
+      <div className="flex h-7 items-center border-b bg-muted" aria-label="Terminal sessions">
+        {sessions.map((sess) => {
+          const isActive = activeSessionId === sess.id;
+          return (
+            <div
+              key={sess.id}
+              className={cn(
+                'flex h-7 shrink-0 items-center gap-1 border-r px-3 text-xs',
+                isActive && 'bg-background',
+                !isActive && 'hover:bg-accent',
+              )}
             >
-              <X className="h-3 w-3" />
-            </span>
-          </button>
-        ))}
+              <button
+                type="button"
+                onClick={() => setActiveSession(sess.id)}
+                className="bg-transparent"
+                aria-label={`Activate ${sess.name}`}
+              >
+                {sess.name}
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeSession(sess.id);
+                }}
+                aria-label={`Close ${sess.name}`}
+                className="ml-1 rounded p-0.5 hover:bg-muted-foreground/20"
+              >
+                <X className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </div>
+          );
+        })}
         <Button
           variant="ghost"
           size="icon"
           className="ml-1 h-6 w-6"
           onClick={() => createSession()}
           title="New terminal"
+          aria-label="New terminal"
         >
-          <Plus className="h-3 w-3" />
+          <Plus className="h-3 w-3" aria-hidden="true" />
         </Button>
       </div>
       <div className="flex-1 overflow-hidden">

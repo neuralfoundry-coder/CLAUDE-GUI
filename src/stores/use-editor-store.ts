@@ -2,6 +2,7 @@
 
 import { create } from 'zustand';
 import { filesApi } from '@/lib/api-client';
+import { computeHunks, applyHunks, type DiffHunk } from '@/lib/diff/line-diff';
 
 export interface EditorTab {
   id: string;
@@ -14,6 +15,8 @@ export interface EditorTab {
     original: string;
     modified: string;
     status: 'pending';
+    hunks: DiffHunk[];
+    acceptedHunkIds: string[];
   } | null;
 }
 
@@ -27,8 +30,13 @@ interface EditorState {
   saveFile: (id: string) => Promise<void>;
   applyClaudeEdit: (path: string, modified: string) => void;
   acceptDiff: (id: string) => void;
+  acceptAllHunks: (id: string) => void;
   rejectDiff: (id: string) => void;
+  toggleHunk: (id: string, hunkId: string) => void;
+  applyAcceptedHunks: (id: string) => void;
   syncExternalChange: (path: string) => Promise<void>;
+  hasDirtyTabs: () => boolean;
+  resetAll: () => void;
 }
 
 function pathToId(path: string): string {
@@ -94,15 +102,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   applyClaudeEdit: (path, modified) =>
     set((s) => ({
-      tabs: s.tabs.map((t) =>
-        t.path === path
-          ? {
-              ...t,
-              locked: true,
-              diff: { original: t.content, modified, status: 'pending' },
-            }
-          : t,
-      ),
+      tabs: s.tabs.map((t) => {
+        if (t.path !== path) return t;
+        const hunks = computeHunks(t.content, modified);
+        return {
+          ...t,
+          locked: true,
+          diff: {
+            original: t.content,
+            modified,
+            status: 'pending',
+            hunks,
+            acceptedHunkIds: hunks.map((h) => h.id),
+          },
+        };
+      }),
     })),
 
   acceptDiff: (id) =>
@@ -120,9 +134,53 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }),
     })),
 
+  acceptAllHunks: (id) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.id !== id || !t.diff) return t;
+        return {
+          ...t,
+          diff: { ...t.diff, acceptedHunkIds: t.diff.hunks.map((h) => h.id) },
+        };
+      }),
+    })),
+
+  toggleHunk: (id, hunkId) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.id !== id || !t.diff) return t;
+        const accepted = new Set(t.diff.acceptedHunkIds);
+        if (accepted.has(hunkId)) accepted.delete(hunkId);
+        else accepted.add(hunkId);
+        return { ...t, diff: { ...t.diff, acceptedHunkIds: Array.from(accepted) } };
+      }),
+    })),
+
+  applyAcceptedHunks: (id) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.id !== id || !t.diff) return t;
+        const finalContent = applyHunks(
+          t.diff.original,
+          t.diff.hunks,
+          new Set(t.diff.acceptedHunkIds),
+        );
+        return {
+          ...t,
+          content: finalContent,
+          originalContent: finalContent,
+          dirty: false,
+          locked: false,
+          diff: null,
+        };
+      }),
+    })),
+
   rejectDiff: (id) =>
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === id ? { ...t, locked: false, diff: null } : t)),
+      tabs: s.tabs.map((t) =>
+        t.id === id ? { ...t, locked: false, diff: null, content: t.diff?.original ?? t.content } : t,
+      ),
     })),
 
   syncExternalChange: async (path) => {
@@ -144,4 +202,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       console.error('[editor] syncExternalChange failed', err);
     }
   },
+
+  hasDirtyTabs: () => get().tabs.some((t) => t.dirty),
+
+  resetAll: () => set({ tabs: [], activeTabId: null }),
 }));

@@ -54,10 +54,14 @@
 ### FR-204: Git 상태 표시
 
 - 파일명 옆에 Git 상태를 시각적으로 표시해야 한다.
-  - Modified (M) — 주황색
-  - Untracked (U) — 녹색
-  - Staged (A) — 녹색 배경
-  - Deleted (D) — 빨간색 취소선
+  - Modified (M) — 노란색
+  - Added (A) — 녹색
+  - Deleted (D) — 빨간색
+  - Untracked (U) — 연녹색
+  - Renamed (R) — 파란색
+  - Conflicted (!) — 짙은 빨간색
+- 구현: `GET /api/git/status`는 `git status --porcelain` 출력을 파싱하여 경로→상태 맵을 반환한다.
+- 프로젝트가 Git 저장소가 아니면 `isRepo: false`로 응답하고 인디케이터를 표시하지 않는다.
 
 ### FR-205: 파일 아이콘 매핑
 
@@ -185,11 +189,12 @@
 
 ### FR-502: 스트리밍 응답 표시
 
-- `--output-format stream-json` 옵션의 NDJSON 스트리밍을 실시간 파싱해야 한다.
+- Agent SDK의 `query()` async iterator로부터 `SDKMessage` 이벤트를 실시간 수신해야 한다.
 - 메시지 타입별 처리:
-  - `assistant`: Claude 텍스트 응답 표시
-  - `stream_event`: 델타 업데이트 (타이핑 효과)
-  - `result`: 최종 결과 (비용, 토큰 사용량)
+  - `system` (subtype `init`): 세션 id, 모델, 사용 가능 도구 목록 저장
+  - `assistant`: `message.content[]` 블록 배열 순회 — `text` 블록은 어시스턴트 메시지로, `tool_use` 블록은 tool 메시지로 표시
+  - `user`: 도구 실행 결과 피드백 — UI에는 표시하지 않음
+  - `result`: 최종 결과 (`total_cost_usd`, `usage.input_tokens`/`output_tokens`, `session_id`, `subtype`)
 
 ### FR-503: 세션 관리
 
@@ -204,15 +209,32 @@
 - 각 쿼리의 토큰 사용량(입력/출력)을 표시해야 한다.
 - 세션 누적 비용을 표시해야 한다.
 - `result` 메시지의 `cost_usd`, `usage` 필드를 활용한다.
+- **세션 정보 바 (Session Info Bar)**: Claude 채팅 패널 하단에 현재 활성 세션에 대한
+  통계를 접이식 바 형태로 표시한다.
+  - 접힘(기본) 상태: 모델명, 턴 수, 총 토큰 수, 누적 비용, 마지막 업데이트 시각을
+    단일 라인(높이 24px)으로 노출한다. 편집 영역을 침범하지 않기 위해 기본값은 접힘이다.
+  - 펼침 상태: 세션 ID, 모델, `num_turns`, `duration_ms`, 입력/출력/캐시 읽기 토큰,
+    누적 비용(`total_cost_usd`), 마지막 업데이트 경과 시간을 표 형태로 표시한다.
+  - 값의 출처는 Agent SDK가 실제로 전달한 이벤트 필드(`system.init`의 `model`,
+    `result`의 `num_turns`/`duration_ms`/`usage.*`/`total_cost_usd`)로 한정한다.
+    컨텍스트 윈도우 크기 등 SDK가 제공하지 않는 값은 하드코딩 추정치를 사용하지
+    않으며, 데이터가 도착하기 전에는 모든 필드를 "-"로 표시한다.
+  - 값은 세션 ID별로 `sessionStats: Record<string, SessionStats>`에 누적되며,
+    세션 전환 시 활성 세션의 스냅샷만 표시된다. WebSocket 푸시를 통해 갱신되므로
+    별도의 폴링은 수행하지 않는다.
+  - 펼침/접힘 상태는 `localStorage`에 저장되어 재방문 시 복원된다.
 
 ### FR-505: 권한 요청 인터셉트
 
-- Claude가 도구 실행(파일 쓰기, Bash 실행 등)을 요청할 때 GUI 모달을 표시해야 한다.
+- Agent SDK의 `canUseTool` 콜백 옵션을 사용해 Claude가 도구 실행을 요청할 때 GUI 모달을 표시해야 한다.
 - 모달에는 다음 정보를 포함한다:
   - 요청된 도구 이름
   - 인자 (파일 경로, 명령어 등)
+  - 위험도 배지 (`safe` / `warning` / `danger`)
   - **승인(Approve)** / **거부(Deny)** 버튼
+- 거절 시 SDK에 `{ behavior: 'deny', message }`를 반환하면 Claude는 해당 도구 사용을 포기하고 대안을 모색한다.
 - 물리적 사용자 클릭을 요구한다 (자동 승인 방지).
+- `permissionMode: 'default'`에서 Agent SDK는 안전한 작업(읽기, 단순 Bash 명령)을 자동 승인할 수 있다. 이 경우 `canUseTool`은 호출되지 않으며, 도구 사용은 채팅 패널의 tool 메시지로만 기록된다.
 
 ### FR-506: 자동 승인 규칙
 
@@ -238,6 +260,21 @@
 
 - `/compact` 명령어를 통한 컨텍스트 압축을 지원해야 한다.
 - 컨텍스트 사용량 표시 및 임계치 도달 시 자동 알림을 제공한다.
+
+### FR-510: 인증 상태 표시 (v0.3)
+
+- 시스템은 Claude CLI 인증 상태를 헤더 배지로 실시간 표시해야 한다.
+- 인증 소스는 `credentials-file` (`~/.claude/.credentials.json`), `env` (`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`), `none` 중 하나이다.
+- CLI 미설치 상태도 구분하여 표시 (`cliInstalled: false`) 한다.
+- 미인증 시 배지 클릭으로 `claude login` 안내 모달을 표시한다.
+- 구현: `src/lib/claude/auth-status.ts`, `GET /api/auth/status`, `src/components/layout/auth-badge.tsx`.
+
+### FR-520: 네이티브 앱 실행 모드 (v0.3)
+
+- Tauri v2 기반 네이티브 앱(`.dmg` / `.msi`)으로 ClaudeGUI를 실행할 수 있어야 한다.
+- 앱은 번들된 Node.js 사이드카로 `server.js`를 실행하고, 네이티브 웹뷰가 `127.0.0.1:<random-port>`에 연결한다.
+- 첫 실행 시 Claude CLI가 PATH에 없으면 앱 로컬 `node-prefix`에 자동 설치 후 PTY `PATH`에 prepend한다.
+- 구현: `installer/tauri/`, `scripts/installer-runtime/ensure-claude-cli.mjs`.
 
 ---
 
@@ -287,6 +324,21 @@
 
 - 다중 페이지 콘텐츠(PDF, 프레젠테이션)에 대해 페이지 네비게이션을 제공해야 한다.
 - UI 요소: 이전/다음 버튼, 현재 페이지 / 전체 페이지 표시, 페이지 점프
+
+### FR-610: HTML 스트리밍 라이브 프리뷰 (v0.3)
+
+- Claude의 어시스턴트 응답에서 ` ```html ` 코드 펜스 또는 `Write`/`Edit` `tool_use`(`.html` 대상)를 감지하여 프리뷰 패널을 **파일 선택과 무관하게** 실시간 업데이트해야 한다.
+- 부분 수신 시에도 렌더 가능한 단위(`<!doctype`, `<html`, `<body`, 또는 균형 잡힌 최상위 태그)가 감지되면 iframe `srcdoc`으로 렌더하고, 그렇지 않으면 소스 코드 뷰로 폴백해야 한다.
+- iframe은 `sandbox="allow-scripts"`로 격리되어야 하며 `allow-same-origin`을 사용해서는 안 된다.
+- 디바운스 150ms로 버퍼 업데이트를 처리한다.
+- 쿼리 종료 이벤트(`result`) 시 finalize하여 최종 HTML을 고정한다.
+- 구현: `src/lib/claude/html-stream-extractor.ts`, `src/stores/use-live-preview-store.ts`, `src/components/panels/preview/live-html-preview.tsx`.
+
+### FR-611: 프리뷰 전체화면 모드 (v0.3)
+
+- 프리뷰 패널은 전체화면 모드를 제공해야 한다 (`position: fixed; inset: 0; z-index: 9999`).
+- `Esc` 키로 전체화면을 해제할 수 있어야 한다.
+- 전체화면 상태는 `usePreviewStore.fullscreen` 필드로 관리한다.
 
 ---
 
@@ -395,6 +447,12 @@
 
 - `GET /api/files/stat?path=<file>` — 파일 크기, 수정 시간, 타입(파일/디렉토리) 조회
 
+### FR-905b: 바이너리 파일 스트리밍
+
+- `GET /api/files/raw?path=<file>` — 이미지, PDF 등 바이너리 파일을 Content-Type과 함께 스트리밍
+- 확장자 기반 MIME 자동 감지
+- 50MB 초과 시 413 반환
+
 ### FR-906: 경로 순회 공격 방지
 
 - 모든 경로 파라미터에 대해 `path.resolve()` 기반 바운드 체크를 수행해야 한다.
@@ -408,3 +466,21 @@
 - 변경 이벤트를 WebSocket `/ws/files` 채널로 브로드캐스트한다.
 - 이벤트 타입: `add`, `change`, `unlink`, `addDir`, `unlinkDir`
 - `node_modules`, `.git` 등 불필요한 디렉토리는 무시한다.
+
+### FR-908: 런타임 프로젝트 핫스왑 (v0.3)
+
+- 시스템은 실행 중에 프로젝트 루트를 교체할 수 있어야 한다 (서버 재시작 없이).
+- `GET /api/project`는 현재 루트 + 최근 목록을 반환한다.
+- `POST /api/project` (`{ path }`)는 다음 검증을 통과한 경우 루트를 교체한다:
+  - 절대 경로 (상대 경로는 `4400` 거부)
+  - 존재하는 디렉토리 (`4404` / `4400`)
+  - 읽기 권한 (`4403`)
+  - 파일시스템 루트(`/`) 및 `$HOME` 전체 금지 (`4403`)
+- 교체 시:
+  - chokidar watcher를 기존 루트 `close()` 후 새 루트로 재시작
+  - 모든 `/ws/files` 클라이언트에 `{ type: 'project-changed', root, timestamp }` 브로드캐스트
+  - 새로 스폰되는 PTY 세션은 신규 루트를 `cwd`로 사용 (기존 세션은 유지)
+  - Claude 쿼리도 신규 루트를 `cwd`로 사용
+- 클라이언트는 `project-changed` 수신 시 에디터 탭, 프리뷰 선택을 리셋하고 파일 트리를 재로드한다.
+- 상태는 `~/.claudegui/state.json`에 `{ lastRoot, recents }` 형식으로 영속화한다.
+- 구현: `src/lib/project/project-context.mjs`, `src/app/api/project/route.ts`, `src/stores/use-project-store.ts`, `src/components/modals/project-picker-modal.tsx`.

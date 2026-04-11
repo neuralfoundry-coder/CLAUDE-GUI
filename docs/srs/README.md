@@ -1,5 +1,7 @@
 # ClaudeGUI 소프트웨어 요구사항 명세서 (SRS)
 
+> 🌐 **Language / 언어**: [한국어](./README.md) · [English](../en/srs/README.md)
+
 | 항목 | 내용 |
 |------|------|
 | **문서 버전** | 1.0 |

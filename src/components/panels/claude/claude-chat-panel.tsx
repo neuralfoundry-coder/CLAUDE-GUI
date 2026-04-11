@@ -1,16 +1,20 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Send, Square } from 'lucide-react';
+import { Send, Square, History, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useClaudeStore } from '@/stores/use-claude-store';
 import { getClaudeClient } from '@/lib/websocket/claude-client';
+import { SessionList } from './session-list';
+import { SessionInfoBar } from './session-info-bar';
 
 export function ClaudeChatPanel() {
   const [input, setInput] = useState('');
+  const [sessionListOpen, setSessionListOpen] = useState(false);
   const messages = useClaudeStore((s) => s.messages);
   const isStreaming = useClaudeStore((s) => s.isStreaming);
+  const reset = useClaudeStore((s) => s.reset);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -32,9 +36,32 @@ export function ClaudeChatPanel() {
 
   return (
     <div className="flex h-full flex-col border-l bg-background">
-      <div className="flex h-7 items-center border-b bg-muted px-3">
+      <div className="flex h-7 items-center justify-between border-b bg-muted px-2">
         <span className="text-xs font-semibold uppercase text-muted-foreground">Claude</span>
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={() => reset()}
+            title="New session"
+            aria-label="New Claude session"
+          >
+            <Plus className="h-3 w-3" aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            onClick={() => setSessionListOpen(true)}
+            title="Session history"
+            aria-label="Open Claude session history"
+          >
+            <History className="h-3 w-3" aria-hidden="true" />
+          </Button>
+        </div>
       </div>
+
       <div ref={scrollRef} className="scrollbar-thin flex-1 overflow-y-auto p-3 text-sm">
         {messages.length === 0 ? (
           <div className="flex h-full items-center justify-center text-center text-xs text-muted-foreground">
@@ -63,6 +90,9 @@ export function ClaudeChatPanel() {
           </div>
         )}
       </div>
+
+      <SessionInfoBar />
+
       <div className="border-t p-2">
         <div className="flex items-start gap-2">
           <textarea
@@ -70,14 +100,26 @@ export function ClaudeChatPanel() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Ask Claude..."
+            aria-label="Claude prompt input"
             rows={2}
             className="flex-1 resize-none rounded-md border bg-background p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
           />
-          <Button size="icon" onClick={onSend} disabled={isStreaming || !input.trim()}>
-            {isStreaming ? <Square className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+          <Button
+            size="icon"
+            onClick={onSend}
+            disabled={isStreaming || !input.trim()}
+            aria-label={isStreaming ? 'Stop' : 'Send prompt'}
+          >
+            {isStreaming ? (
+              <Square className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <Send className="h-4 w-4" aria-hidden="true" />
+            )}
           </Button>
         </div>
       </div>
+
+      <SessionList open={sessionListOpen} onOpenChange={setSessionListOpen} />
     </div>
   );
 }

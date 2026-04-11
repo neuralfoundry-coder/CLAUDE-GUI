@@ -41,3 +41,12 @@ dist
 
 # local data
 tmp/
+
+# Claude Code local state (worktrees, settings cache)
+.claude/
+
+# ClaudeGUI local runtime state (pid, logs, recents)
+.claudegui/
+
+# Temporary E2E slide fixture written by tests
+tests-slides-e2e.reveal.html

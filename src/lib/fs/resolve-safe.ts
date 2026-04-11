@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { getActiveRoot } from '@/lib/project/project-context.mjs';
 
 export class SandboxError extends Error {
   readonly code: number;
@@ -25,8 +26,7 @@ const DENIED_SEGMENTS = new Set([
 ]);
 
 export function getProjectRoot(): string {
-  const root = process.env.PROJECT_ROOT || process.cwd();
-  return path.resolve(root);
+  return getActiveRoot();
 }
 
 function isDeniedSegment(segment: string): boolean {

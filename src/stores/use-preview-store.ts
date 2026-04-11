@@ -8,18 +8,24 @@ interface PreviewState {
   currentFile: string | null;
   pageNumber: number;
   zoom: number;
+  fullscreen: boolean;
   setFile: (path: string | null) => void;
   setPage: (page: number) => void;
   setZoom: (zoom: number) => void;
+  toggleFullscreen: () => void;
+  setFullscreen: (value: boolean) => void;
 }
 
 export const usePreviewStore = create<PreviewState>((set) => ({
   currentFile: null,
   pageNumber: 1,
   zoom: 1,
+  fullscreen: false,
   setFile: (currentFile) => set({ currentFile, pageNumber: 1 }),
   setPage: (pageNumber) => set({ pageNumber }),
   setZoom: (zoom) => set({ zoom }),
+  toggleFullscreen: () => set((s) => ({ fullscreen: !s.fullscreen })),
+  setFullscreen: (fullscreen) => set({ fullscreen }),
 }));
 
 export function detectPreviewType(path: string | null): PreviewType {

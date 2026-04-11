@@ -13,8 +13,17 @@ export interface FileChangeMessage {
   timestamp: string;
 }
 
+export interface ProjectChangedMessage {
+  type: 'project-changed';
+  root: string;
+  timestamp: string;
+}
+
 export type FileWsClientMessage = { type: 'watch'; path: string } | { type: 'unwatch' };
-export type FileWsServerMessage = FileChangeMessage | { type: 'error'; message: string };
+export type FileWsServerMessage =
+  | FileChangeMessage
+  | ProjectChangedMessage
+  | { type: 'error'; message: string };
 
 export interface TerminalResizeMessage {
   type: 'resize';
@@ -81,14 +90,18 @@ export interface ClaudeResultMessage {
   type: 'result';
   requestId: string;
   data: {
-    cost_usd: number;
-    usage: {
-      input_tokens: number;
-      output_tokens: number;
-      cache_read_tokens?: number;
+    type: 'result';
+    subtype?: string;
+    result?: string;
+    total_cost_usd?: number;
+    duration_ms?: number;
+    session_id?: string;
+    num_turns?: number;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
     };
-    session_id: string;
-    duration_ms: number;
   };
 }
 

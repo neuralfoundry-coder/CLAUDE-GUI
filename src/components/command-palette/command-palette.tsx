@@ -5,6 +5,7 @@ import { Command } from 'cmdk';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
 import { useClaudeStore } from '@/stores/use-claude-store';
+import { useSettingsStore } from '@/stores/use-settings-store';
 import { filesApi } from '@/lib/api-client';
 import { exportToPptx, parseHtmlToSlides } from '@/lib/export/pptx-exporter';
 import { openPrintPdf } from '@/lib/export/pdf-exporter';
@@ -41,6 +42,7 @@ export function CommandPalette() {
   const togglePanel = useLayoutStore((s) => s.togglePanel);
   const setTheme = useLayoutStore((s) => s.setTheme);
   const resetClaude = useClaudeStore((s) => s.reset);
+  const openRulesModal = useSettingsStore((s) => s.openRulesModal);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -141,10 +143,22 @@ export function CommandPalette() {
                 Theme: High Contrast
               </Command.Item>
               <Command.Item
+                onSelect={() => runCommand(() => setTheme('retro-green'))}
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                Theme: Retro — Green Phosphor
+              </Command.Item>
+              <Command.Item
                 onSelect={() => runCommand(() => resetClaude())}
                 className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
               >
                 New Claude Session
+              </Command.Item>
+              <Command.Item
+                onSelect={() => runCommand(() => openRulesModal())}
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                Edit Permission Rules
               </Command.Item>
               <Command.Item
                 onSelect={() => runCommand(exportPptx)}

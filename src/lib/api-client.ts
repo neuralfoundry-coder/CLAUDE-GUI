@@ -54,8 +54,42 @@ export const filesApi = {
   },
 };
 
+export interface SessionHistoryMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  timestamp: number;
+  toolName?: string;
+}
+
+export interface SessionSummary {
+  id: string;
+  name: string;
+  cwd: string;
+  createdAt: string;
+  lastUsedAt: string;
+  totalCost: number;
+  messageCount: number;
+}
+
+export interface SessionDetail extends SessionSummary {
+  history: SessionHistoryMessage[];
+}
+
+export const projectApi = {
+  get(): Promise<{ root: string; recents: string[] }> {
+    return apiFetch('/api/project');
+  },
+  set(path: string): Promise<{ root: string; recents: string[] }> {
+    return apiFetch('/api/project', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  },
+};
+
 export const sessionsApi = {
-  list(): Promise<{ sessions: Array<{ id: string; name: string; totalCost: number }> }> {
+  list(): Promise<{ sessions: SessionSummary[] }> {
     return apiFetch('/api/sessions');
   },
 
@@ -66,7 +100,7 @@ export const sessionsApi = {
     });
   },
 
-  get(id: string): Promise<unknown> {
+  get(id: string): Promise<SessionDetail> {
     return apiFetch(`/api/sessions/${id}`);
   },
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useClaudeStore } from '@/stores/use-claude-store';
+import { ConnectionIndicator } from './connection-indicator';
 
 export function StatusBar() {
   const totalCost = useClaudeStore((s) => s.totalCost);
@@ -14,6 +15,7 @@ export function StatusBar() {
         <span>Claude: {isStreaming ? 'streaming' : 'idle'}</span>
       </div>
       <div className="flex items-center gap-3">
+        <ConnectionIndicator />
         <span>Cost: ${totalCost.toFixed(4)}</span>
       </div>
     </footer>
