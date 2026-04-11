@@ -4,27 +4,40 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Code, Eye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
+import { useEditorStore } from '@/stores/use-editor-store';
 
 export function LiveHtmlPreview() {
   const mode = useLivePreviewStore((s) => s.mode);
   const buffer = useLivePreviewStore((s) => s.buffer);
+  const generatedFilePath = useLivePreviewStore((s) => s.generatedFilePath);
+  // When the user has opened the generated HTML file in the editor, the
+  // editor buffer becomes the source of truth so live edits re-render.
+  const editorContent = useEditorStore((s) => {
+    if (!generatedFilePath) return null;
+    const tab = s.tabs.find((t) => t.path === generatedFilePath);
+    return tab ? tab.content : null;
+  });
+  const usingEditor = editorContent !== null;
+  const source = usingEditor ? (editorContent as string) : buffer;
+
   const [userSource, setUserSource] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  // Debounce buffer → iframe srcdoc to avoid churn during rapid chunks.
-  const [debouncedBuffer, setDebouncedBuffer] = useState(buffer);
+  // Debounce source → iframe srcdoc to avoid churn during rapid chunks or keystrokes.
+  const [debouncedSource, setDebouncedSource] = useState(source);
   useEffect(() => {
-    const id = window.setTimeout(() => setDebouncedBuffer(buffer), 150);
+    const id = window.setTimeout(() => setDebouncedSource(source), 150);
     return () => window.clearTimeout(id);
-  }, [buffer]);
+  }, [source]);
 
-  const showSource = userSource || mode === 'live-code';
+  const showSource = userSource || (!usingEditor && mode === 'live-code');
 
   const statusLabel = useMemo(() => {
+    if (usingEditor) return 'Editor';
     if (mode === 'live-html') return 'Rendered';
     if (mode === 'live-code') return 'Source (streaming)';
     return 'Idle';
-  }, [mode]);
+  }, [mode, usingEditor]);
 
   return (
     <div className="flex h-full flex-col">
@@ -48,12 +61,12 @@ export function LiveHtmlPreview() {
       <div className="flex-1 overflow-hidden">
         {showSource ? (
           <pre className="h-full overflow-auto bg-background p-3 text-xs font-mono">
-            {buffer || '(waiting for content…)'}
+            {source || '(waiting for content…)'}
           </pre>
         ) : (
           <iframe
             ref={iframeRef}
-            srcDoc={debouncedBuffer}
+            srcDoc={debouncedSource}
             sandbox="allow-scripts"
             referrerPolicy="no-referrer"
             title="Live HTML preview"

@@ -10,11 +10,13 @@ interface LivePreviewState {
   mode: LivePreviewMode;
   lastFlushAt: number;
   autoSwitch: boolean;
+  generatedFilePath: string | null;
   startStream: (id: string) => void;
   appendChunk: (html: string, renderable: boolean) => void;
   finalize: () => void;
   reset: () => void;
   setAutoSwitch: (enabled: boolean) => void;
+  setGeneratedFilePath: (path: string | null) => void;
 }
 
 export const useLivePreviewStore = create<LivePreviewState>((set) => ({
@@ -23,9 +25,20 @@ export const useLivePreviewStore = create<LivePreviewState>((set) => ({
   mode: 'idle',
   lastFlushAt: 0,
   autoSwitch: true,
+  generatedFilePath: null,
 
   startStream: (streamId) =>
-    set({ streamId, buffer: '', mode: 'live-code', lastFlushAt: Date.now() }),
+    set((s) => ({
+      streamId,
+      // Preserve the previous buffer so a follow-up stream that only edits
+      // part of the document (e.g. Edit/MultiEdit on page 3 of a 5-page
+      // HTML) still has the prior render as its baseline. Incoming chunks
+      // replace the buffer as soon as they arrive.
+      buffer: s.buffer,
+      mode: s.buffer ? s.mode : 'live-code',
+      lastFlushAt: Date.now(),
+      generatedFilePath: s.generatedFilePath,
+    })),
 
   appendChunk: (html, renderable) =>
     set({
@@ -40,7 +53,16 @@ export const useLivePreviewStore = create<LivePreviewState>((set) => ({
       lastFlushAt: Date.now(),
     })),
 
-  reset: () => set({ streamId: null, buffer: '', mode: 'idle', lastFlushAt: 0 }),
+  reset: () =>
+    set({
+      streamId: null,
+      buffer: '',
+      mode: 'idle',
+      lastFlushAt: 0,
+      generatedFilePath: null,
+    }),
 
   setAutoSwitch: (autoSwitch) => set({ autoSwitch }),
+
+  setGeneratedFilePath: (generatedFilePath) => set({ generatedFilePath }),
 }));
