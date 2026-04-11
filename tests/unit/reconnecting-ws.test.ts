@@ -9,6 +9,7 @@ class MockWebSocket {
   readyState = 0;
   listeners: Record<string, Array<(e: unknown) => void>> = {};
   url: string;
+  binaryType = 'blob';
 
   constructor(url: string) {
     this.url = url;
@@ -55,6 +56,11 @@ describe('ReconnectingWebSocket', () => {
     new ReconnectingWebSocket({ url: 'ws://localhost/test' });
     expect(MockWebSocket.instances).toHaveLength(1);
     expect(MockWebSocket.instances[0]!.url).toBe('ws://localhost/test');
+  });
+
+  it('sets binaryType to arraybuffer so binary frames arrive as ArrayBuffer', () => {
+    new ReconnectingWebSocket({ url: 'ws://localhost/test' });
+    expect(MockWebSocket.instances[0]!.binaryType).toBe('arraybuffer');
   });
 
   it('calls onOpen handler', () => {
