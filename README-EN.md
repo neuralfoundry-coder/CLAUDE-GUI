@@ -354,7 +354,17 @@ The full threat model and mitigations are in [docs/en/architecture/05-security-a
 
 ## License
 
-TBD
+This project is distributed under the **[PolyForm Noncommercial License 1.0.0](./LICENSE)**.
+
+- **Noncommercial use is permitted**: individuals, research groups, educational institutions, charities, government agencies, and nonprofits may freely use, modify, and redistribute the software for internal, non-revenue-generating purposes.
+- **Commercial use is not permitted**: selling a product or service that bundles the software, hosting it as a paid SaaS, paid consulting around it, or monetising it through advertising is **not allowed** under this license.
+- **Preserve notices**: any redistribution must keep the license text and copyright notices intact.
+- **No trademark or patent grant**: the license covers copyright only. It does not grant rights to the copyright holder's trademarks, patents, publicity rights, or similar.
+- **As-is, no warranty**: the software is provided "AS IS" and the licensor is not liable for any damages arising from its use.
+
+The full text is available in [LICENSE](./LICENSE) and at <https://polyformproject.org/licenses/noncommercial/1.0.0/>. For commercial use please contact the copyright holder to arrange a separate license.
+
+> **Disclaimer**: ClaudeGUI is an independent community project and is not affiliated with Anthropic or Claude Code. Use of the Claude CLI and Claude models is governed by Anthropic's own terms of service.
 
 ## Contributing
 
