@@ -52,6 +52,13 @@ export const filesApi = {
   stat(path: string): Promise<FileStat> {
     return apiFetch(`/api/files/stat?path=${encodeURIComponent(path)}`);
   },
+
+  reveal(path: string): Promise<{ revealed: string; platform: string }> {
+    return apiFetch('/api/files/reveal', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    });
+  },
 };
 
 export interface SessionHistoryMessage {

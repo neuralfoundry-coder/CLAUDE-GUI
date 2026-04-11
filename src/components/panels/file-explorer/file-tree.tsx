@@ -8,6 +8,8 @@ import type { TreeNode } from './use-file-tree';
 import { filesApi } from '@/lib/api-client';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { usePreviewStore, detectPreviewType } from '@/stores/use-preview-store';
+import { useTerminalStore } from '@/stores/use-terminal-store';
+import { useLayoutStore } from '@/stores/use-layout-store';
 import { cn } from '@/lib/utils';
 import {
   ContextMenu,
@@ -24,6 +26,9 @@ interface NodeProps extends NodeRendererProps<TreeNode> {
 function Node({ node, style, dragHandle, onOpenDir }: NodeProps) {
   const openFile = useEditorStore((s) => s.openFile);
   const setPreviewFile = usePreviewStore((s) => s.setFile);
+  const createTerminal = useTerminalStore((s) => s.createSession);
+  const terminalCollapsed = useLayoutStore((s) => s.terminalCollapsed);
+  const togglePanel = useLayoutStore((s) => s.togglePanel);
 
   const onClick = () => {
     if (node.data.isDirectory) {
@@ -55,6 +60,23 @@ function Node({ node, style, dragHandle, onOpenDir }: NodeProps) {
       await filesApi.rename(node.data.path, newPath);
     } catch (err) {
       alert(`Rename failed: ${(err as Error).message}`);
+    }
+  };
+
+  const onOpenTerminalHere = () => {
+    // For files, spawn in the parent directory. For dirs, spawn in the dir.
+    const target = node.data.isDirectory
+      ? node.data.path
+      : node.data.path.split('/').slice(0, -1).join('/');
+    if (terminalCollapsed) togglePanel('terminal');
+    createTerminal({ initialCwd: target || '.' });
+  };
+
+  const onRevealInFinder = async () => {
+    try {
+      await filesApi.reveal(node.data.path);
+    } catch (err) {
+      alert(`Reveal failed: ${(err as Error).message}`);
     }
   };
 
@@ -90,6 +112,11 @@ function Node({ node, style, dragHandle, onOpenDir }: NodeProps) {
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem onSelect={onOpenTerminalHere}>Open terminal here</ContextMenuItem>
+        <ContextMenuItem onSelect={onRevealInFinder}>
+          Reveal in {navigator.userAgent.includes('Mac') ? 'Finder' : 'File Explorer'}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
         <ContextMenuItem onSelect={onRename}>Rename</ContextMenuItem>
         <ContextMenuItem onSelect={() => navigator.clipboard?.writeText(node.data.path)}>
           Copy path
