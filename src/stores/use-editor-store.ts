@@ -20,10 +20,20 @@ export interface EditorTab {
   } | null;
 }
 
+export interface PendingReveal {
+  path: string;
+  line?: number;
+  col?: number;
+  /** Monotonic counter so repeated reveals of the same line still fire. */
+  tick: number;
+}
+
 interface EditorState {
   tabs: EditorTab[];
   activeTabId: string | null;
-  openFile: (path: string) => Promise<void>;
+  pendingReveal: PendingReveal | null;
+  openFile: (path: string, opts?: { line?: number; col?: number }) => Promise<void>;
+  clearPendingReveal: () => void;
   closeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
   updateContent: (id: string, content: string) => void;
@@ -43,14 +53,20 @@ function pathToId(path: string): string {
   return path;
 }
 
+let revealTick = 0;
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   tabs: [],
   activeTabId: null,
+  pendingReveal: null,
 
-  openFile: async (path) => {
+  openFile: async (path, opts) => {
+    const reveal = opts?.line
+      ? { path, line: opts.line, col: opts.col, tick: ++revealTick }
+      : null;
     const existing = get().tabs.find((t) => t.path === path);
     if (existing) {
-      set({ activeTabId: existing.id });
+      set({ activeTabId: existing.id, pendingReveal: reveal });
       return;
     }
     try {
@@ -67,11 +83,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       set((s) => ({
         tabs: [...s.tabs, tab],
         activeTabId: tab.id,
+        pendingReveal: reveal,
       }));
     } catch (err) {
       console.error('[editor] openFile failed', err);
     }
   },
+
+  clearPendingReveal: () => set({ pendingReveal: null }),
 
   closeTab: (id) =>
     set((s) => {
