@@ -101,6 +101,10 @@ export function ClaudeChatPanel() {
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // While an IME composition is active (Korean/Japanese/Chinese), the first
+    // Enter commits the composition. Treating it as submit would send the
+    // text without the last composing char and leave that char in the box.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (mentionOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();

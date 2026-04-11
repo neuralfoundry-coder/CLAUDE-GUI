@@ -50,6 +50,9 @@ export function TerminalSearchOverlay({ sessionId, onClose }: TerminalSearchOver
       handleClose();
       return;
     }
+    // Skip while IME composition is active — the first Enter commits the
+    // composition; acting on it would drop/duplicate the last CJK character.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       if (e.shiftKey) {

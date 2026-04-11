@@ -89,6 +89,7 @@ export function ProjectPickerModal({ open, onOpenChange }: ProjectPickerModalPro
               value={pathInput}
               onChange={(e) => setPathInput(e.target.value)}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === 'Enter') handleOpen(pathInput);
               }}
               placeholder="/absolute/path/to/project"

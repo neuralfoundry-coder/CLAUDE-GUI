@@ -127,6 +127,7 @@ export function PermissionRulesModal({ open, onOpenChange }: PermissionRulesModa
               aria-label="New allow rule"
               className="flex-1 rounded-md border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === 'Enter') {
                   e.preventDefault();
                   addAllow();
@@ -166,6 +167,7 @@ export function PermissionRulesModal({ open, onOpenChange }: PermissionRulesModa
               aria-label="New deny rule"
               className="flex-1 rounded-md border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === 'Enter') {
                   e.preventDefault();
                   addDeny();
