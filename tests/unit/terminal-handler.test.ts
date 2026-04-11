@@ -16,8 +16,8 @@ interface FakePty {
 }
 
 function createFakePty(): FakePty {
-  let dataHandler: PtyDataHandler | null = null;
-  let exitHandler: PtyExitHandler | null = null;
+  const dataHandlers: PtyDataHandler[] = [];
+  const exitHandlers: PtyExitHandler[] = [];
   return {
     write: vi.fn(),
     resize: vi.fn(),
@@ -25,28 +25,50 @@ function createFakePty(): FakePty {
     resume: vi.fn(),
     kill: vi.fn(),
     onData: (cb) => {
-      dataHandler = cb;
+      dataHandlers.push(cb);
     },
     onExit: (cb) => {
-      exitHandler = cb;
+      exitHandlers.push(cb);
     },
-    emitData: (data) => dataHandler?.(data),
-    emitExit: (code) => exitHandler?.({ exitCode: code }),
+    emitData: (data) => {
+      for (const h of dataHandlers) h(data);
+    },
+    emitExit: (code) => {
+      for (const h of exitHandlers) h({ exitCode: code });
+    },
   };
 }
 
 let currentPty: FakePty | null = null;
+const lastSpawnArgs: { shell?: string; args?: readonly string[]; opts?: Record<string, unknown> } = {};
 
 vi.mock('node-pty', () => ({
   default: {
-    spawn: vi.fn(() => {
+    spawn: vi.fn((shell: string, args: readonly string[], opts: Record<string, unknown>) => {
+      lastSpawnArgs.shell = shell;
+      lastSpawnArgs.args = args;
+      lastSpawnArgs.opts = opts;
       currentPty = createFakePty();
       return currentPty;
     }),
   },
-  spawn: vi.fn(() => {
+  spawn: vi.fn((shell: string, args: readonly string[], opts: Record<string, unknown>) => {
+    lastSpawnArgs.shell = shell;
+    lastSpawnArgs.args = args;
+    lastSpawnArgs.opts = opts;
     currentPty = createFakePty();
     return currentPty;
+  }),
+}));
+
+vi.mock('../../server-handlers/terminal/shell-resolver.mjs', () => ({
+  resolveShell: () => ({ shell: '/bin/zsh', args: ['-l', '-i'] }),
+  buildPtyEnv: () => ({
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    TERM_PROGRAM: 'ClaudeGUI',
+    TERM_PROGRAM_VERSION: '0.0.0',
+    LANG: 'en_US.UTF-8',
   }),
 }));
 
@@ -105,10 +127,33 @@ async function loadHandler() {
   return mod.default as (ws: FakeWs, req: unknown) => Promise<void>;
 }
 
+/** Parse all text control frames from the fake ws. */
+function controlFrames(ws: FakeWs): Array<{ type: string; [k: string]: unknown }> {
+  return ws.sent
+    .filter((m) => !m.binary)
+    .map((m) => {
+      try {
+        return JSON.parse(m.payload as string);
+      } catch {
+        return { type: '__unparseable__' };
+      }
+    });
+}
+
 describe('terminal-handler', () => {
   beforeEach(() => {
     currentPty = null;
     vi.useFakeTimers();
+  });
+
+  it('announces the server session id on attach', async () => {
+    const handler = await loadHandler();
+    const ws = new FakeWs();
+    await handler(ws, {});
+    const session = controlFrames(ws).find((c) => c.type === 'session');
+    expect(session).toBeDefined();
+    expect(typeof session!.id).toBe('string');
+    expect(session!.replay).toBe(false);
   });
 
   it('sends PTY output as a binary frame after the batch interval', async () => {
@@ -118,9 +163,9 @@ describe('terminal-handler', () => {
     expect(currentPty).not.toBeNull();
     currentPty!.emitData('hello world');
     await vi.advanceTimersByTimeAsync(20);
-    expect(ws.sent).toHaveLength(1);
-    expect(ws.sent[0]!.binary).toBe(true);
-    const payload = ws.sent[0]!.payload as Buffer;
+    const binary = ws.sent.filter((m) => m.binary);
+    expect(binary).toHaveLength(1);
+    const payload = binary[0]!.payload as Buffer;
     expect(Buffer.isBuffer(payload)).toBe(true);
     expect(payload.toString('utf-8')).toBe('hello world');
   });
@@ -130,9 +175,9 @@ describe('terminal-handler', () => {
     const ws = new FakeWs();
     await handler(ws, {});
     currentPty!.emitExit(0);
-    const control = ws.sent.find((m) => !m.binary);
-    expect(control).toBeDefined();
-    expect(JSON.parse(control!.payload as string)).toEqual({ type: 'exit', code: 0 });
+    const exitFrame = controlFrames(ws).find((c) => c.type === 'exit');
+    expect(exitFrame).toBeDefined();
+    expect(exitFrame!.code).toBe(0);
   });
 
   it('does not drop PTY output while paused; flushes on resume in order', async () => {
@@ -196,23 +241,77 @@ describe('terminal-handler', () => {
     currentPty!.emitData(Buffer.alloc(5 * 1024 * 1024 + 1, 0x41));
     expect(currentPty!.kill).toHaveBeenCalled();
     expect(ws.readyState).toBe(ws.CLOSED);
-    const overflow = ws.sent.find((m) => {
-      if (m.binary) return false;
-      try {
-        const parsed = JSON.parse(m.payload as string);
-        return parsed.type === 'error' && parsed.code === 'BUFFER_OVERFLOW';
-      } catch {
-        return false;
-      }
-    });
+    const overflow = controlFrames(ws).find(
+      (c) => c.type === 'error' && (c as unknown as { code: string }).code === 'BUFFER_OVERFLOW',
+    );
     expect(overflow).toBeDefined();
   });
 
-  it('kills the PTY when the WS closes', async () => {
+  it('DETACHES instead of killing the PTY on ws close (registry keeps it alive)', async () => {
     const handler = await loadHandler();
     const ws = new FakeWs();
     await handler(ws, {});
     ws.emit('close');
+    expect(currentPty!.kill).not.toHaveBeenCalled();
+  });
+
+  it('destroys the PTY on an explicit {type:"close"} message', async () => {
+    const handler = await loadHandler();
+    const ws = new FakeWs();
+    await handler(ws, {});
+    ws.emit('message', Buffer.from(JSON.stringify({ type: 'close' })), false);
     expect(currentPty!.kill).toHaveBeenCalled();
+  });
+
+  it('spawns the shell with login + interactive flags resolved by shell-resolver', async () => {
+    const handler = await loadHandler();
+    const ws = new FakeWs();
+    await handler(ws, {});
+    expect(lastSpawnArgs.shell).toBe('/bin/zsh');
+    expect(lastSpawnArgs.args).toEqual(['-l', '-i']);
+  });
+
+  it('passes TERM_PROGRAM=ClaudeGUI and xterm-256color in the PTY env', async () => {
+    const handler = await loadHandler();
+    const ws = new FakeWs();
+    await handler(ws, {});
+    const env = lastSpawnArgs.opts?.env as Record<string, string> | undefined;
+    expect(env).toBeDefined();
+    expect(env!.TERM_PROGRAM).toBe('ClaudeGUI');
+    expect(env!.TERM).toBe('xterm-256color');
+  });
+
+  it('re-attaches to an existing session and replays buffered output', async () => {
+    const handler = await loadHandler();
+    const ws1 = new FakeWs();
+    await handler(ws1, {});
+    const firstSession = controlFrames(ws1).find((c) => c.type === 'session') as
+      | { id: string; replay: boolean }
+      | undefined;
+    expect(firstSession).toBeDefined();
+
+    // Produce some output and flush it so the ring buffer has content.
+    currentPty!.emitData('before-reload');
+    await vi.advanceTimersByTimeAsync(20);
+
+    // Client goes away (e.g. page reload) — ws closes but PTY stays alive.
+    ws1.emit('close');
+    expect(currentPty!.kill).not.toHaveBeenCalled();
+
+    // New attachment with the same sessionId.
+    const ws2 = new FakeWs();
+    await handler(ws2, { url: `/ws/terminal?sessionId=${firstSession!.id}` });
+
+    // Should receive a session frame with replay=true and at least one
+    // binary replay frame matching the prior output.
+    const session2 = controlFrames(ws2).find((c) => c.type === 'session') as
+      | { id: string; replay: boolean }
+      | undefined;
+    expect(session2).toBeDefined();
+    expect(session2!.id).toBe(firstSession!.id);
+    expect(session2!.replay).toBe(true);
+    const binary = ws2.sent.filter((m) => m.binary);
+    expect(binary.length).toBeGreaterThanOrEqual(1);
+    expect((binary[0]!.payload as Buffer).toString('utf-8')).toContain('before-reload');
   });
 });

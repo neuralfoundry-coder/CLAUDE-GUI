@@ -1,24 +1,18 @@
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs';
+import url from 'node:url';
 import { Buffer } from 'node:buffer';
 import { getActiveRoot } from '../src/lib/project/project-context.mjs';
 import { createDebug } from '../src/lib/debug.mjs';
+import { resolveShell, buildPtyEnv } from './terminal/shell-resolver.mjs';
+import { terminalSessionRegistry } from './terminal/session-registry.mjs';
 
 const dbg = createDebug('terminal');
 
 const BATCH_INTERVAL_MS = 16;
 const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const PTY_PAUSE_THRESHOLD = 256 * 1024;
-
-function buildPtyEnv() {
-  const env = { ...process.env };
-  const extra = process.env.CLAUDEGUI_EXTRA_PATH;
-  if (extra) {
-    const sep = process.platform === 'win32' ? ';' : ':';
-    env.PATH = `${extra}${sep}${env.PATH ?? ''}`;
-  }
-  return env;
-}
 
 async function loadPty() {
   try {
@@ -30,11 +24,6 @@ async function loadPty() {
   }
 }
 
-function defaultShell() {
-  if (process.platform === 'win32') return process.env.COMSPEC || 'cmd.exe';
-  return process.env.SHELL || '/bin/bash';
-}
-
 function sendControl(ws, msg) {
   if (ws.readyState !== ws.OPEN) return;
   try {
@@ -44,41 +33,142 @@ function sendControl(ws, msg) {
   }
 }
 
-export default async function terminalHandler(ws, _req) {
-  const pty = await loadPty();
-  if (!pty) {
-    sendControl(ws, {
-      type: 'error',
-      code: 'PTY_UNAVAILABLE',
-      message: 'node-pty is not available on the server',
-    });
-    ws.close();
-    return;
-  }
-
-  let cwd;
+/**
+ * Resolve the initial PTY cwd. Order of preference:
+ *   1. `?cwd=<path>` query param on the WebSocket upgrade URL (if it resolves
+ *      to a real directory inside the active project root — checked via
+ *      `resolveSafe`-equivalent here). Used by "Open terminal here".
+ *   2. The current ProjectContext active root (`getActiveRoot()`).
+ *   3. The user's home directory.
+ */
+function resolveInitialCwd(req) {
+  const fallback = () => {
+    try {
+      return getActiveRoot();
+    } catch {
+      return path.resolve(os.homedir());
+    }
+  };
   try {
-    cwd = getActiveRoot();
-  } catch {
-    cwd = path.resolve(os.homedir());
+    if (!req || !req.url) return fallback();
+    const parsed = url.parse(req.url, true);
+    const raw = parsed.query?.cwd;
+    if (typeof raw !== 'string' || raw.length === 0) return fallback();
+    const root = (() => {
+      try {
+        return getActiveRoot();
+      } catch {
+        return null;
+      }
+    })();
+    const abs = path.isAbsolute(raw) ? path.resolve(raw) : root ? path.resolve(root, raw) : null;
+    if (!abs) return fallback();
+    if (root && !(abs === root || abs.startsWith(root + path.sep))) {
+      dbg.warn('reject cwd outside project root', { raw, abs, root });
+      return fallback();
+    }
+    const stat = fs.statSync(abs);
+    if (!stat.isDirectory()) return path.dirname(abs);
+    return abs;
+  } catch (err) {
+    dbg.warn('cwd query resolution failed', err);
+    return fallback();
   }
-  const shell = defaultShell();
-  dbg.info('spawning PTY', { shell, cwd });
-  const ptyProcess = pty.spawn(shell, [], {
+}
+
+function parseQuerySessionId(req) {
+  try {
+    if (!req || !req.url) return null;
+    const parsed = url.parse(req.url, true);
+    const raw = parsed.query?.sessionId;
+    if (typeof raw === 'string' && raw.length > 0) return raw;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Spawn a fresh PTY and register it in the session registry. Returns the
+ * session record.
+ */
+async function createNewSession(req) {
+  const pty = await loadPty();
+  if (!pty) return null;
+  const cwd = resolveInitialCwd(req);
+  const { shell, args: shellArgs } = resolveShell();
+  const env = buildPtyEnv(shell);
+  dbg.info('spawning PTY', { shell, shellArgs, cwd });
+  const ptyProcess = pty.spawn(shell, shellArgs, {
     name: 'xterm-256color',
     cols: 120,
     rows: 30,
     cwd,
-    env: buildPtyEnv(),
+    env,
   });
+  return terminalSessionRegistry.register(ptyProcess, cwd);
+}
 
+export default async function terminalHandler(ws, req) {
+  // 1. Try to re-attach to an existing session if the client supplied an id.
+  const requestedId = parseQuerySessionId(req);
+  let record = null;
+  let replay = null;
+  let replayed = false;
+  if (requestedId) {
+    const attached = terminalSessionRegistry.attach(requestedId);
+    if (attached) {
+      record = attached.record;
+      replay = attached.replay;
+    } else {
+      dbg.info('requested session not found, creating new', { requestedId });
+    }
+  }
+
+  // 2. No session found — spawn a new one.
+  if (!record) {
+    record = await createNewSession(req);
+    if (!record) {
+      sendControl(ws, {
+        type: 'error',
+        code: 'PTY_UNAVAILABLE',
+        message: 'node-pty is not available on the server',
+      });
+      ws.close();
+      return;
+    }
+    // `attach` only increments the counter — do it so detach() sees the right
+    // reference count.
+    terminalSessionRegistry.attach(record.id);
+  }
+
+  const { ptyProcess } = record;
+  const sessionId = record.id;
+  let explicitlyClosed = false;
+  let detached = false;
+
+  // Announce the authoritative session ID to the client.
+  sendControl(ws, { type: 'session', id: sessionId, replay: Boolean(replay && replay.length > 0) });
+
+  // If we had a replay buffer, ship it as a single binary frame BEFORE
+  // installing the transient listener. Node's single-threaded model means
+  // no onData can fire between our snapshot and the listener install.
+  if (replay && replay.length > 0 && ws.readyState === ws.OPEN) {
+    try {
+      ws.send(replay, { binary: true });
+      replayed = true;
+    } catch (err) {
+      dbg.error('replay send failed', err);
+    }
+  }
+
+  // ── Per-attachment state ────────────────────────────────────────────
   /** Pending PTY output chunks (as Buffers). */
   const queue = [];
   let bufferedBytes = 0;
   let batchTimer = null;
   let paused = false;
   let ptyPaused = false;
-  let killed = false;
 
   const sendBatch = () => {
     if (queue.length === 0) return;
@@ -103,19 +193,13 @@ export default async function terminalHandler(ws, _req) {
   };
 
   const killWithOverflow = () => {
-    if (killed) return;
-    killed = true;
-    dbg.warn('terminal buffer overflow — killing PTY');
+    dbg.warn('terminal buffer overflow — destroying session');
     sendControl(ws, {
       type: 'error',
       code: 'BUFFER_OVERFLOW',
       message: `terminal output buffer exceeded ${MAX_BUFFER_BYTES} bytes`,
     });
-    try {
-      ptyProcess.kill();
-    } catch {
-      /* ignore */
-    }
+    terminalSessionRegistry.destroy(sessionId);
     if (ws.readyState === ws.OPEN) {
       try {
         ws.close(1011, 'buffer overflow');
@@ -150,9 +234,9 @@ export default async function terminalHandler(ws, _req) {
     }
   };
 
-  ptyProcess.onData((data) => {
-    if (killed) return;
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf-8');
+  // ── Transient data listener ─────────────────────────────────────────
+  const onChunk = (buf) => {
+    if (explicitlyClosed || detached) return;
     queue.push(buf);
     bufferedBytes += buf.length;
     if (bufferedBytes > MAX_BUFFER_BYTES) {
@@ -161,13 +245,14 @@ export default async function terminalHandler(ws, _req) {
     }
     maybePausePty();
     if (!paused) scheduleFlush();
-  });
+  };
+  record.transientListeners.add(onChunk);
 
-  ptyProcess.onExit(({ exitCode }) => {
-    dbg.info('PTY exited', { exitCode });
-    // Flush anything still queued (if not paused) before announcing exit.
+  // ── Exit listener (propagate `{type:'exit'}` to the client) ─────────
+  const onExit = (code) => {
+    if (detached) return;
     if (!paused) sendBatch();
-    sendControl(ws, { type: 'exit', code: exitCode ?? null });
+    sendControl(ws, { type: 'exit', code: code ?? null });
     if (ws.readyState === ws.OPEN) {
       try {
         ws.close();
@@ -175,8 +260,16 @@ export default async function terminalHandler(ws, _req) {
         /* ignore */
       }
     }
-  });
+  };
+  record.exitListeners.add(onExit);
 
+  // If the session already exited before we attached (edge case: GC race),
+  // fire the exit notification synchronously.
+  if (record.exited) {
+    queueMicrotask(() => onExit(record.exitCode));
+  }
+
+  // ── Incoming messages from the client ───────────────────────────────
   ws.on('message', (raw, isBinary) => {
     if (isBinary) {
       // Legacy path: raw keystrokes as binary. Retained for compatibility.
@@ -232,25 +325,42 @@ export default async function terminalHandler(ws, _req) {
         }
         return;
       }
+      case 'close': {
+        // Explicit destroy from the client (tab close button).
+        explicitlyClosed = true;
+        record.transientListeners.delete(onChunk);
+        record.exitListeners.delete(onExit);
+        terminalSessionRegistry.destroy(sessionId);
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
       default:
         return;
     }
   });
 
   ws.on('close', () => {
-    dbg.log('ws closed, killing PTY');
+    if (detached) return;
+    detached = true;
+    dbg.log('ws closed — detaching session', { id: sessionId, explicitlyClosed });
     if (batchTimer) {
       clearTimeout(batchTimer);
       batchTimer = null;
     }
-    try {
-      ptyProcess.kill();
-    } catch {
-      /* ignore */
-    }
+    record.transientListeners.delete(onChunk);
+    record.exitListeners.delete(onExit);
+    if (explicitlyClosed) return; // already destroyed in the message handler
+    terminalSessionRegistry.detach(sessionId);
   });
 
   ws.on('error', (err) => {
     dbg.error('ws error', err);
   });
+
+  // Silence `replayed` lint: the variable is retained for future telemetry.
+  void replayed;
 }

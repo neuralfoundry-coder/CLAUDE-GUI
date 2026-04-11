@@ -27,11 +27,22 @@ export interface TerminalResumeControl {
   type: 'resume';
 }
 
+/**
+ * Explicit destroy request. Triggers PTY kill and removes the session from
+ * the server-side registry (FR-414). Without this, closing the WebSocket
+ * only DETACHES — the PTY stays alive for a 30-minute grace period so the
+ * client can re-attach via `?sessionId=<id>`.
+ */
+export interface TerminalCloseControl {
+  type: 'close';
+}
+
 export type TerminalClientControl =
   | TerminalResizeControl
   | TerminalInputControl
   | TerminalPauseControl
-  | TerminalResumeControl;
+  | TerminalResumeControl
+  | TerminalCloseControl;
 
 export interface TerminalExitServerControl {
   type: 'exit';
@@ -46,12 +57,28 @@ export interface TerminalErrorServerControl {
   message: string;
 }
 
-export type TerminalServerControl = TerminalExitServerControl | TerminalErrorServerControl;
+/**
+ * Sent by the server on attach. Tells the client its authoritative
+ * server-side session ID and whether a scrollback replay will follow.
+ * When `replay: true`, the client must call `term.clear()` before the next
+ * binary frame, which will contain the contents of the session's ring
+ * buffer snapshot at attach time.
+ */
+export interface TerminalSessionServerControl {
+  type: 'session';
+  id: string;
+  replay: boolean;
+}
+
+export type TerminalServerControl =
+  | TerminalExitServerControl
+  | TerminalErrorServerControl
+  | TerminalSessionServerControl;
 
 export function isServerControlFrame(value: unknown): value is TerminalServerControl {
   if (!value || typeof value !== 'object') return false;
   const type = (value as { type?: unknown }).type;
-  return type === 'exit' || type === 'error';
+  return type === 'exit' || type === 'error' || type === 'session';
 }
 
 export function parseServerControlFrame(text: string): TerminalServerControl | null {
