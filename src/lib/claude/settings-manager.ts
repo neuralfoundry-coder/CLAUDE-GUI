@@ -67,3 +67,27 @@ export function normalizeRules(settings: ClaudeSettings): {
     allowedBashCommands: Array.from(allowedBashCommands).sort(),
   };
 }
+
+export function matchBashPattern(command: string, pattern: string): boolean {
+  if (typeof command !== 'string' || typeof pattern !== 'string') return false;
+  const cmd = command.trim();
+  if (pattern.endsWith(':*')) {
+    const prefix = pattern.slice(0, -2).trim();
+    if (!prefix) return false;
+    return cmd === prefix || cmd.startsWith(prefix + ' ');
+  }
+  return cmd === pattern.trim();
+}
+
+export function buildAllowRuleForInput(toolName: string, input: unknown): string {
+  if (toolName === 'Bash') {
+    const cmd =
+      input && typeof input === 'object' && typeof (input as { command?: unknown }).command === 'string'
+        ? ((input as { command: string }).command).trim()
+        : '';
+    if (!cmd) return 'Bash';
+    const firstToken = cmd.split(/\s+/)[0] || cmd;
+    return `Bash(${firstToken}:*)`;
+  }
+  return toolName;
+}

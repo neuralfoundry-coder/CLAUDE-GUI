@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { normalizeRules } from '@/lib/claude/settings-manager';
+import { normalizeRules, matchBashPattern, buildAllowRuleForInput } from '@/lib/claude/settings-manager';
 
 describe('normalizeRules', () => {
   it('extracts tool and bash command rules from permissions.allow', () => {
@@ -36,6 +36,46 @@ describe('normalizeRules', () => {
     expect(result.allowedTools).toEqual([]);
     expect(result.deniedTools).toEqual([]);
     expect(result.allowedBashCommands).toEqual([]);
+  });
+});
+
+describe('matchBashPattern', () => {
+  it('matches prefix patterns with :*', () => {
+    expect(matchBashPattern('npm test', 'npm test:*')).toBe(true);
+    expect(matchBashPattern('npm test -- foo', 'npm test:*')).toBe(true);
+    expect(matchBashPattern('npm install', 'npm test:*')).toBe(false);
+  });
+
+  it('matches exact patterns without :*', () => {
+    expect(matchBashPattern('pwd', 'pwd')).toBe(true);
+    expect(matchBashPattern('pwd -L', 'pwd')).toBe(false);
+  });
+
+  it('handles whitespace gracefully', () => {
+    expect(matchBashPattern('  ls -la  ', 'ls:*')).toBe(true);
+  });
+
+  it('rejects empty prefix patterns', () => {
+    expect(matchBashPattern('anything', ':*')).toBe(false);
+  });
+});
+
+describe('buildAllowRuleForInput', () => {
+  it('returns the tool name for non-Bash tools', () => {
+    expect(buildAllowRuleForInput('Write', { file_path: '/tmp/x.html' })).toBe('Write');
+    expect(buildAllowRuleForInput('Edit', null)).toBe('Edit');
+  });
+
+  it('returns Bash(<first-token>:*) for Bash input', () => {
+    expect(buildAllowRuleForInput('Bash', { command: 'npm test -- --reporter=json' })).toBe(
+      'Bash(npm:*)',
+    );
+    expect(buildAllowRuleForInput('Bash', { command: 'ls -la' })).toBe('Bash(ls:*)');
+  });
+
+  it('falls back to Bash when command is missing', () => {
+    expect(buildAllowRuleForInput('Bash', {})).toBe('Bash');
+    expect(buildAllowRuleForInput('Bash', null)).toBe('Bash');
   });
 });
 
