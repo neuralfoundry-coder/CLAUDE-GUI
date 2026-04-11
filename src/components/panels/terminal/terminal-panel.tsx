@@ -5,7 +5,7 @@ import { Plus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useTerminalStore } from '@/stores/use-terminal-store';
-import { XTerminal } from './x-terminal';
+import { XTerminalAttach } from './x-terminal';
 
 export function TerminalPanel() {
   const sessions = useTerminalStore((s) => s.sessions);
@@ -23,6 +23,7 @@ export function TerminalPanel() {
       <div className="flex h-7 items-center border-b bg-muted" aria-label="Terminal sessions">
         {sessions.map((sess) => {
           const isActive = activeSessionId === sess.id;
+          const isExited = sess.status === 'exited';
           return (
             <div
               key={sess.id}
@@ -35,10 +36,20 @@ export function TerminalPanel() {
               <button
                 type="button"
                 onClick={() => setActiveSession(sess.id)}
-                className="bg-transparent"
+                className="flex items-center gap-1 bg-transparent"
                 aria-label={`Activate ${sess.name}`}
               >
-                {sess.name}
+                <span
+                  className={cn(
+                    'h-1.5 w-1.5 rounded-full',
+                    sess.status === 'open' && 'bg-emerald-500',
+                    sess.status === 'connecting' && 'bg-amber-500',
+                    sess.status === 'closed' && 'bg-zinc-500',
+                    isExited && 'bg-red-500',
+                  )}
+                  aria-hidden="true"
+                />
+                <span className={cn(isExited && 'line-through opacity-70')}>{sess.name}</span>
               </button>
               <button
                 type="button"
@@ -66,14 +77,7 @@ export function TerminalPanel() {
         </Button>
       </div>
       <div className="flex-1 overflow-hidden">
-        {sessions.map((sess) => (
-          <div
-            key={sess.id}
-            className={cn('h-full w-full', activeSessionId === sess.id ? 'block' : 'hidden')}
-          >
-            <XTerminal sessionId={sess.id} />
-          </div>
-        ))}
+        {activeSessionId && <XTerminalAttach key={activeSessionId} sessionId={activeSessionId} />}
       </div>
     </div>
   );
