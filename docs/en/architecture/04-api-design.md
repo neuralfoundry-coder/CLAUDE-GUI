@@ -255,26 +255,34 @@ Deletes a session.
 
 ### 4.2.2 `/ws/terminal`
 
-Connects to a terminal PTY session.
+Connects to a terminal PTY session. A single PTY is spawned per connection; multiple sessions use multiple `/ws/terminal` connections.
 
 #### On connect
 
-Session information is sent via a query parameter or the first message.
-
 ```
-ws://localhost:3000/ws/terminal?sessionId=xyz&cwd=/Users/dev/myproject
+ws://localhost:3000/ws/terminal
 ```
 
-The server creates a new `node-pty` process and keeps the connection open.
+The server immediately spawns a new `node-pty` process with `getActiveRoot()` as `cwd` (default 120×30). The client sends the real dimensions via a `resize` control frame right after the first attach.
 
-#### Client → server
+#### Frame rules
 
-**User input** (binary frame):
+| Direction | Frame type | Purpose |
+|-----------|------------|---------|
+| Server → client | **binary** | PTY stdout/stderr bytes (UTF-8) — batched every 16 ms |
+| Server → client | text JSON | Control messages (`exit`, `error`) |
+| Client → server | text JSON | Control messages (`input`, `resize`, `pause`, `resume`) |
+
+The client discriminates control vs. data by `typeof event.data === 'string'`, so PTY output that happens to start with `{` is never misinterpreted.
+
+#### Client → server (all text JSON)
+
+**User input**:
+```json
+{ "type": "input", "data": "ls\r" }
 ```
-[binary] 0x01 0x02 0x03 ...
-```
 
-**Resize** (JSON text frame):
+**Resize**:
 ```json
 { "type": "resize", "cols": 120, "rows": 30 }
 ```
@@ -289,13 +297,33 @@ The server creates a new `node-pty` process and keeps the connection open.
 
 **PTY output** (binary frame, batched every 16 ms):
 ```
-[binary] includes ANSI escape sequences
+[binary] shell stdout bytes (includes ANSI escape sequences)
 ```
 
-**Process exit**:
+**Process exit** (text JSON):
 ```json
 { "type": "exit", "code": 0 }
 ```
+
+**Error** (text JSON):
+```json
+{ "type": "error", "code": "BUFFER_OVERFLOW", "message": "terminal output buffer exceeded 5242880 bytes" }
+```
+
+Error codes:
+
+| Code | Meaning |
+|------|---------|
+| `BUFFER_OVERFLOW` | The server-side output queue exceeded 5 MB. The server kills the PTY and closes the WebSocket with code 1011. |
+| `PTY_UNAVAILABLE` | The `node-pty` native module failed to load. The server closes the WebSocket immediately. |
+
+#### Backpressure behavior
+
+- The client sends `{type:"pause"}` when the xterm.js write backlog exceeds 100 KB.
+- While paused, the server buffers PTY output in an in-memory queue (never dropped).
+- If the queue exceeds 256 KB, the server calls `ptyProcess.pause()` to stop the upstream shell (POSIX only).
+- When the client's backlog drops below 10 KB, the client sends `{type:"resume"}` and the server calls `ptyProcess.resume()` and flushes the queue immediately.
+- If the queue exceeds 5 MB, the session is terminated with a `BUFFER_OVERFLOW` error.
 
 ---
 

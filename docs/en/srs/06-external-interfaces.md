@@ -164,14 +164,18 @@
 **`/ws/terminal`**
 
 ```
-# Client → server (input)
-Binary frame: user keystroke data
-
-# Client → server (control)
+# Client → server (all text JSON)
+{ "type": "input", "data": "ls\r" }
 { "type": "resize", "cols": 120, "rows": 30 }
+{ "type": "pause" }
+{ "type": "resume" }
 
-# Server → client (output)
-Binary frame: PTY output data (batched every 16 ms)
+# Server → client (PTY output — binary frame, batched every 16 ms)
+[binary] shell stdout bytes
+
+# Server → client (control — text JSON)
+{ "type": "exit", "code": 0 }
+{ "type": "error", "code": "BUFFER_OVERFLOW", "message": "terminal output buffer exceeded 5242880 bytes" }
 ```
 
 **`/ws/claude`**

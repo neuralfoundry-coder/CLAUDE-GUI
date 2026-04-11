@@ -248,46 +248,46 @@ import rehypeSanitize from 'rehype-sanitize';
 
 ### 5.5.1 Permission interception strategy
 
-Intercept Agent SDK `tool_use` events and collect approve/deny through a GUI modal.
+The Agent SDK's `canUseTool` callback decides allow/deny immediately before Claude invokes a tool. The implementation lives in the `canUseTool` function inside `server-handlers/claude-handler.mjs` and is evaluated in the following order.
 
-```typescript
-// src/lib/claude/permission-interceptor.ts
-import { readFile } from 'node:fs/promises';
+1. **Abort check** — if the user has aborted the query, return `deny` with `interrupt: true` immediately.
+2. **Persistent rule match** — reload `.claude/settings.json` and check `permissions.deny` (→ `deny`) and `permissions.allow` (→ `allow`). When a rule matches, an `auto_decision` event is pushed to the browser and surfaced in the chat panel.
+3. **User prompt** — if no rule matches, send a `permission_request` event and wait for the modal response.
+4. **Modal response handling** — `Allow Once` permits only the current call and leaves no trace. `Always Allow` has the UI first save a rule via `PUT /api/settings` and then send `permission_response: approved=true` — subsequent calls pass through step (2). `Deny` returns `deny`.
 
-const DANGEROUS_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit']);
+```javascript
+// server-handlers/claude-handler.mjs (excerpt)
+import {
+  loadSettings,
+  normalizeRules,
+  isToolAllowedBySettings,
+  isToolDeniedBySettings,
+} from '../src/lib/claude/settings-manager.mjs';
 
-interface ClaudeSettings {
-  autoApprove?: {
-    tools?: string[];
-    bashCommands?: string[];
-  };
-}
-
-export async function shouldAskPermission(
-  tool: string,
-  args: unknown
-): Promise<boolean> {
-  if (!DANGEROUS_TOOLS.has(tool)) return false;
-
-  // check .claude/settings.json whitelist
-  const settings = await loadClaudeSettings();
-  const autoApproved = settings.autoApprove?.tools || [];
-
-  if (autoApproved.includes(tool)) {
-    // for Bash, also check the command whitelist
-    if (tool === 'Bash' && settings.autoApprove?.bashCommands) {
-      const cmd = (args as { command: string }).command;
-      const matched = settings.autoApprove.bashCommands.some((pattern) =>
-        matchCommand(cmd, pattern)
-      );
-      return !matched;
-    }
-    return false;
+const canUseTool = async (toolName, input, { signal }) => {
+  if (signal.aborted) {
+    return { behavior: 'deny', message: 'Aborted by user', interrupt: true };
   }
 
-  return true;
-}
+  const rules = normalizeRules(await loadSettings());
+
+  if (isToolDeniedBySettings(toolName, rules)) {
+    send({ type: 'auto_decision', tool: toolName, decision: 'deny', source: 'settings' });
+    return { behavior: 'deny', message: 'Denied by ClaudeGUI deny rule' };
+  }
+  if (isToolAllowedBySettings(toolName, input, rules)) {
+    send({ type: 'auto_decision', tool: toolName, decision: 'allow', source: 'settings' });
+    return { behavior: 'allow', updatedInput: input };
+  }
+
+  const approved = await requestPermission(toolName, input);
+  return approved
+    ? { behavior: 'allow', updatedInput: input }
+    : { behavior: 'deny', message: 'Denied by user via ClaudeGUI' };
+};
 ```
+
+Rule grammar and matching logic are defined in `src/lib/claude/settings-manager.mjs` (plus the `.ts` mirror) in `normalizeRules`, `matchBashPattern`, and `isToolAllowedBySettings`. `buildAllowRuleForInput` synthesizes the rule string persisted by "Always Allow": non-Bash tools store the bare tool name, Bash uses the first command token to produce `Bash(<token>:*)`.
 
 ### 5.5.2 Dangerous command warnings
 

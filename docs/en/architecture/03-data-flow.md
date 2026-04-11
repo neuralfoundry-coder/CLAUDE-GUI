@@ -40,10 +40,12 @@ User                Browser (React)           Server (Node.js)         Claude CL
   │                     │                          │◀──────── file edit   │
   │                     │                          │                       │
   │                     │                          │◀────────── result    │
-  │                     │                          │   (cost, usage)       │
+  │                     │                          │ (cost, usage,         │
+  │                     │                          │  modelUsage)          │
   │                     │ ws.send({type: result})  │                       │
   │                     │◀─────────────────────────│                       │
-  │ 7. cost/token shown │                          │                       │
+  │ 7. cost / token /   │                          │                       │
+  │    context % shown  │                          │                       │
   │◀──────────────────│                          │                       │
 ```
 
@@ -117,68 +119,86 @@ user keystrokes
 xterm.js onData event
   │
   ▼
-WebSocket.send(binary data)
+ws.send(JSON {type:"input", data})   ← text frame
   │
   ▼
 server.js /ws/terminal handler
   │
   ▼
-node-pty.write(data)
+ptyProcess.write(data)
   │
   ▼
 shell process stdin
 ```
 
-### Output (PTY → user)
+### Output (PTY → user, no drops)
 
 ```
 shell process stdout
   │
   ▼
-node-pty onData event
+ptyProcess.onData
   │
   ▼
-Batching Buffer (16 ms window)   ← 60 FPS sync
+server queue (Buffer[]) push ─── [paused] ─── flush suspended (no drops)
+  │                                │
+  │                                ▼
+  │                          [bufferedBytes > 256 KB]
+  │                                │
+  │                                ▼
+  │                          ptyProcess.pause() — stop upstream
+  │
+  ▼ (16 ms batch timer)
+Buffer.concat(queue)
   │
   ▼
-WebSocket.send(binary data)
+ws.send(buf, {binary: true})         ← binary frame
   │
   ▼
 Browser WebSocket onmessage
   │
   ▼
+typeof event.data === 'string'?
+  │   └── yes: parseServerControlFrame → handle exit/error
+  │
+  ▼ (ArrayBuffer)
+TerminalManager.writePtyBytes
+  │
+  ▼
 backpressure check (watermarks)
   │
-  ├── OK → xterm.write(data)
-  │         │
-  │         ▼
-  │        GPU rendering (WebGL addon)
+  ├── pendingBytes < 100 KB → term.write(bytes) → GPU rendering
   │
-  └── HIGH → ws.send({type: "pause"}) → server pauses output
+  └── pendingBytes ≥ 100 KB → ws.send(JSON {type:"pause"})
+                                └─ when the write callback drops below 10 KB,
+                                   ws.send(JSON {type:"resume"}) and the
+                                   server calls ptyProcess.resume() + flushes.
 ```
+
+If `bufferedBytes` exceeds 5 MB the server sends `{type:"error", code:"BUFFER_OVERFLOW"}`, kills the PTY, and closes the WebSocket with code 1011 — data is never silently lost on any path.
 
 ### Resize sync
 
 ```
-browser window resize
+panel resize OR tab activation OR font-size change
   │
   ▼
-ResizeObserver fires
+TerminalManager.scheduleFit  (requestAnimationFrame, up to 10 retries)
   │
   ▼
-FitAddon.fit() → recalculates cols, rows
+host clientWidth/Height > 0 ?
+  │
+  ▼ yes
+fitAddon.fit() → recalculates cols, rows
+  │
+  ▼ (only if cols/rows changed)
+ws.send(JSON {type:"resize", cols, rows})
   │
   ▼
-ws.send({type: "resize", cols, rows})
-  │
-  ▼
-node-pty.resize(cols, rows)
-  │
-  ▼
-shell process receives SIGWINCH
+ptyProcess.resize(cols, rows) → shell receives SIGWINCH
 ```
 
-**Related FR**: FR-401, FR-403, FR-404, FR-407
+**Related FR**: FR-401, FR-403, FR-404, FR-407, FR-408, FR-409
 
 ---
 
@@ -268,7 +288,97 @@ debounce(300 ms)
   └── PDF → (not editable)
 ```
 
-**Related FR**: FR-606, FR-704
+### Live HTML → editor handoff flow (FR-610)
+
+When Claude writes a `.html` file via a `Write`/`Edit` `tool_use` and the user then opens that file in the editor to make direct edits, the data flow is:
+
+```
+Claude stream (assistant message)
+  │
+  ▼
+HtmlStreamExtractor.feedToolUse({name:'Write', input:{file_path, content}})
+  │
+  ├── onChunk       → useLivePreviewStore.appendChunk(html, renderable)
+  └── onWritePath   → useLivePreviewStore.setGeneratedFilePath(filePath)
+            │
+            ▼
+     useLivePreviewStore { buffer, generatedFilePath }
+            │
+            ▼
+     <LiveHtmlPreview>
+            │
+   ┌────────┴────────┐
+   │                 │
+   ▼                 ▼
+(no matching        (editor tab present
+ editor tab →        with path === generatedFilePath →
+ render buffer)      render tab.content)
+                          │
+                          ▼
+                   Monaco onChange
+                          │
+                          ▼
+                   useEditorStore.updateContent(id, content)
+                          │
+                          ▼
+                   debounce(150 ms) → update iframe srcdoc
+```
+
+- After the stream ends (`result`), `useLivePreviewStore.mode` may remain `live-html`, but `LiveHtmlPreview` switches its source from the buffer to the editor tab's `content` whenever a matching tab is open.
+- Edits made in Monaco flow into `useEditorStore.tabs[*].content` immediately, and `LiveHtmlPreview` re-renders (150 ms debounce) via Zustand subscription — no file save, disk write, or chokidar event is required.
+- HTML generated via bare ` ```html ` code fences (no file path) leaves `generatedFilePath` as `null` and continues to use the buffer-based render path.
+
+### Partial-edit preservation flow (FR-610)
+
+How the rendering of untouched pages is preserved when a follow-up query edits only a few sections of a multi-page HTML document:
+
+```
+First query: Write /tmp/deck.html (all 5 pages)
+  │
+  ▼
+HtmlStreamExtractor.feedToolUse(Write)
+  ├── lastFullHtml ← content           (baseline cached)
+  ├── onChunk     → appendChunk(html, true)   // buffer = full HTML
+  └── onWritePath → generatedFilePath = '/tmp/deck.html'
+
+(query end: finalizeExtractor → currentExtractor = null)
+(startStream preserves buffer / generatedFilePath)
+
+Second query: "just fix the title on page 3"
+  │
+  ▼
+ensureExtractor() — new HtmlStreamExtractor
+  └── seedBaseline(useLivePreviewStore.buffer)   // seed with prior render
+  │
+  ▼
+HtmlStreamExtractor.feedToolUse(Edit {old_string, new_string})
+  ├── lastFullHtml present → applyEditOps(baseline, [op])
+  ├── lastFullHtml ← patched     (patched full HTML)
+  ├── onChunk     → appendChunk(patched, true)   // all 5 pages preserved
+  └── onWritePath → generatedFilePath (same path)
+```
+
+**Baseline disk fallback**: when the first interaction of a fresh session is an `Edit`/`MultiEdit` and no in-memory baseline exists:
+
+```
+HtmlStreamExtractor.feedToolUse(Edit)
+  │
+  ▼
+lastFullHtml missing → onNeedBaseline(filePath, apply)
+  │
+  ▼
+useClaudeStore.fetchHtmlFile
+  │
+  ▼
+GET /api/files/read?path=... → { content }
+  │
+  ▼
+apply(content) → applyEditOps → onChunk/onComplete
+```
+
+`MultiEdit`'s `edits[]` are applied in array order and the `replace_all` flag is honored. If an `old_string` is not present in the baseline, that operation is skipped so the preview state stays stable.
+
+**Related FR**: FR-606, FR-610, FR-704
 
 ---
 

@@ -162,14 +162,18 @@
 **`/ws/terminal`**
 
 ```
-# 클라이언트 → 서버 (입력)
-바이너리 프레임: 사용자 키 입력 데이터
-
-# 클라이언트 → 서버 (제어)
+# 클라이언트 → 서버 (모두 텍스트 JSON)
+{ "type": "input", "data": "ls\r" }
 { "type": "resize", "cols": 120, "rows": 30 }
+{ "type": "pause" }
+{ "type": "resume" }
 
-# 서버 → 클라이언트 (출력)
-바이너리 프레임: PTY 출력 데이터 (16ms 배치)
+# 서버 → 클라이언트 (PTY 출력 — 바이너리 프레임, 16ms 배치)
+[binary] 쉘 stdout 바이트
+
+# 서버 → 클라이언트 (제어 — 텍스트 JSON)
+{ "type": "exit", "code": 0 }
+{ "type": "error", "code": "BUFFER_OVERFLOW", "message": "terminal output buffer exceeded 5242880 bytes" }
 ```
 
 **`/ws/claude`**

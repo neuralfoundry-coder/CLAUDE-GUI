@@ -246,46 +246,46 @@ import rehypeSanitize from 'rehype-sanitize';
 
 ### 5.5.1 권한 인터셉트 전략
 
-Agent SDK의 `tool_use` 이벤트를 가로채서 GUI 모달로 승인/거부를 받는다.
+Agent SDK의 `canUseTool` 콜백을 사용해 Claude가 도구를 호출하기 직전에 허용 여부를 결정한다. 실제 구현은 `server-handlers/claude-handler.mjs`의 `canUseTool` 함수에 있으며 아래 순서대로 평가된다.
 
-```typescript
-// src/lib/claude/permission-interceptor.ts
-import { readFile } from 'node:fs/promises';
+1. **Abort 확인** — 사용자가 쿼리를 중단했다면 즉시 `deny` + `interrupt: true`.
+2. **영구 규칙 매칭** — `.claude/settings.json`을 다시 읽어 `permissions.deny`에 해당하면 `deny`, `permissions.allow`에 해당하면 `allow`. 매칭되면 `auto_decision` 이벤트를 브라우저로 전송해 UI에 기록된다.
+3. **사용자 프롬프트** — 매칭되는 규칙이 없으면 `permission_request` 이벤트를 전송하고 모달 응답을 기다린다.
+4. **모달 응답 처리** — `Allow Once`는 현재 호출만 허용하고 상태를 남기지 않는다. `Always Allow`는 UI가 먼저 `PUT /api/settings`로 규칙을 저장한 뒤 `permission_response: approved=true`를 보낸다 — 다음 호출부터는 (2)에서 바로 통과된다. `Deny`는 `deny`를 반환한다.
 
-const DANGEROUS_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit']);
+```javascript
+// server-handlers/claude-handler.mjs (발췌)
+import {
+  loadSettings,
+  normalizeRules,
+  isToolAllowedBySettings,
+  isToolDeniedBySettings,
+} from '../src/lib/claude/settings-manager.mjs';
 
-interface ClaudeSettings {
-  autoApprove?: {
-    tools?: string[];
-    bashCommands?: string[];
-  };
-}
-
-export async function shouldAskPermission(
-  tool: string,
-  args: unknown
-): Promise<boolean> {
-  if (!DANGEROUS_TOOLS.has(tool)) return false;
-
-  // .claude/settings.json 화이트리스트 확인
-  const settings = await loadClaudeSettings();
-  const autoApproved = settings.autoApprove?.tools || [];
-
-  if (autoApproved.includes(tool)) {
-    // Bash인 경우 명령어 화이트리스트도 확인
-    if (tool === 'Bash' && settings.autoApprove?.bashCommands) {
-      const cmd = (args as { command: string }).command;
-      const matched = settings.autoApprove.bashCommands.some((pattern) =>
-        matchCommand(cmd, pattern)
-      );
-      return !matched;
-    }
-    return false;
+const canUseTool = async (toolName, input, { signal }) => {
+  if (signal.aborted) {
+    return { behavior: 'deny', message: 'Aborted by user', interrupt: true };
   }
 
-  return true;
-}
+  const rules = normalizeRules(await loadSettings());
+
+  if (isToolDeniedBySettings(toolName, rules)) {
+    send({ type: 'auto_decision', tool: toolName, decision: 'deny', source: 'settings' });
+    return { behavior: 'deny', message: 'Denied by ClaudeGUI deny rule' };
+  }
+  if (isToolAllowedBySettings(toolName, input, rules)) {
+    send({ type: 'auto_decision', tool: toolName, decision: 'allow', source: 'settings' });
+    return { behavior: 'allow', updatedInput: input };
+  }
+
+  const approved = await requestPermission(toolName, input);
+  return approved
+    ? { behavior: 'allow', updatedInput: input }
+    : { behavior: 'deny', message: 'Denied by user via ClaudeGUI' };
+};
 ```
+
+규칙 문법과 매칭 로직은 `src/lib/claude/settings-manager.mjs`(+ `.ts` 미러)의 `normalizeRules` / `matchBashPattern` / `isToolAllowedBySettings`에 정의된다. "Always Allow" 저장 규칙은 `buildAllowRuleForInput`이 합성한다: 비-Bash 툴은 툴 이름 그대로, Bash는 명령 첫 토큰을 기준으로 `Bash(<token>:*)`.
 
 ### 5.5.2 위험 명령 경고
 

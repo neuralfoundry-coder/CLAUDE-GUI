@@ -38,10 +38,12 @@
   │                     │                          │◀──────── 파일 수정    │
   │                     │                          │                       │
   │                     │                          │◀────────── result    │
-  │                     │                          │   (cost, usage)       │
+  │                     │                          │ (cost, usage,         │
+  │                     │                          │  modelUsage)          │
   │                     │ ws.send({type: result})  │                       │
   │                     │◀─────────────────────────│                       │
-  │ 7. 비용/토큰 표시     │                          │                       │
+  │ 7. 비용/토큰/컨텍스트 │                          │                       │
+  │    사용률 표시        │                          │                       │
   │◀──────────────────│                          │                       │
 ```
 
@@ -115,68 +117,86 @@ Claude CLI      파일시스템        chokidar         Server (WS)     Browser 
 xterm.js onData 이벤트
   │
   ▼
-WebSocket.send(바이너리 데이터)
+ws.send(JSON {type:"input", data})   ← 텍스트 프레임
   │
   ▼
 server.js /ws/terminal 핸들러
   │
   ▼
-node-pty.write(data)
+ptyProcess.write(data)
   │
   ▼
 셸 프로세스 stdin
 ```
 
-### 출력 (PTY → 사용자)
+### 출력 (PTY → 사용자, 드롭 없음)
 
 ```
 셸 프로세스 stdout
   │
   ▼
-node-pty onData 이벤트
+ptyProcess.onData
   │
   ▼
-Batching Buffer (16ms 간격)   ← 60 FPS 동기화
+서버 큐(Buffer 배열) push ─── [paused] ─── 플러시 보류 (드롭 없음)
+  │                                │
+  │                                ▼
+  │                          [bufferedBytes > 256 KB]
+  │                                │
+  │                                ▼
+  │                          ptyProcess.pause() — 상류 중단
+  │
+  ▼ (16 ms 배치 타이머)
+Buffer.concat(queue)
   │
   ▼
-WebSocket.send(바이너리 데이터)
+ws.send(buf, {binary: true})         ← 바이너리 프레임
   │
   ▼
 Browser WebSocket onmessage
   │
   ▼
+typeof event.data === 'string'?
+  │   └── 예: parseServerControlFrame → exit/error 처리
+  │
+  ▼ (ArrayBuffer)
+TerminalManager.writePtyBytes
+  │
+  ▼
 배압 체크 (워터마크)
   │
-  ├── OK → xterm.write(data)
-  │         │
-  │         ▼
-  │        GPU 렌더링 (WebGL 애드온)
+  ├── pendingBytes < 100 KB → term.write(bytes) → GPU 렌더링
   │
-  └── HIGH → ws.send({type: "pause"}) → 서버에서 일시 중지
+  └── pendingBytes ≥ 100 KB → ws.send(JSON {type:"pause"})
+                                └─ 이후 write 콜백이 < 10 KB가 되면
+                                   ws.send(JSON {type:"resume"}) 및
+                                   서버가 ptyProcess.resume() + 큐 플러시
 ```
+
+`bufferedBytes`가 5 MB를 초과하면 서버는 `{type:"error", code:"BUFFER_OVERFLOW"}` 제어 프레임을 전송하고 PTY를 kill, WebSocket을 1011 코드로 닫는다 — 데이터는 어떤 경로로도 조용히 손실되지 않는다.
 
 ### 리사이즈 동기화
 
 ```
-브라우저 창 리사이즈
+패널 리사이즈 또는 탭 활성화 또는 폰트 변경
   │
   ▼
-ResizeObserver 트리거
+TerminalManager.scheduleFit  (requestAnimationFrame, 최대 10회 재시도)
   │
   ▼
-FitAddon.fit() → cols, rows 재계산
+host clientWidth/Height > 0 ?
+  │
+  ▼ 예
+fitAddon.fit() → cols, rows 재계산
+  │
+  ▼ (cols/rows 변경된 경우에만)
+ws.send(JSON {type:"resize", cols, rows})
   │
   ▼
-ws.send({type: "resize", cols, rows})
-  │
-  ▼
-node-pty.resize(cols, rows)
-  │
-  ▼
-셸 프로세스 SIGWINCH 수신
+ptyProcess.resize(cols, rows) → 쉘이 SIGWINCH 수신
 ```
 
-**관련 FR**: FR-401, FR-403, FR-404, FR-407
+**관련 FR**: FR-401, FR-403, FR-404, FR-407, FR-408, FR-409
 
 ---
 
@@ -266,7 +286,97 @@ debounce(300ms)
   └── PDF → (편집 불가)
 ```
 
-**관련 FR**: FR-606, FR-704
+### 라이브 HTML → 에디터 인수인계 흐름 (FR-610)
+
+Claude가 `Write`/`Edit` `tool_use`로 `.html` 파일을 생성한 뒤 사용자가 그 파일을 에디터로 열어 직접 수정할 때의 데이터 흐름:
+
+```
+Claude stream (assistant message)
+  │
+  ▼
+HtmlStreamExtractor.feedToolUse({name:'Write', input:{file_path, content}})
+  │
+  ├── onChunk → useLivePreviewStore.appendChunk(html, renderable)
+  └── onWritePath → useLivePreviewStore.setGeneratedFilePath(filePath)
+            │
+            ▼
+     useLivePreviewStore { buffer, generatedFilePath }
+            │
+            ▼
+     <LiveHtmlPreview>
+            │
+   ┌────────┴────────┐
+   │                 │
+   ▼                 ▼
+(editor tab         (editor tab
+  없음 →             있음(path===generatedFilePath) →
+  buffer 렌더)       tab.content 렌더)
+                          │
+                          ▼
+                   Monaco onChange
+                          │
+                          ▼
+                   useEditorStore.updateContent(id, content)
+                          │
+                          ▼
+                   debounce(150ms) → iframe srcdoc 갱신
+```
+
+- 스트리밍 종료(`result`) 이후에도 `useLivePreviewStore.mode`는 `live-html`을 유지할 수 있으나, `LiveHtmlPreview`는 에디터 탭이 열려 있으면 버퍼 대신 에디터 content를 소스로 사용한다.
+- 사용자가 에디터에서 수정한 내용은 `useEditorStore.tabs[*].content`에 즉시 반영되고, Zustand 구독을 통해 `LiveHtmlPreview`가 150ms 디바운스로 재렌더한다 (파일 저장·디스크 쓰기·chokidar 이벤트 불필요).
+- 코드 펜스만으로 생성된 HTML(파일 경로 없음)은 `generatedFilePath`가 `null`이므로 버퍼 기반 렌더링 경로를 그대로 사용한다.
+
+### 부분 편집 보존 흐름 (FR-610)
+
+다중 페이지 HTML 중 일부 페이지만 수정하는 후속 쿼리에서 나머지 페이지 렌더링을 보존하기 위한 흐름:
+
+```
+1차 쿼리: Write /tmp/deck.html (5페이지 전체)
+  │
+  ▼
+HtmlStreamExtractor.feedToolUse(Write)
+  ├── lastFullHtml ← content (baseline 캐시)
+  ├── onChunk → appendChunk(html, true)  // buffer = 전체 HTML
+  └── onWritePath → generatedFilePath = '/tmp/deck.html'
+
+(1차 쿼리 종료: finalizeExtractor → currentExtractor = null)
+(startStream은 buffer/generatedFilePath를 보존)
+
+2차 쿼리: "3번 페이지 제목만 고쳐줘"
+  │
+  ▼
+ensureExtractor() — new HtmlStreamExtractor
+  └── seedBaseline(useLivePreviewStore.buffer)  // 이전 전체 HTML 주입
+  │
+  ▼
+HtmlStreamExtractor.feedToolUse(Edit {old_string, new_string})
+  ├── lastFullHtml 존재 → applyEditOps(baseline, [op])
+  ├── lastFullHtml ← patched  (치환된 전체 HTML)
+  ├── onChunk → appendChunk(patched, true)  // 5페이지 전체 유지
+  └── onWritePath → generatedFilePath (동일 경로)
+```
+
+**Baseline 디스크 폴백**: 새 세션의 첫 상호작용이 `Edit`/`MultiEdit`이어서 메모리에 baseline이 없는 경우:
+
+```
+HtmlStreamExtractor.feedToolUse(Edit)
+  │
+  ▼
+lastFullHtml 없음 → onNeedBaseline(filePath, apply)
+  │
+  ▼
+useClaudeStore.fetchHtmlFile
+  │
+  ▼
+GET /api/files/read?path=... → { content }
+  │
+  ▼
+apply(content) → applyEditOps → onChunk/onComplete
+```
+
+`MultiEdit`의 `edits[]`는 배열 순서대로 순차 적용하며 `replace_all` 플래그를 존중한다. `old_string`이 baseline에 존재하지 않으면 해당 연산은 건너뛰어 프리뷰 상태를 안정적으로 유지한다.
+
+**관련 FR**: FR-606, FR-610, FR-704
 
 ---
 
