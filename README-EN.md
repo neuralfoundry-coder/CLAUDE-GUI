@@ -92,12 +92,12 @@ You also need an Anthropic Claude Pro/Max/Team/Enterprise subscription and `ANTH
 
 **macOS / Linux**:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anthropics/ClaudeGUI/main/scripts/install/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.sh | bash
 ```
 
 **Windows (PowerShell)**:
 ```powershell
-iwr -useb https://raw.githubusercontent.com/anthropics/ClaudeGUI/main/scripts/install/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.ps1 | iex
 ```
 
 The script provisions Node.js 20+, the Claude CLI, the ClaudeGUI checkout, and the `claudegui` launcher. Every destructive step prompts for confirmation (`--yes` for non-interactive, `--dry-run` to only print the plan).
@@ -109,8 +109,8 @@ Starting in v0.3 a Tauri v2 native installer can be built from `installer/tauri/
 ### Run from source
 
 ```bash
-git clone https://github.com/anthropics/ClaudeGUI.git
-cd ClaudeGUI
+git clone https://github.com/neuralfoundry-coder/CLAUDE-GUI.git
+cd CLAUDE-GUI
 npm install
 cp .env.example .env.local   # optional — set PROJECT_ROOT
 node server.js

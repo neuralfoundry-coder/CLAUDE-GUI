@@ -63,7 +63,7 @@
     "updater": {
       "pubkey": "",
       "endpoints": [
-        "https://github.com/anthropics/ClaudeGUI/releases/latest/download/latest.json"
+        "https://github.com/neuralfoundry-coder/CLAUDE-GUI/releases/latest/download/latest.json"
       ]
     }
   }

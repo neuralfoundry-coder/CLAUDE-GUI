@@ -90,12 +90,12 @@ Custom Node.js Server (server.js)
 
 **macOS / Linux**:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anthropics/ClaudeGUI/main/scripts/install/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.sh | bash
 ```
 
 **Windows (PowerShell)**:
 ```powershell
-iwr -useb https://raw.githubusercontent.com/anthropics/ClaudeGUI/main/scripts/install/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.ps1 | iex
 ```
 
 스크립트는 Node.js 20+, Claude CLI, 프로젝트 체크아웃, 런처(`claudegui`)까지 모두 설정한다. 각 파괴적 단계는 사용자 확인 프롬프트를 거친다 (`--yes`로 비대화형, `--dry-run`으로 계획만 출력).
@@ -107,8 +107,8 @@ v0.3부터 Tauri v2 기반 네이티브 인스톨러를 빌드할 수 있다 (`i
 ### 소스에서 실행
 
 ```bash
-git clone https://github.com/anthropics/ClaudeGUI.git
-cd ClaudeGUI
+git clone https://github.com/neuralfoundry-coder/CLAUDE-GUI.git
+cd CLAUDE-GUI
 npm install
 cp .env.example .env.local   # 선택 사항 — 프로젝트 루트 지정
 node server.js

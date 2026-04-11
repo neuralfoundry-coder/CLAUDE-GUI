@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ClaudeGUI one-line installer for macOS / Linux.
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/<org>/ClaudeGUI/main/scripts/install/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.sh | bash
 #   curl -fsSL ... | bash -s -- --yes        (non-interactive)
 #   curl -fsSL ... | bash -s -- --dry-run    (inspect plan only)
 
 set -euo pipefail
 
-REPO_URL="${CLAUDEGUI_REPO:-https://github.com/anthropics/ClaudeGUI.git}"
+REPO_URL="${CLAUDEGUI_REPO:-https://github.com/neuralfoundry-coder/CLAUDE-GUI.git}"
 INSTALL_DIR="${CLAUDEGUI_HOME:-$HOME/.claudegui/app}"
 LAUNCHER="$HOME/.local/bin/claudegui"
 BRANCH="${CLAUDEGUI_BRANCH:-main}"

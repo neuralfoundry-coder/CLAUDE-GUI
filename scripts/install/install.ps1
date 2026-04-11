@@ -1,6 +1,6 @@
 # ClaudeGUI one-line installer for Windows (PowerShell 5+).
 # Usage:
-#   iwr -useb https://raw.githubusercontent.com/<org>/ClaudeGUI/main/scripts/install/install.ps1 | iex
+#   iwr -useb https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.ps1 | iex
 #   $env:CLAUDEGUI_YES = '1'; iwr ... | iex       (non-interactive)
 
 [CmdletBinding()]
@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $RepoUrl    = $env:CLAUDEGUI_REPO  -as [string]
-if (-not $RepoUrl) { $RepoUrl = 'https://github.com/anthropics/ClaudeGUI.git' }
+if (-not $RepoUrl) { $RepoUrl = 'https://github.com/neuralfoundry-coder/CLAUDE-GUI.git' }
 $Branch     = if ($env:CLAUDEGUI_BRANCH) { $env:CLAUDEGUI_BRANCH } else { 'main' }
 $InstallDir = if ($env:CLAUDEGUI_HOME) { $env:CLAUDEGUI_HOME } else { Join-Path $env:LOCALAPPDATA 'ClaudeGUI\app' }
 $Launcher   = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\claudegui.cmd'
