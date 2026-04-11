@@ -1,0 +1,388 @@
+# 5. 보안 아키텍처
+
+## 5.1 위협 모델
+
+ClaudeGUI는 로컬 머신에서 실행되는 개발자 도구이지만, 다음 위협에 대해 방어해야 한다.
+
+| 위협 ID | 위협 | 영향 | 완화 전략 |
+|---------|------|------|-----------|
+| T-01 | 경로 순회 공격 | 프로젝트 외부 파일 노출 | `resolveSafe()` 바운드 체크 (§5.2) |
+| T-02 | CLI 명령 인젝션 | 임의 명령 실행 | JSON 캡슐화, 이스케이프 (§5.5) |
+| T-03 | XSS (프리뷰) | 브라우저 세션 탈취 | iframe sandbox, sanitize (§5.4) |
+| T-04 | 네트워크 노출 | 원격 무단 접근 | localhost 바인딩 (§5.3) |
+| T-05 | 심볼릭 링크 탈출 | 샌드박스 우회 | `fs.lstat()` 검증 (§5.2) |
+| T-06 | dotfile 노출 | 비밀 유출 (`.env`, `.git`) | 차단 리스트 (§5.2) |
+| T-07 | 임의 Claude 명령 | 비용 유발, 파일 손상 | 권한 요청 UI (§5.5) |
+| T-08 | WebSocket 하이재킹 | 세션 탈취 | Origin 검증, CSRF 토큰 |
+| T-09 | 메모리 공격 | DoS | 파일 크기 제한, 속도 제한 |
+| T-10 | API 키 노출 | Claude 크레덴셜 유출 | 서버 전용 저장, 환경변수 |
+
+---
+
+## 5.2 파일 시스템 샌드박싱
+
+### 5.2.1 resolveSafe 구현 패턴
+
+```typescript
+// src/lib/fs/resolve-safe.ts
+import path from 'node:path';
+import fs from 'node:fs/promises';
+
+const PROJECT_ROOT = process.env.PROJECT_ROOT || process.cwd();
+
+const DENIED_SEGMENTS = new Set([
+  '.env', '.git', '.ssh', '.claude', '.aws',
+  'id_rsa', 'id_ed25519', '.npmrc',
+]);
+
+export async function resolveSafe(userPath: string): Promise<string> {
+  // 1. 절대 경로로 변환
+  const resolved = path.resolve(PROJECT_ROOT, userPath);
+
+  // 2. 프로젝트 루트 내부인지 확인
+  const rel = path.relative(PROJECT_ROOT, resolved);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new SandboxError('Path outside project root', 4403);
+  }
+
+  // 3. dotfile 차단
+  for (const segment of rel.split(path.sep)) {
+    if (DENIED_SEGMENTS.has(segment)) {
+      throw new SandboxError(`Access denied: ${segment}`, 4403);
+    }
+  }
+
+  // 4. 심볼릭 링크 검증
+  try {
+    const stat = await fs.lstat(resolved);
+    if (stat.isSymbolicLink()) {
+      const target = await fs.readlink(resolved);
+      const targetAbs = path.resolve(path.dirname(resolved), target);
+      const targetRel = path.relative(PROJECT_ROOT, targetAbs);
+      if (targetRel.startsWith('..') || path.isAbsolute(targetRel)) {
+        throw new SandboxError('Symlink points outside project', 4403);
+      }
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    // 파일이 아직 없는 경우 (쓰기 작업 등)는 허용
+  }
+
+  return resolved;
+}
+```
+
+### 5.2.2 모든 파일 시스템 API에 적용
+
+```typescript
+// src/app/api/files/read/route.ts
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const userPath = searchParams.get('path');
+  if (!userPath) return badRequest('path required');
+
+  try {
+    const safePath = await resolveSafe(userPath);
+    const content = await fs.readFile(safePath, 'utf-8');
+    return Response.json({ success: true, data: { content } });
+  } catch (err) {
+    if (err instanceof SandboxError) return forbidden(err.message);
+    throw err;
+  }
+}
+```
+
+### 5.2.3 chokidar 감시 범위 제한
+
+```typescript
+import chokidar from 'chokidar';
+
+const watcher = chokidar.watch(PROJECT_ROOT, {
+  ignored: [
+    /(^|[/\\])\.(?!claude-project$)/,  // 대부분의 dotfile
+    /node_modules/,
+    /dist|build|\.next|out/,
+    /\.DS_Store/,
+  ],
+  followSymlinks: false,  // 심볼릭 링크 추적 금지
+  cwd: PROJECT_ROOT,
+});
+```
+
+---
+
+## 5.3 네트워크 보안
+
+### 5.3.1 localhost 바인딩
+
+```javascript
+// server.js
+const server = http.createServer(handler);
+
+const HOST = process.env.HOST || '127.0.0.1';  // 기본 localhost
+const PORT = process.env.PORT || 3000;
+
+server.listen(PORT, HOST, () => {
+  console.log(`> Ready on http://${HOST}:${PORT}`);
+});
+```
+
+외부 노출이 필요한 경우에만 명시적으로 `HOST=0.0.0.0`을 설정한다. 이 경우 다음 추가 조치를 필수로 한다:
+
+- 토큰 기반 인증
+- HTTPS/WSS 활성화 (TLS)
+- CORS 엄격 설정
+
+### 5.3.2 원격 접근 방식 (권장 순서)
+
+1. **SSH 터널링**:
+   ```bash
+   ssh -L 3000:localhost:3000 user@remote
+   ```
+2. **Cloudflare Tunnel**:
+   ```bash
+   cloudflared tunnel --url http://localhost:3000
+   ```
+3. **Tailscale** 또는 VPN: 신뢰된 네트워크 내 접근
+4. **직접 노출 (비권장)**: 반드시 인증 및 TLS 적용
+
+### 5.3.3 WebSocket Origin 검증
+
+```typescript
+wss.on('connection', (ws, req) => {
+  const origin = req.headers.origin;
+  const allowed = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+  if (!allowed.includes(origin || '')) {
+    ws.close(1008, 'Origin not allowed');
+    return;
+  }
+  // ... 정상 처리
+});
+```
+
+### 5.3.4 CSRF 보호
+
+- REST API: SameSite 쿠키 + CSRF 토큰 (상태 변경 작업)
+- WebSocket: 연결 시 토큰 검증
+
+---
+
+## 5.4 iframe 프리뷰 보안
+
+### 5.4.1 샌드박스 설정
+
+```tsx
+<iframe
+  srcDoc={htmlContent}
+  sandbox="allow-scripts"       // allow-same-origin 절대 금지
+  referrerPolicy="no-referrer"
+  loading="lazy"
+/>
+```
+
+### 5.4.2 왜 `allow-same-origin`을 금지하는가?
+
+- `allow-scripts` + `allow-same-origin` 조합은 **샌드박스를 무효화**한다.
+- iframe이 부모 페이지의 localStorage, 쿠키, DOM에 접근 가능해진다.
+- XSS 공격자가 사용자 세션을 탈취할 수 있다.
+
+### 5.4.3 부모-자식 통신
+
+```typescript
+// 부모
+iframe.contentWindow?.postMessage(
+  { type: 'UPDATE_STYLE', css: newCss },
+  '*'  // targetOrigin: srcDoc iframe은 'null' origin을 가지므로 '*' 사용
+);
+
+// 자식 (reveal-host.html 등)
+window.addEventListener('message', (e) => {
+  // 부모 window 검증
+  if (e.source !== window.parent) return;
+  // 메시지 타입 화이트리스트
+  if (!['UPDATE_STYLE', 'UPDATE_SLIDE', 'NAVIGATE'].includes(e.data.type)) return;
+  // 안전하게 처리
+});
+```
+
+### 5.4.4 CSP 헤더
+
+```typescript
+// Next.js middleware.ts
+export function middleware(req: NextRequest) {
+  const res = NextResponse.next();
+  res.headers.set('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",  // Monaco CDN
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "connect-src 'self' ws://localhost:3000 wss://localhost:3000",
+    "frame-src 'self' data:",  // iframe srcdoc
+  ].join('; '));
+  return res;
+}
+```
+
+### 5.4.5 Markdown sanitize
+
+```typescript
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeSanitize from 'rehype-sanitize';
+
+<ReactMarkdown
+  remarkPlugins={[remarkGfm]}
+  rehypePlugins={[rehypeSanitize]}  // 필수
+>
+  {markdown}
+</ReactMarkdown>
+```
+
+**금지**: `dangerouslySetInnerHTML` 직접 사용
+
+---
+
+## 5.5 Claude CLI 권한 관리
+
+### 5.5.1 권한 인터셉트 전략
+
+Agent SDK의 `tool_use` 이벤트를 가로채서 GUI 모달로 승인/거부를 받는다.
+
+```typescript
+// src/lib/claude/permission-interceptor.ts
+import { readFile } from 'node:fs/promises';
+
+const DANGEROUS_TOOLS = new Set(['Bash', 'Edit', 'Write', 'MultiEdit']);
+
+interface ClaudeSettings {
+  autoApprove?: {
+    tools?: string[];
+    bashCommands?: string[];
+  };
+}
+
+export async function shouldAskPermission(
+  tool: string,
+  args: unknown
+): Promise<boolean> {
+  if (!DANGEROUS_TOOLS.has(tool)) return false;
+
+  // .claude/settings.json 화이트리스트 확인
+  const settings = await loadClaudeSettings();
+  const autoApproved = settings.autoApprove?.tools || [];
+
+  if (autoApproved.includes(tool)) {
+    // Bash인 경우 명령어 화이트리스트도 확인
+    if (tool === 'Bash' && settings.autoApprove?.bashCommands) {
+      const cmd = (args as { command: string }).command;
+      const matched = settings.autoApprove.bashCommands.some((pattern) =>
+        matchCommand(cmd, pattern)
+      );
+      return !matched;
+    }
+    return false;
+  }
+
+  return true;
+}
+```
+
+### 5.5.2 위험 명령 경고
+
+다음 패턴의 Bash 명령은 추가 경고와 함께 표시한다:
+
+- `rm -rf`, `rm -r`, `rmdir`
+- `sudo`, `su`
+- `chmod 777`, `chown`
+- `dd`, `mkfs`
+- `curl ... | sh`, `wget ... | sh`
+- `/etc/`, `/System/`, `~/.ssh/` 접근
+
+```typescript
+const DANGER_PATTERNS = [
+  /\brm\s+-[rfR]+/,
+  /\bsudo\b/,
+  /\bcurl\s+.*\|\s*(?:sh|bash)/,
+  /\/etc\//,
+];
+
+function assessDanger(cmd: string): 'safe' | 'warning' | 'danger' {
+  for (const p of DANGER_PATTERNS) {
+    if (p.test(cmd)) return 'danger';
+  }
+  return 'safe';
+}
+```
+
+### 5.5.3 CLI 인젝션 방지
+
+사용자 입력을 Claude에 전달할 때 반드시 구조화된 JSON으로 전달한다.
+
+```typescript
+// 잘못된 방식 (문자열 결합)
+const prompt = `Fix the bug in ${userInput}`;  // 위험
+
+// 올바른 방식 (Agent SDK 파라미터)
+query({
+  prompt: 'Fix the bug in the file',
+  systemPrompt: `Target file: ${escapeForPrompt(userInput)}`,
+});
+```
+
+---
+
+## 5.6 데이터 보호
+
+### 5.6.1 API 키 처리
+
+- **원칙**: API 키는 **절대** 프론트엔드에 노출하지 않는다.
+- 환경 변수(`ANTHROPIC_API_KEY`)로 서버에만 주입한다.
+- Next.js `.env.local` 파일은 `.gitignore`에 포함한다.
+- 클라이언트 측 `process.env.NEXT_PUBLIC_*` 접두사 **사용 금지**.
+
+### 5.6.2 세션 데이터
+
+- Claude 세션은 `~/.claude/projects/`에 저장된다 (Claude CLI 자체 관리).
+- ClaudeGUI는 세션 메타데이터만 읽기 전용으로 조회한다.
+- 세션 데이터 삭제는 `DELETE /api/sessions/:id` 호출 시에만 수행한다.
+
+### 5.6.3 민감 파일 접근 제한
+
+다음 파일/경로는 API에서 차단한다:
+
+```typescript
+const BLOCKED_FILES = [
+  /\.env(\.|$)/,
+  /\.pem$/,
+  /\.key$/,
+  /id_rsa/,
+  /id_ed25519/,
+  /credentials(\.|$)/,
+  /\.aws\//,
+];
+```
+
+### 5.6.4 로깅 정책
+
+- 서버 로그에 파일 내용, API 키, 프롬프트 전문을 기록하지 않는다.
+- 요청 로그는 경로, 메서드, 상태 코드만 기록한다.
+- 에러 스택 트레이스는 개발 모드에서만 상세 출력한다.
+
+---
+
+## 5.7 보안 체크리스트
+
+배포 전 다음 항목을 확인한다:
+
+- [ ] 서버가 `127.0.0.1`에 바인딩되어 있는가?
+- [ ] 모든 파일 시스템 API가 `resolveSafe()`를 사용하는가?
+- [ ] dotfile 차단 리스트가 최신인가?
+- [ ] iframe에 `allow-same-origin`이 사용되지 않았는가?
+- [ ] Markdown 렌더링에 `rehype-sanitize`가 적용되었는가?
+- [ ] API 키가 환경 변수로만 관리되는가?
+- [ ] WebSocket Origin 검증이 활성화되어 있는가?
+- [ ] CSP 헤더가 설정되어 있는가?
+- [ ] 위험 Bash 명령 경고 로직이 동작하는가?
+- [ ] 속도 제한(rate limiting)이 적용되어 있는가?
+- [ ] 파일 크기 제한이 적용되어 있는가?
+- [ ] `.env.local`이 `.gitignore`에 포함되어 있는가?

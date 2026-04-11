@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reveal Host</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
+    />
+    <link
+      rel="stylesheet"
+      id="theme"
+      href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css"
+    />
+    <style>
+      html,
+      body,
+      .reveal {
+        height: 100%;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides" id="slides">
+        <section><h1>ClaudeGUI Slides</h1><p>Ask Claude to create slides.</p></section>
+      </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+    <script>
+      Reveal.initialize({ hash: false, controls: true, progress: true });
+
+      window.addEventListener('message', (event) => {
+        const data = event.data;
+        if (!data || typeof data !== 'object') return;
+
+        if (data.type === 'UPDATE_CONTENT' && typeof data.content === 'string') {
+          const slidesEl = document.getElementById('slides');
+          if (!slidesEl) return;
+          const tmp = document.createElement('div');
+          tmp.innerHTML = data.content;
+          const sections = tmp.querySelectorAll('section');
+          if (sections.length > 0) {
+            slidesEl.innerHTML = '';
+            sections.forEach((s) => slidesEl.appendChild(s.cloneNode(true)));
+          } else {
+            slidesEl.innerHTML = `<section>${data.content}</section>`;
+          }
+          Reveal.sync();
+        }
+
+        if (data.type === 'NAVIGATE' && typeof data.index === 'number') {
+          Reveal.slide(data.index);
+        }
+
+        if (data.type === 'SET_THEME' && typeof data.theme === 'string') {
+          const link = document.getElementById('theme');
+          if (link) {
+            link.setAttribute(
+              'href',
+              `https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/${data.theme}.css`,
+            );
+          }
+        }
+      });
+    </script>
+  </body>
+</html>
