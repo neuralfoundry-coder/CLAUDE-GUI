@@ -8,6 +8,7 @@ import { useEditorStore } from '@/stores/use-editor-store';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { PreviewRouter } from './preview-router';
 import { LiveHtmlPreview } from './live-html-preview';
+import { PreviewDownloadMenu } from './preview-download-menu';
 import { cn } from '@/lib/utils';
 
 export function PreviewPanel() {
@@ -46,6 +47,7 @@ export function PreviewPanel() {
           <span className="text-[10px] uppercase text-muted-foreground">
             {showLive ? 'live' : type !== 'none' ? type : ''}
           </span>
+          <PreviewDownloadMenu />
           <Button
             variant="ghost"
             size="icon"

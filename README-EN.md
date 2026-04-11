@@ -33,7 +33,7 @@ A web-based IDE that wraps Anthropic's Claude CLI. A four-panel layout (file exp
 - **File explorer** — Virtualized tree (`react-arborist`), Git status indicators, drag-and-drop, context menu
 - **Real-time file sync** — chokidar detects filesystem changes and broadcasts them over WebSocket so the editor refreshes automatically
 - **Command palette** — `Cmd+K` / `Ctrl+Shift+P` (cmdk-based), quick open (`Cmd+P`), panel toggles
-- **Generated Content gallery** — Automatically extracts HTML/SVG/Markdown/code artifacts produced by Claude and surfaces them in a popup. Persisted to `localStorage` with one-click clipboard copy and exports to Source, HTML, PDF (via the print dialog), Word (.doc), and PNG (for SVGs)
+- **Generated Content gallery** — Automatically captures every HTML/SVG/Markdown/code block Claude writes *and* every file saved through Write/Edit tools, including images, PDFs, Word (`.docx`), Excel (`.xlsx`), and PowerPoint (`.pptx`). A session-scoped artifact registry (`/api/artifacts/*`) keeps captured paths reachable after you switch projects, so previews and "Original" downloads keep working. Dedicated viewers render each kind (sandboxed iframe, react-pdf, mammoth, SheetJS, and a JSZip-based PPTX slider), and inline text artifacts still export to Source / HTML / PDF / Word / PNG with one-click clipboard copy
 
 ## Architecture at a Glance
 

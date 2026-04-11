@@ -122,6 +122,7 @@ src/components/panels/file-explorer/
 3. **Git status**: call `/api/git/status` to build a per-file status map → overlay.
 4. **Live updates**: receive `/ws/files` WebSocket events to update tree nodes.
 5. **Context menu**: uses Radix UI `@radix-ui/react-context-menu`.
+6. **OS file drop / paste upload (FR-208)**: the `FileExplorerPanel` root `div` is `tabIndex={0}` and wires `onDragEnter/onDragOver/onDragLeave/onDrop` plus `onPaste`. Only drags whose `e.dataTransfer.types` include `'Files'` are accepted, so the handler does not conflict with react-arborist's internal node drags. `File[]` collected from drop or paste events is sent via `filesApi.upload(destDir, files)` to `POST /api/files/upload`, and on success `refreshRoot()` refreshes the tree immediately. While dragging, the panel shows a `ring-2 ring-primary` border together with a "Drop files to upload to project root" overlay. Upload progress/error state surfaces in the header status label (`uploading…` / `upload failed: <message>`).
 
 ## 2.4 EditorPanel Component
 
@@ -198,14 +199,16 @@ function acceptDiff(tabId: string) {
 `TerminalPanel` follows a **thin-attach pattern** so that React's lifecycle cannot touch PTY processes. Both the xterm.js `Terminal` instance and the WebSocket connection are owned by a `TerminalManager` singleton that lives outside the component tree; React components merely supply a DOM host.
 
 - **Owner**: `TerminalManager` singleton (`src/lib/terminal/terminal-manager.ts`)
-- **Attach point**: `XTerminalAttach` (`src/components/panels/terminal/x-terminal.tsx`) — the host div is wrapped in a Radix `ContextMenu`
-- **Container + tab UI**: `TerminalPanel` (`src/components/panels/terminal/terminal-panel.tsx`) — inline rename, cwd label, unread indicator, project-change banner, Restart chip, split-pane renderer
+- **Attach point**: `XTerminalAttach` (`src/components/panels/terminal/x-terminal.tsx`) — the host div is wrapped in a Radix `ContextMenu`. Its `<div>` background is bound to `style={{ background: 'var(--terminal-bg)' }}` so theme toggles, tab switches, and first-mount never flash black (FR-419).
+- **Container + tab UI**: `TerminalPanel` (`src/components/panels/terminal/terminal-panel.tsx`) — inline rename, cwd label, unread indicator, project-change banner, Restart chip, split-pane renderer, "Open in system terminal" `ExternalLink` button (`FR-420`)
 - **Search overlay**: `TerminalSearchOverlay` (`src/components/panels/terminal/terminal-search-overlay.tsx`)
+- **Theme palette**: `src/lib/terminal/terminal-themes.ts` (`TERMINAL_THEMES`) — single source of truth. `TerminalManager` imports and propagates it via `setTheme`. The hex values must stay in parity with `--terminal-bg`/`--terminal-fg` in `globals.css`; `tests/unit/terminal-themes-contrast.test.ts` catches drift.
 - **State**: `useTerminalStore` (`src/stores/use-terminal-store.ts`) — tab list, active session ID, session status (`connecting` / `open` / `closed` / `exited`), cwd, displayName, unread, searchOverlayOpen, splitEnabled, primarySessionId, secondarySessionId, activePaneIndex
 - **Socket wrapper**: `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`) — no auto-reconnect. When a reconnect is needed the manager opens a new socket carrying the `serverSessionId` via URL query (FR-414).
 - **Server-side session registry**: `server-handlers/terminal/session-registry.mjs` (`TerminalSessionRegistry` singleton) — manages PTY lifetime, 256 KB ring buffer, 30-minute GC, and transient/exit listener fan-out. ADR-020.
 - **Shell resolver**: `server-handlers/terminal/shell-resolver.mjs` (`resolveShell`, `shellFlags`, `buildPtyEnv`)
-- **File explorer integration**: `src/app/api/files/reveal/route.ts` (Reveal in Finder/Explorer), `filesApi.reveal`, and the `file-tree.tsx` context menu's `Open terminal here` (WS URL `?cwd=<path>`)
+- **OS terminal bypass**: `src/app/api/terminal/open-native/route.ts` (POST endpoint), `src/app/api/terminal/open-native/launchers.ts` (`resolveLauncher` pure function with a per-platform command table), `terminalApi.openNative` client wrapper, and the `Cmd/Ctrl+Shift+O` global shortcut. See `FR-420`.
+- **File explorer integration**: `src/app/api/files/reveal/route.ts` (Reveal in Finder/Explorer), `filesApi.reveal`, and the `file-tree.tsx` context menu's `Open terminal here` (WS URL `?cwd=<path>`) and `Open in system terminal` (FR-420).
 - **Editor integration**: the module-level `activeMonacoEditor` reference and `getActiveEditorSelectionOrLine()` in `src/components/panels/editor/monaco-editor-wrapper.tsx`, and `useEditorStore.pendingReveal` (consumed by the link provider via `revealLineInCenter`)
 - **Framing helpers**: `src/lib/terminal/terminal-framing.ts` — now includes `TerminalCloseControl` (client → server) and `TerminalSessionServerControl` (server → client)
 
@@ -384,6 +387,27 @@ window.addEventListener('message', (e) => {
   }
 });
 ```
+
+### Contain-fit rendering and content outline (FR-612)
+
+The preview panel guarantees that the entire content layout is visible regardless of the container's aspect ratio, and that the content boundary is always discernible even when background colours collide. The rules below apply identically regardless of `usePreviewStore.fullscreen`.
+
+- **Slides (`reveal-host.html`)**: `Reveal.initialize` is called with a fixed logical size (`width: 960, height: 700`) plus `margin: 0.04`, `minScale: 0.05`, and `maxScale: 2.0`, so a full slide always fits the viewport at any aspect ratio. `.reveal .slides > section` draws its outline with `box-shadow: 0 0 0 1px rgba(255,255,255,0.28), 0 6px 24px rgba(0,0,0,0.45)`.
+- **PDF (`pdf-preview.tsx`)**: a `ResizeObserver` watches the scroll container, and the first page's `onLoadSuccess` captures the native size via `getViewport({ scale: 1 })`. `Page` is then rendered with `width = min(availableWidth, availableHeight × aspect)` so the whole page fits the container. The page canvas is wrapped in a `ring-1 ring-border/70 shadow-md` box. The cached native size is reset whenever the file path changes.
+- **HTML / Live HTML / Markdown**: the content surface is wrapped in a `bg-muted` outer box with an inner `ring-1 ring-border/70 shadow-sm`, so it is visually separated from the surrounding UI.
+
+### One-click preview download (FR-613)
+
+The preview panel header exposes a download dropdown that immediately downloads the currently rendered content in any of the formats appropriate for the active preview type. The menu stays active during live preview as well, treating the streamed buffer (or the synchronized editor tab content) as an inline HTML artifact and downloading it on the spot.
+
+- **Adapter** (`src/lib/preview/preview-download.ts`): converts `(filePath, type, content)` into the `ExtractedArtifact` shape defined in `src/lib/claude/artifact-extractor.ts`. Text previews (`html`/`markdown`/`slides`, and `.svg` images) are built with `source: 'inline'`; binary previews (`pdf`/`image` except SVG/`docx`/`xlsx`/`pptx`) are built with `source: 'file'` + `filePath`. The adapter then delegates to `availableExports()` / `exportArtifact()` from `src/lib/claude/artifact-export.ts`, reusing the existing download / print pipeline as-is.
+- **Header component** (`src/components/panels/preview/preview-download-menu.tsx`) resolves the download source with the following precedence:
+  1. **Live mode first (`showingLive`)**: when `useLivePreviewStore.autoSwitch && mode !== 'idle'`, the input becomes `filePath = generatedFilePath ?? 'live-preview.html'`, `type = 'html'`, and `content = (editorTab[generatedFilePath]?.content) ?? buffer`. If the buffer is empty the menu does not render.
+  2. **Regular file preview**: the `PreviewType` is derived from `usePreviewStore.currentFile` (or the editor store's active tab path). Text-backed types (`html`/`markdown`/`slides` + `.svg`) first try the in-memory editor tab and lazy-load via `filesApi.read()` on click if needed. File-backed binary types require no content.
+  3. The resolved input is passed to `previewDownloadOptions(input)` → `downloadPreview(input, format)`.
+- **Live streaming caption**: while `mode === 'live-code'` (partial chunk, not yet a renderable unit) the dropdown header reads `Download (streaming…)`; once `mode === 'live-html'` it reads `Download live buffer`; outside of live mode it reads `Download as`. This tells the user which snapshot they are capturing. Because `html-stream-extractor.ts` maintains the accumulated full document (previously-generated pages + the currently-streaming tail), downloading at any point during a 5-page stream captures everything rendered up to that moment.
+- **Panel placement** (`src/components/panels/preview/preview-panel.tsx`): `PreviewDownloadMenu` is placed immediately to the left of the fullscreen toggle in the header and is rendered regardless of `showLive`.
+- **Format matrix** follows the table in FR-613. DOCX/XLSX/PPTX expose only "Original file"; transcoding is out of scope for v1.0. PDF export routes through the browser print dialog (`window.open()` + `window.print()`), letting the OS "Save as PDF" handle the write, so no server-side PDF renderer (Puppeteer, etc.) is required.
 
 ## 2.7 ClaudeIntegration Module
 
@@ -602,34 +626,59 @@ interface PreviewState {
 
 ## 2.9 ArtifactGallery module (FR-1000)
 
-A cross-cutting module that collects every code, HTML, Markdown, and SVG snippet Claude streams back into a single place where the user can copy or export them. It runs independently of the editor/preview panels and is composed of four core files.
+A cross-cutting module that collects every code, HTML, Markdown, and SVG snippet Claude streams back *plus* every file Claude saves through `Write`/`Edit`/`MultiEdit` tools — images, PDFs, Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`) — into a single place where the user can preview, copy, and export them. Runs independently of the editor/preview panels.
 
 ### Module layout
 
 | File | Responsibility |
 |------|----------------|
-| `src/lib/claude/artifact-extractor.ts` | Regex-based extractor that walks an assistant text and returns `ExtractedArtifact[]` — fenced code blocks, stand-alone `<!doctype html>` documents, and stand-alone `<svg>` elements. Each item gets a stable `{messageId}:{index}` id plus inferred language, kind, title, and extension. |
-| `src/stores/use-artifact-store.ts` | A zustand store holding `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn`, along with `extractFromMessage/flushPendingOpen/open/close/remove/clear` actions. The `persist` middleware writes `artifacts` and `autoOpen` to `localStorage` (key: `claudegui-artifacts`). The store is capped at 200 entries. |
-| `src/lib/claude/artifact-export.ts` | Exposes `copyArtifact`, `availableExports`, and `exportArtifact` and handles source (`.ts`/`.py`/`.html`/…), HTML, PDF (via `window.print()`), Word (`.doc`), and SVG→PNG (via `canvas.toBlob`) outputs. It relies only on browser APIs — no new dependencies. |
-| `src/components/modals/artifacts-modal.tsx` | The Radix Dialog gallery. Left-hand list + right-hand preview, Copy/Export/Delete actions, and an `Auto-open`/`Clear all` toolbar at the top. Subscribes directly to `useArtifactStore`. |
+| `src/lib/claude/artifact-extractor.ts` | Regex-based text extractor (fenced blocks + stand-alone `<!doctype html>` / `<svg>`) and the `classifyByPath`/`isBinaryKind`/`titleFromPath` helpers that map an extension to a kind and decide inline vs. file-backed storage. Text artifacts get a `{messageId}:{index}` id. |
+| `src/lib/claude/artifact-from-tool.ts` | Builds artifact records from `Write`/`Edit`/`MultiEdit` tool_use blocks. `Write` classifies by extension and either snapshots `input.content` inline or keeps only `filePath` for binary kinds. `Edit`/`MultiEdit` apply `old_string → new_string` patches against an existing inline baseline via `applyEditOps`. All tool_use artifacts share the `file:{absolutePath}` id so repeat Writes/Edits collapse into a single entry (FR-1008). |
+| `src/stores/use-artifact-store.ts` | zustand store holding `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn`, and the `extractFromMessage`/`ingestToolUse`/`findByFilePath`/`flushPendingOpen`/`open`/`close`/`remove`/`clear` actions. `persist` v2 writes up to 200 artifacts to `localStorage` (key `claudegui-artifacts`); `onRehydrateStorage` re-registers rehydrated `filePath`s with the server registry (FR-1009). |
+| `src/lib/claude/artifact-export.ts` | `copyArtifact`, `availableExports`, `exportArtifact`. Inline text artifacts export to Source/HTML/Word (`.doc`)/PDF (`window.print()`)/PNG (`canvas.toBlob`). File-backed binaries go through `downloadBinaryFile`, which tries `/api/artifacts/raw` first and falls back to `/api/files/raw`. |
+| `src/lib/claude/artifact-registry.ts` | Server-side in-process allowlist of absolute paths (max 1024, FIFO eviction). Exposes `registerArtifactPath`, `isArtifactPathRegistered`, `listArtifactPaths`, `clearArtifactRegistry`. |
+| `src/lib/claude/artifact-url.ts` | Client-only URL helpers: `artifactRawUrl`, `projectRawUrl`, and `fetchArtifactBytes` (try registry, fall back to project raw endpoint). |
+| `src/app/api/artifacts/register/route.ts` | `POST /api/artifacts/register`. Accepts `{ paths: [] }`, validates each path via `fs.stat` and the 50 MB binary cap, and registers it. Rate-limited through the shared `rateLimit`/`clientKey` helpers. |
+| `src/app/api/artifacts/raw/route.ts` | `GET /api/artifacts/raw?path=<abs>`. Streams the bytes of a previously registered path using a broad MIME table that includes docx/xlsx/xlsm/pptx/PDF/images. |
+| `src/components/panels/preview/docx-preview.tsx` | Converts DOCX → HTML with `mammoth/mammoth.browser` and injects the result into a fully sandboxed iframe. |
+| `src/components/panels/preview/xlsx-preview.tsx` | Converts each sheet with SheetJS (`xlsx`) via `sheet_to_html`, with a tab switcher for multi-sheet workbooks. |
+| `src/components/panels/preview/pptx-preview.tsx` | Unzips the OOXML with JSZip, extracts `<a:t>` text runs per slide, and surfaces referenced media images as `URL.createObjectURL` thumbnails inside a 16:9 slide view. |
+| `src/components/panels/preview/pdf-preview.tsx` | Gains an optional `srcOverride` prop so the artifact gallery can reuse the same viewer with an `/api/artifacts/raw` URL. |
+| `src/components/modals/artifacts-modal.tsx` | The Radix Dialog gallery. 10 kind badges, Preview/Source toggle, per-kind renderer routing, file-backed fallback card, and the `Auto-open`/`Clear all` toolbar. |
 
 ### Data flow
 
 ```text
 WebSocket /ws/claude
    └─► use-claude-store.handleServerMessage
-         ├─ assistant message → useArtifactStore.extractFromMessage(msgId, sid, text)
-         │                         └─► artifact-extractor.extractArtifacts
-         │                               └─► new artifacts → pendingTurn[]
-         └─ result                → useArtifactStore.flushPendingOpen()
-                                      └─► if autoOpen && pendingTurn.length > 0 → isOpen = true
+         ├─ assistant message
+         │    ├─ text  → useArtifactStore.extractFromMessage(msgId, sid, text)
+         │    │           └─► artifact-extractor.extractArtifacts
+         │    │                 └─► new text artifacts → pendingTurn[]
+         │    └─ tool_use (Write / Edit / MultiEdit)
+         │         └─► useArtifactStore.ingestToolUse(toolMsgId, sid, tool)
+         │               ├─► artifactFromWrite / artifactFromEdit
+         │               │    └─► dedupe by `file:{absolutePath}`
+         │               └─► POST /api/artifacts/register (filePath)
+         └─ result
+              └─► useArtifactStore.flushPendingOpen()
+                    └─► if autoOpen && pendingTurn.length > 0 → isOpen = true
+
+useArtifactStore (localStorage rehydrate)
+   └─► onRehydrateStorage → POST /api/artifacts/register(paths[])
+
+ArtifactsModal preview
+   └─► fetchArtifactBytes(filePath)
+         ├─► GET /api/artifacts/raw?path=<abs>   (registry hit)
+         └─► GET /api/files/raw?path=<abs>       (project-scoped fallback)
 ```
 
-Session restore (`useClaudeStore.loadSession`) calls `extractFromMessage(..., { silent: true })` so that historical artifacts repopulate the gallery without triggering the auto-popup.
+Session restore (`useClaudeStore.loadSession`) calls `extractFromMessage(..., { silent: true })` so historical text artifacts repopulate the gallery without triggering the auto-popup. File-backed artifacts are re-admitted to the server registry in `onRehydrateStorage`.
 
 ### Design choices
 
-- **No new dependencies** — existing deps such as `pptxgenjs`/`react-pdf`/`react-markdown` remain unused on the artifact path. Export relies solely on `Blob` + `<a download>`, `window.print()`, and `<canvas>` APIs. Even heterogeneous formats like PDF and DOCX are produced without adding bundle weight, via the print dialog and a Word-HTML trick.
+- **Cross-project access path** — files that Claude wrote in a previous project must still be readable during the rest of the session, even though `resolveSafe` tightly scopes `/api/files/raw` to the active project root. The registry solves this with a narrow "only the absolute paths we already admitted" allowlist: it bypasses the project sandbox without opening arbitrary file reads. The registry lives in memory and is rebuilt from the persisted store on hydration.
+- **localStorage protection** — base64-encoding binaries into `localStorage` would blow the ~5 MB browser quota immediately. Binary kinds therefore keep `content` empty and only persist `filePath`. Text kinds keep snapshotting inline so they remain usable after a project switch.
+- **Office viewers are dynamically imported** — `mammoth` (~800 KB), `xlsx`, and `jszip` are only fetched the first time the user opens a document of that kind, so the initial page load stays lean.
 - **Auto-popup only on `result`** — popping the dialog mid-stream would hurt readability, so `flushPendingOpen` is called exactly once per turn on the Agent SDK's `result` event.
-- **200-artifact cap** — comfortably within the browser's localStorage budget (~5 MB), with oldest entries evicted first.
-- **Recoverable failures** — if `window.open` is blocked or `<canvas>` rasterisation fails, the export path falls back to downloading the source HTML.
+- **Recoverable failures** — if `window.open` is blocked or `<canvas>` rasterisation fails the export path falls back to downloading the source HTML. If previewing a binary artifact fails the viewer swaps to a metadata card with a single Export button.

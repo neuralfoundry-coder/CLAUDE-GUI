@@ -43,24 +43,15 @@ function sendControl(ws, msg) {
  */
 function resolveInitialCwd(req) {
   const fallback = () => {
-    try {
-      return getActiveRoot();
-    } catch {
-      return path.resolve(os.homedir());
-    }
+    const root = getActiveRoot();
+    return root ?? path.resolve(os.homedir());
   };
   try {
     if (!req || !req.url) return fallback();
     const parsed = url.parse(req.url, true);
     const raw = parsed.query?.cwd;
     if (typeof raw !== 'string' || raw.length === 0) return fallback();
-    const root = (() => {
-      try {
-        return getActiveRoot();
-      } catch {
-        return null;
-      }
-    })();
+    const root = getActiveRoot();
     const abs = path.isAbsolute(raw) ? path.resolve(raw) : root ? path.resolve(root, raw) : null;
     if (!abs) return fallback();
     if (root && !(abs === root || abs.startsWith(root + path.sep))) {

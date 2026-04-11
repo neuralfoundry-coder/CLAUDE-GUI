@@ -78,6 +78,34 @@
 - 화면에 보이는 노드만 DOM에 렌더링하여 대규모 프로젝트를 지원해야 한다.
 - `react-arborist`의 내장 가상화 기능을 활용한다.
 
+### FR-208: 로컬 파일 드래그 앤 드롭 / 붙여넣기 업로드
+
+- 사용자는 로컬 OS 파일 탐색기(macOS Finder, Windows Explorer 등)에서 웹 파일 탐색기 패널로 파일을 **드래그 앤 드롭**하여 현재 프로젝트 루트에 복사할 수 있어야 한다.
+- 사용자는 클립보드에 복사된 파일/이미지를 웹 파일 탐색기 패널에서 **붙여넣기**(`Cmd+V` / `Ctrl+V`)하여 프로젝트 루트에 복사할 수 있어야 한다. 패널에 포커스가 있을 때 `onPaste` 이벤트의 `clipboardData.files`를 소비한다.
+- 드래그 중에는 패널이 `ring-2 ring-primary` 경계와 "Drop files to upload to project root" 오버레이를 표시하여 사용자에게 시각적 피드백을 제공한다. `e.dataTransfer.types`에 `'Files'`가 포함된 경우에만 드롭을 수락하고, react-arborist의 내부 노드 드래그와는 구분되어야 한다.
+- 업로드는 `POST /api/files/upload` 엔드포인트(04-api-design.md 참조)를 사용한다. 페이로드는 `multipart/form-data`이며 필드는 `destDir`(프로젝트 루트 기준 상대경로, 비어 있으면 루트) 및 반복되는 `files`로 구성된다.
+- 서버는 다음을 강제해야 한다:
+  - `resolveSafe(destDir)`로 대상 디렉토리를 프로젝트 루트 샌드박스 내부로 제한한다.
+  - 파일명은 `path.basename`으로 정규화하고 `.`, `..`, `/`, `\`, `\0`을 포함하는 이름을 거부한다.
+  - 파일당 최대 크기 `MAX_BINARY_SIZE` (50 MB), 요청 총합 최대 200 MB를 초과하면 `413 Payload Too Large`를 반환한다.
+  - 동일 파일명이 이미 존재하면 덮어쓰지 않고 ` (1)`, ` (2)` 접미사로 고유화한다.
+- 업로드 성공 후 클라이언트는 `refreshRoot()`로 파일 트리를 즉시 갱신한다. `/ws/files` 감시자도 이벤트를 발행하지만 디바운스 지연 없이 즉시 반영하기 위해 수동 갱신을 병행한다.
+- 실패 시 헤더의 상태 라벨이 `upload failed: <message>`로 표시되며 `text-destructive`로 강조된다.
+- 구현: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (드롭/페이스트 핸들러, 오버레이).
+
+### FR-209: 탐색기 루트 네비게이션 (상위/하위 재루팅)
+
+- 파일 탐색기는 현재 활성 프로젝트 루트를 **상위 디렉토리 또는 임의의 하위 디렉토리로 이동**할 수 있어야 한다. 이동한 디렉토리는 새로운 활성 루트가 되며, 동일 프로세스 전체(파일 API 샌드박스, 터미널 신규 세션 cwd, Claude 쿼리 cwd, chokidar 감시 대상)에 즉시 반영된다.
+- **UI 구성**:
+  - 패널 헤더에 **↑ Up 버튼**(`lucide-react`의 `ArrowUp`) — 클릭 시 `useProjectStore.openParent()`를 호출해 `path.dirname(activeRoot)`을 새 루트로 설정한다. 부모가 파일시스템 루트(`/` 또는 `C:\`)가 되는 경우 백엔드에서 `4403`으로 거부되며 버튼은 비활성화된다.
+  - 헤더 아래 **브레드크럼 바** — 현재 루트의 각 경로 세그먼트를 클릭 가능한 버튼으로 표시한다. 마지막 세그먼트는 현재 위치로 하이라이트되며, 다른 세그먼트 클릭 시 해당 조상 디렉토리로 루트를 이동한다.
+  - 디렉토리 노드의 우클릭 **컨텍스트 메뉴 최상단에 "Open as project root"** 항목을 추가한다. 파일 노드에는 표시하지 않는다. 선택 시 해당 디렉토리의 절대 경로로 `openProject()`를 호출한다.
+- **제약**:
+  - 파일시스템 루트(`/`, Windows 드라이브 루트)는 여전히 거부한다(`FR-908` 참조).
+  - `$HOME`은 사용자의 명시적 선택으로 허용한다(이전 `4403` 금지 조항 삭제). 이는 `~` 아래 dotfile/스크립트 프로젝트를 편집하려는 합법적인 사용 케이스를 지원하기 위함이다. `resolveSafe`의 dotfile deny 리스트(`.env`, `.git`, `.ssh`, `.claude`, `.aws`, `.npmrc`, `id_rsa`, `id_ed25519`, `credentials` 등)는 계속 적용되어 민감 파일 접근을 차단한다.
+- **상태 전환**: 루트가 변경되면 기존 에디터 탭과 프리뷰 선택이 리셋되고(`FR-908`의 기존 동작), 파일 트리가 새 루트 기준으로 재로드된다. 터미널의 실행 중 세션은 유지되지만 신규 세션은 새 루트에서 시작한다.
+- 구현: `src/components/panels/file-explorer/file-explorer-panel.tsx` (Up 버튼·브레드크럼), `src/components/panels/file-explorer/file-tree.tsx` (컨텍스트 메뉴 항목), `src/stores/use-project-store.ts` (`openParent()`, `parentDirectory()`).
+
 ---
 
 ## 3.3 코드 에디터 (FR-300)
@@ -144,6 +172,8 @@
 - 출력 내용이 우연히 `{`로 시작해도(`cat package.json` 등) 제어 프레임으로 오인되지 않는다.
 - 터미널 파이프라인은 Claude 채팅 입력과 완전히 분리되어야 한다. `/ws/terminal`과 `/ws/claude`는 심볼 수준에서도 교차 의존이 없어야 한다.
 - 서버는 쉘을 **로그인 + 인터랙티브** 모드로 spawn해야 한다. 구체적인 쉘 해결 순서, 플래그 매핑, 환경 변수는 `FR-410`에서 정의한다.
+- **시각성 요구사항 (WCAG AA)**: `TERMINAL_THEMES`의 모든 foreground·ANSI 16 색상은 해당 테마 `background` 위에서 **4.5:1 이상의 대비율**을 만족해야 한다. 예외는 관례상 배경과 같은 톤을 쓰는 `black`/`brightBlack` 일부 엔트리(테마별로 WCAG가 실제로 충족하는 경우에만)와 오버레이로 렌더되는 `cursor`/`selectionBackground`뿐이다. 이 요구는 `tests/unit/terminal-themes-contrast.test.ts`가 자동 검증한다.
+- 팔레트는 단일 소스 `src/lib/terminal/terminal-themes.ts`에서 정의되며, `TerminalManager`는 이를 import해 `setTheme(theme)` 호출 시 모든 인스턴스에 전파한다.
 
 ### FR-402: ANSI 이스케이프 코드 렌더링
 
@@ -312,10 +342,23 @@
 
 ### FR-419: 터미널 테마 동기화 및 폰트 설정
 
-- 터미널 색상은 `useLayoutStore.theme` (`dark` / `light` / `high-contrast` / `retro-green`)을 따라야 한다. `TerminalManager`는 `TERMINAL_THEMES` 상수로 각 앱 테마에 대한 xterm `ITheme`을 정의하며, boot 시 `useLayoutStore` 구독을 통해 `setTheme(theme)`을 모든 인스턴스에 전파한다.
+- 터미널 색상은 `useLayoutStore.theme` (`dark` / `light` / `high-contrast` / `retro-green`)을 따라야 한다. `TerminalManager`는 `src/lib/terminal/terminal-themes.ts`의 `TERMINAL_THEMES` 상수로 각 앱 테마에 대한 xterm `ITheme`을 정의하며, boot 시 `useLayoutStore` 구독을 통해 `setTheme(theme)`을 모든 인스턴스에 전파한다.
+- **호스트 배경 동기화**: xterm 호스트 `<div>`는 테마 토글·탭 전환·패널 마운트 직후 WebGL 캔버스가 그리기 전에 **잘못된 색 플래시**를 보여서는 안 된다. 이를 위해 `src/app/globals.css`에 `:root`/`.dark`/`.high-contrast`/`.retro-green` 블록마다 `--terminal-bg` / `--terminal-fg` CSS 변수를 정의하고, `x-terminal.tsx`의 호스트 div가 `style={{ background: 'var(--terminal-bg)' }}`로 이를 소비한다. CSS 변수 값은 `TERMINAL_THEMES[theme].background`/`foreground`와 **반드시 동일한 hex**여야 하며, 드리프트는 `tests/unit/terminal-themes-contrast.test.ts`가 자동 검출한다.
 - 터미널 폰트 패밀리와 ligature 토글은 `useSettingsStore`의 영속 필드 `terminalFontFamily` / `terminalFontLigatures`로 관리된다. 기본값은 `JetBrains Mono, Menlo, monospace` / `false`. 변경 시 매니저가 모든 인스턴스에 `term.options.fontFamily`를 재적용하고 `fit()`을 트리거한다.
 - `terminalCopyOnSelect` 설정(기본 `false`)이 켜지면 xterm의 `onSelectionChange` 이벤트에서 `navigator.clipboard.writeText`로 현재 선택을 자동 복사한다.
 - 3가지 설정 모두 Command Palette 커맨드로 접근 가능하다 ("Terminal: Set Font Family…", "Terminal: Enable/Disable Font Ligatures", "Terminal: Enable/Disable Copy-on-Select").
+
+### FR-420: OS 터미널 바이패스 (Open in system terminal)
+
+- 사용자는 `Cmd/Ctrl+Shift+O` 단축키, 터미널 탭 스트립의 `ExternalLink` 아이콘 버튼, xterm 컨텍스트 메뉴의 "Open in system terminal" 항목, 또는 파일 탐색기 컨텍스트 메뉴의 "Open in system terminal" 항목을 통해 **현재 탭의 cwd**(없으면 활성 프로젝트 루트)를 OS 기본 터미널 앱에서 새 창으로 열 수 있어야 한다. 내부 xterm 세션은 영향을 받지 않는다.
+- 엔드포인트: `POST /api/terminal/open-native`, body `{ cwd?: string }`. 미지정 시 `getActiveRoot()` 사용. `cwd`는 `resolveSafe`로 프로젝트 루트 안으로 정규화되며, 파일 경로면 `path.dirname`으로 자동 보정된다.
+- 플랫폼별 launcher 결정은 `src/app/api/terminal/open-native/launchers.ts`의 순수 함수 `resolveLauncher({platform, cwd, env, exists})`가 담당한다:
+  - **darwin**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `open -na <value> <cwd>` / 그 외에는 `/Applications/iTerm.app` 존재 시 iTerm, 없으면 Terminal.app.
+  - **win32**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `<value> -d <cwd>` / 없으면 `%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe` 탐지 후 Windows Terminal / 최후로 `cmd.exe /c start "" cmd.exe /K cd /d <cwd>`.
+  - **linux/BSD**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `$TERMINAL` → `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xfce4-terminal` → `tilix` → `alacritty` → `kitty` → `wezterm` → `xterm` 순으로 PATH 탐색. cwd 전달 플래그는 각 emulator별로 다르며(`--working-directory`, `-d`, `start --cwd` 등) 테이블로 캡슐화된다. `xterm`은 `-e 'cd <escaped> && exec $SHELL'`로 폴백한다.
+- 환경 변수 `CLAUDEGUI_EXTERNAL_TERMINAL`로 OS 기본값을 override할 수 있다. 값은 macOS에서는 `open -a`의 앱 이름으로, Linux에서는 binary 이름으로, Windows에서는 실행 파일 경로로 해석된다.
+- 오류 처리: 설치된 터미널이 없거나 override가 PATH에서 찾을 수 없으면 `NoLauncherError` → HTTP 501 (`code: 4501`). `spawn` 실패(ENOENT 등)는 100 ms 윈도우 안에서 async `error` 이벤트를 race해 HTTP 500 (`code: 5500`) + 이유 문자열로 보고한다. `resolveSafe` 위반은 403 (`code: 4403`). cwd 미존재는 404 (`code: 4404`).
+- 보안: 새 창은 `spawn(..., { detached: true, stdio: 'ignore' })` + `child.unref()`로 분리 실행되며 클라이언트는 stdout/stderr을 소비하지 않는다. 서버 `127.0.0.1` 바인딩 전제를 유지하고 `0.0.0.0` 노출을 금한다.
 
 ---
 
@@ -511,6 +554,44 @@
 - `Esc` 키로 전체화면을 해제할 수 있어야 한다.
 - 전체화면 상태는 `usePreviewStore.fullscreen` 필드로 관리한다.
 
+### FR-612: Contain-fit 기본 렌더링 및 콘텐츠 경계 윤곽선
+
+- 프리뷰(슬라이드, PDF, HTML, Markdown)는 **패널 모드와 전체화면 모드 모두에서**, 컨테이너의 가로·세로 비율과 무관하게 콘텐츠의 전체 레이아웃이 잘리지 않고 표시되어야 한다(contain-fit 기본값).
+  - **슬라이드**: reveal.js를 고정 논리 크기(`width: 960, height: 700`)로 초기화하고, `margin: 0.04`, `minScale: 0.05`, `maxScale: 2.0`을 적용하여 어떤 비율에서도 한 슬라이드 전체가 보이도록 축소 배치한다.
+  - **PDF**: `ResizeObserver`로 스크롤 컨테이너 크기를 관측하고 첫 `Page.onLoadSuccess`에서 `getViewport({ scale: 1 })`로 네이티브 크기를 캡처한 뒤, `width = min(availableWidth, availableHeight × aspect)`로 전달하여 페이지 전체가 컨테이너 안에 들어오도록 렌더한다. 파일이 바뀌면 네이티브 크기 캐시를 초기화한다.
+  - **HTML / Live HTML / Markdown**: 콘텐츠를 제공하는 영역(iframe 또는 문서 컨테이너)을 `bg-muted` 외곽 + 내부 `ring-1 ring-border/70` 박스로 감싸 내부 배경이 외부 배경과 구분되도록 한다.
+- 모든 프리뷰 타입은 배경색 충돌(예: 흰 문서 위 흰 패널, 검은 슬라이드 위 검은 iframe)이 발생하더라도 콘텐츠의 경계가 **항상 시각적으로 식별**되어야 한다. 이를 위해:
+  - 슬라이드 섹션은 `reveal-host.html`에서 `box-shadow: 0 0 0 1px rgba(255,255,255,0.28), 0 6px 24px rgba(0,0,0,0.45)`로 외곽선을 그린다.
+  - PDF 페이지 캔버스는 `ring-1 ring-border/70` + `shadow-md`로 감싼다.
+  - HTML / Live HTML iframe, Markdown 문서 컨테이너는 `ring-1 ring-border/70` + `shadow-sm`로 감싼다.
+- 이 규칙은 `usePreviewStore.fullscreen` 값과 독립적으로 동일하게 적용되어야 한다.
+- 구현: `public/reveal-host.html`, `src/components/panels/preview/pdf-preview.tsx`, `src/components/panels/preview/html-preview.tsx`, `src/components/panels/preview/live-html-preview.tsx`, `src/components/panels/preview/markdown-preview.tsx`, `src/components/panels/preview/slide-preview.tsx`.
+
+### FR-613: 프리뷰 즉시 다운로드
+
+- 프리뷰 패널 헤더는 현재 렌더 중인 콘텐츠를 즉시 다운로드할 수 있는 드롭다운(아이콘: `Download`)을 제공해야 한다. 드롭다운은 현재 프리뷰의 `PreviewType`에 따라 **적용 가능한 포맷만** 표시한다.
+- **라이브 프리뷰 중에도 다운로드는 활성화되어야 한다.** 라이브 프리뷰(`useLivePreviewStore.mode !== 'idle'` 이면서 `autoSwitch`가 켜진 상태)가 활성화된 동안에는 스트리밍된 `buffer`(또는 `generatedFilePath`가 에디터 탭으로 열려 있는 경우 해당 탭의 in-memory 내용)를 인라인 HTML 아티팩트로 취급하여 **현재까지 생성된 분량을 즉시 다운로드**할 수 있어야 한다. HTML 타입의 전체 포맷 매트릭스(Source `.html` / PDF / Word `.doc`)를 그대로 적용한다. 사용자는 5페이지 문서가 스트리밍되는 동안 이미 생성된 페이지가 포함된 현재 버퍼를 받을 수 있고, 스트리밍이 완료되면 자동으로 최종 문서가 다운로드 대상이 된다.
+- 헤더 드롭다운 캡션은 `live-code` 스트리밍 중이면 `Download (streaming…)`, `live-html` 렌더 가능한 상태이면 `Download live buffer`, 일반 파일 프리뷰에서는 `Download as`로 표시하여 현재 스냅샷이 어떤 상태에서 캡처된 것인지 시각적으로 구분한다.
+- 라이브 버퍼가 비어 있으면(`buffer === ''`) 메뉴는 렌더링하지 않는다(다운로드할 바이트가 없음).
+- 포맷 매트릭스(타입 → 사용 가능한 포맷):
+
+  | PreviewType | 사용 가능한 포맷 |
+  |---|---|
+  | `html` | Source(`.html`), PDF(인쇄 대화상자), Word(`.doc`) |
+  | `markdown` | Source(`.md`), HTML(`.html`), PDF(인쇄 대화상자), Word(`.doc`) |
+  | `slides` | Source(`.md`), HTML(`.html`), PDF(인쇄 대화상자) |
+  | `image` (SVG) | Source(`.svg`), PNG(`.png`), PDF(인쇄 대화상자) |
+  | `image` (PNG/JPEG/GIF/WebP 등) | Original file (원본 바이트 그대로) |
+  | `pdf` | Original file |
+  | `docx` | Original file |
+  | `xlsx` | Original file |
+  | `pptx` | Original file |
+
+- 텍스트 기반 타입(`html`/`markdown`/`slides`, 그리고 `.svg` 이미지)은 에디터 탭의 in-memory 내용이 있으면 이를 사용하고, 없으면 `filesApi.read()`로 디스크에서 읽어 변환/다운로드한다. 파일 기반 바이너리 타입(`pdf`/`image`(SVG 제외)/`docx`/`xlsx`/`pptx`)은 `/api/files/raw?path=...`에서 원본 바이트를 스트리밍하여 다운로드한다.
+- PDF 내보내기는 `window.open()` + `window.print()`로 브라우저 인쇄 대화상자를 띄워 운영체제의 "PDF로 저장"으로 내보낸다(FR-1004의 아티팩트 내보내기와 동일 정책). 서버 측 PDF 렌더러(Puppeteer 등)는 요구하지 않는다.
+- DOCX/XLSX/PPTX 바이너리 타입은 프리뷰 뷰어가 이미 `/api/files/raw`로 원본을 읽으므로 "Original file" 한 가지만 노출한다. 트랜스코드(예: DOCX → PDF)는 v1.0 범위 외로 지원하지 않는다.
+- 구현: `src/lib/preview/preview-download.ts`(프리뷰 상태를 `ExtractedArtifact` 모양으로 어댑터해 `src/lib/claude/artifact-export.ts`의 기존 다운로드/인쇄 파이프라인을 재사용), `src/components/panels/preview/preview-download-menu.tsx`(헤더 드롭다운), `src/components/panels/preview/preview-panel.tsx`(헤더 배치).
+
 ---
 
 ## 3.7 프레젠테이션 기능 (FR-700)
@@ -606,6 +687,7 @@
 | `Cmd+Shift+R` / `Ctrl+Shift+R` | 활성 세션 Restart (`FR-408`/`FR-411`/`FR-414`) |
 | `Cmd+D` / `Ctrl+D` | 터미널 스플릿 토글 (`FR-418`) |
 | `Cmd+]` / `Ctrl+]` · `Cmd+[` / `Ctrl+[` | 스플릿 모드에서 활성 pane 전환 |
+| `Cmd+Shift+O` / `Ctrl+Shift+O` | OS 기본 터미널 앱에서 현재 탭 cwd 열기 (`FR-420`) — 전역 동작 |
 | `Cmd+Shift+Enter` / `Ctrl+Shift+Enter` | **에디터 선택 영역(또는 현재 라인)을 활성 터미널에 실행** (포커스는 에디터에 유지) |
 
 **구현 세부**:
@@ -665,20 +747,27 @@
 ### FR-908: 런타임 프로젝트 핫스왑 (v0.3)
 
 - 시스템은 실행 중에 프로젝트 루트를 교체할 수 있어야 한다 (서버 재시작 없이).
-- `GET /api/project`는 현재 루트 + 최근 목록을 반환한다.
+- `GET /api/project`는 현재 루트(미설정 시 `null`) + 최근 목록을 반환한다.
 - `POST /api/project` (`{ path }`)는 다음 검증을 통과한 경우 루트를 교체한다:
   - 절대 경로 (상대 경로는 `4400` 거부)
   - 존재하는 디렉토리 (`4404` / `4400`)
   - 읽기 권한 (`4403`)
-  - 파일시스템 루트(`/`) 및 `$HOME` 전체 금지 (`4403`)
+  - **파일시스템 루트(`/`, Windows 드라이브 루트)는 거부(`4403`)**. `$HOME` 금지 조항은 삭제되었다 — 사용자는 탐색기의 Up 버튼/브레드크럼/"Open as project root" 컨텍스트 메뉴(`FR-209`)를 통해 `~` 및 그 상위의 임의 디렉토리로 루트를 이동할 수 있다. dotfile 접근 차단은 `resolveSafe`의 deny 리스트에서 계속 적용된다.
+- **부트스트랩 루트 해석 순서**: (1) `PROJECT_ROOT` 환경변수, (2) `~/.claudegui/state.json`의 `lastRoot`, (3) **폴백 없음** — 세 단계 모두 실패하면 `getActiveRoot()`는 `null`을 반환한다. 이전 버전의 `process.cwd()` 사일런트 폴백은 삭제되었다. 이유: 서버 실행 위치가 조용히 프로젝트 루트가 되어 Claude가 엉뚱한 경로에 파일을 생성하는 문제를 방지하기 위함이다.
+- **활성 루트 없을 때의 동작**:
+  - 클라이언트는 부팅 시 `useProjectStore.refresh()`가 완료된 후 `activeRoot === null`이면 **프로젝트 선택 모달을 강제로 연다**(`AppShell`의 `useEffect`로 구현).
+  - Claude WS 핸들러는 `runQuery` 호출 시 `getActiveRoot()`가 `null`이면 즉시 `{ code: 4412, message: "No project is open. Open a folder in the file explorer before running Claude queries." }` 에러를 클라이언트로 보내고 쿼리를 시작하지 않는다.
+  - `resolveSafe`/`getProjectRoot()`는 `null` 상태에서 `SandboxError('No project is open', 4412)`를 던진다. 파일 API 라우트는 이를 HTTP `412 Precondition Failed`로 응답한다.
+  - `chokidar` 감시자는 루트가 `null`인 동안 대기(idle) 상태를 유지하며, 루트가 설정되는 시점에 `onActiveRootChange` 리스너가 실제 감시를 시작한다.
+  - 터미널 신규 세션은 `null` 상태에서는 사용자 홈 디렉토리(`os.homedir()`)로 폴백해 동작을 유지한다(기존 세션 보존 정책과의 일관성을 위해).
 - 교체 시:
   - chokidar watcher를 기존 루트 `close()` 후 새 루트로 재시작
   - 모든 `/ws/files` 클라이언트에 `{ type: 'project-changed', root, timestamp }` 브로드캐스트
   - 새로 스폰되는 PTY 세션은 신규 루트를 `cwd`로 사용 (기존 세션은 유지)
   - Claude 쿼리도 신규 루트를 `cwd`로 사용
 - 클라이언트는 `project-changed` 수신 시 에디터 탭, 프리뷰 선택을 리셋하고 파일 트리를 재로드한다.
-- 상태는 `~/.claudegui/state.json`에 `{ lastRoot, recents }` 형식으로 영속화한다.
-- 구현: `src/lib/project/project-context.mjs`, `src/app/api/project/route.ts`, `src/stores/use-project-store.ts`, `src/components/modals/project-picker-modal.tsx`.
+- 상태는 `~/.claudegui/state.json`에 `{ lastRoot, recents }` 형식으로 영속화한다. 활성 루트가 `null`인 동안은 `state.json`에 쓰지 않는다.
+- 구현: `src/lib/project/project-context.mjs`, `src/app/api/project/route.ts`, `src/stores/use-project-store.ts`, `src/components/modals/project-picker-modal.tsx`, `src/components/layout/app-shell.tsx`, `server-handlers/claude-handler.mjs`, `src/lib/fs/resolve-safe.ts`, `server-handlers/files-handler.mjs`.
 
 ---
 
@@ -690,9 +779,11 @@
   - 펜스 코드 블록: HTML, SVG, Markdown, TypeScript/JavaScript, Python, Go, Rust, Shell, CSS, JSON, YAML 등 모든 언어.
   - 펜스 밖에 단독으로 나타나는 `<!doctype html> … </html>` 전체 문서.
   - 펜스 밖에 단독으로 나타나는 `<svg …> … </svg>` 요소.
-- 각 아티팩트는 `{messageId}:{index}` 형식의 안정된 ID를 가져야 한다.
+- 본문 텍스트 기반 아티팩트는 `{messageId}:{index}` 형식의 안정된 ID를 가져야 한다.
+- Write/Edit 도구 호출로 수집된 아티팩트는 `file:{absolutePath}` 형식의 경로 기반 ID를 사용해 같은 파일에 대한 반복 Write/Edit이 단일 항목으로 합쳐진다(FR-1008 참조).
 - 메시지 재로드 시(세션 복원) 기존 ID가 그대로 사용되어 중복이 쌓이지 않는다.
-- 24자 미만의 지나치게 짧은 블록은 노이즈로 간주해 제외한다.
+- 24자 미만의 지나치게 짧은 텍스트 블록은 노이즈로 간주해 제외한다.
+- 아티팩트 종류는 다음과 같이 확장된다: `html`, `svg`, `markdown`, `code`, `text`, `image`, `pdf`, `docx`, `xlsx`, `pptx`. 바이너리 종류(`image`/`pdf`/`docx`/`xlsx`/`pptx`)는 `source = "file"`로 표시되며 본문은 저장하지 않고 절대 경로(`filePath`)만 보관한다.
 
 ### FR-1002: 자동 팝업 표시
 
@@ -703,32 +794,42 @@
 ### FR-1003: 영속 저장 (localStorage)
 
 - 추출된 아티팩트는 브라우저 `localStorage`에 보존되어야 하며, 새로고침 이후에도 동일 갤러리가 복원되어야 한다.
-- 저장 키: `claudegui-artifacts` (zustand `persist` 미들웨어).
+- 저장 키: `claudegui-artifacts` (zustand `persist` 미들웨어, `version: 2`).
 - 저장 상한은 200개로 제한하며, 상한 초과 시 오래된 항목부터 삭제한다.
 - `autoOpen` 설정 역시 동일 키에 영속화한다.
+- 바이너리 아티팩트(`source: "file"`)는 콘텐츠를 base64로 인코딩하지 않고 절대 경로(`filePath`)와 메타데이터만 저장한다. localStorage 할당량을 보호하기 위함이다.
+- 하이드레이션 후 `onRehydrateStorage` 훅이 `filePath`가 있는 아티팩트를 모아 `POST /api/artifacts/register`로 서버 측 레지스트리에 재등록하여 FR-1009의 교차 프로젝트 접근 경로를 복원한다.
+- v1 → v2 마이그레이션: 기존 v1 레코드에 `source: "inline"`, `updatedAt: createdAt` 기본값을 채워 호환을 유지한다.
 
 ### FR-1004: 복사 및 내보내기
 
 - 갤러리에서 각 아티팩트는 다음 두 가지 동작을 지원한다.
-  - **Copy**: 원본 텍스트를 클립보드에 복사한다(`navigator.clipboard.writeText`).
-  - **Export**: 드롭다운 메뉴로 아티팩트의 `kind`에 따라 다음 형식 중 적용 가능한 것들을 제공한다.
-    - **Source**: 언어별 확장자(`.ts`, `.py`, `.html`, `.svg`, `.md` 등)로 다운로드.
+  - **Copy**: 인라인 아티팩트는 본문 텍스트를 클립보드에 복사하고, 파일 기반 아티팩트는 절대 경로(`filePath`)를 복사한다(`navigator.clipboard.writeText`).
+  - **Export**: 드롭다운 메뉴로 아티팩트의 `kind`와 `source`에 따라 다음 형식 중 적용 가능한 것들을 제공한다.
+    - **Source**: 언어별 확장자(`.ts`, `.py`, `.html`, `.svg`, `.md` 등)로 다운로드 (인라인 텍스트 아티팩트).
     - **HTML (.html)**: Markdown/코드/SVG 아티팩트를 독립 실행형 `<!doctype html>` 문서로 다운로드.
     - **PDF**: 인쇄 가능한 팝업 창을 열고 `window.print()`를 호출하여 운영체제 "PDF로 저장" 대화상자로 내보낸다.
     - **Word (.doc)**: MS Word 호환 HTML을 `application/msword`로 다운로드한다(Word/Pages에서 열람 가능).
     - **SVG → PNG**: `<canvas>` 래스터화를 통해 PNG로 저장.
     - **Plain text (.txt)**: 일반 코드·텍스트 아티팩트용 plain text 저장.
-- Export 메뉴는 `availableExports(artifact)` 함수가 아티팩트 종류에 따라 동적으로 생성한다.
+    - **Original (.docx/.xlsx/.pptx/.pdf/image)**: 파일 기반 바이너리 아티팩트 전용. `GET /api/artifacts/raw?path=…`를 우선 호출하고 실패 시 `GET /api/files/raw`로 폴백하여 원본 파일을 그대로 다운로드한다.
+- Export 메뉴는 `availableExports(artifact)` 함수가 아티팩트 `kind`와 `source`에 따라 동적으로 생성한다.
 
 ### FR-1005: 갤러리 UI
 
 - 갤러리 모달은 좌측 목록 + 우측 상세 프리뷰 레이아웃으로 구성된다.
-- 각 목록 항목은 종류 배지(HTML/SVG/Markdown/Code/Text), 제목, 언어, 상대 시각을 표시한다.
+- 각 목록 항목은 종류 배지(HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), 제목(파일 기반이면 파일명), 언어/확장자, 상대 시각을 표시한다.
 - 상세 영역은 **Preview / Source** 토글을 제공한다. 기본값은 Preview이며, 아티팩트 종류별 렌더링은 다음과 같다.
   - **HTML**: `<iframe sandbox="allow-scripts">` + `srcDoc` (allow-same-origin은 금지; 프리뷰 패널과 동일한 정책).
   - **SVG**: `data:image/svg+xml;charset=utf-8,…` URI를 `<img>`로 렌더링하여 내장 스크립트·이벤트 핸들러가 실행되지 않도록 한다.
   - **Markdown**: 기존 `MarkdownPreview` 컴포넌트(`react-markdown` + `remark-gfm` + `rehype-sanitize`)를 재사용한다.
+  - **Image**: 인라인 SVG는 data URI로, 파일 기반 이미지는 `GET /api/artifacts/raw?path=…`를 `<img>` 소스로 사용해 렌더링한다.
+  - **PDF**: 기존 `PdfPreview` 컴포넌트에 `srcOverride` 프롭으로 `/api/artifacts/raw` URL을 전달해 재사용한다.
+  - **DOCX**: `DocxPreview`가 `mammoth/mammoth.browser`로 HTML을 변환한 뒤 `sandbox=""`(스크립트 완전 차단) iframe에 주입한다.
+  - **XLSX/XLSM**: `XlsxPreview`가 SheetJS(`xlsx`)로 각 시트를 `sheet_to_html`로 변환하고 탭 UI로 전환한다.
+  - **PPTX**: `PptxPreview`가 JSZip으로 OOXML을 해제한 뒤 각 `ppt/slides/slideN.xml`의 `<a:t>` 텍스트 프레임을 제목/본문으로 추출하고, 관련 `_rels`에서 참조된 이미지를 `URL.createObjectURL`로 렌더링한다(근사치 미리보기).
   - **Code/Text**: Preview를 제공하지 않고 Source 모드로 고정된다.
+  - **파일 기반 바이너리이지만 현재 프로젝트가 원본 프로젝트가 아니고 레지스트리 재등록에 실패한 경우**: 파일명·경로·안내문과 Export 단일 버튼만 보여주는 fallback 카드로 표시한다.
 - Copy, Export, Delete 버튼과 상단 툴바의 `Auto-open on new content` 체크박스, `Clear all` 버튼을 제공한다.
 - 접근성: 모달은 Radix Dialog 기반이며 ESC로 닫힌다.
 
@@ -738,12 +839,57 @@
 - 아이콘 배지로 현재 저장된 아티팩트 수(최대 `99+`)를 표시한다.
 - 글로벌 단축키 **`Cmd/Ctrl + Shift + A`**로 갤러리를 토글한다 (`src/hooks/use-global-shortcuts.ts`).
 
+### FR-1008: Write/Edit 도구 호출 기반 아티팩트 수집
+
+- 시스템은 Claude가 내보낸 `Write`/`Edit`/`MultiEdit` 도구 호출(tool_use 블록)을 감지해 펜스 코드 블록 추출과 별개로 자동으로 아티팩트를 갱신해야 한다. 이는 Claude가 본문 텍스트에 출력하지 않고 파일로 직접 쓴 마지막 슬라이드가 "Generated Content"에서 누락되던 문제를 해결하기 위함이다.
+- 처리 규칙
+  - **Write**: `file_path`의 확장자를 기준으로 종류(FR-1001 목록)를 분류한다.
+    - 텍스트 기반(html/svg/markdown/code/text): `input.content`를 그대로 `content` 필드에 스냅샷으로 저장하고 `source = "inline"`으로 표시한다.
+    - 바이너리 기반(image/pdf/docx/xlsx/pptx): 콘텐츠는 저장하지 않고 `source = "file"`, `filePath = input.file_path`만 보관한다.
+  - **Edit/MultiEdit**: 동일 `filePath`에 대응하는 기존 아티팩트를 찾아 `edits[]`의 `old_string → new_string` 패치를 `artifactFromEdit`이 적용한 뒤 `updatedAt`을 갱신한다. 기존 아티팩트가 없으면 `null`을 반환해 아무 변경도 하지 않는다.
+  - 동일 `file:{absolutePath}` ID를 사용하므로 `dedupe()`가 이전 레코드의 `createdAt`을 유지하면서 최신 `content`/`updatedAt`으로 덮어쓴다.
+- 저장소 동작
+  - `useArtifactStore.ingestToolUse(messageId, sessionId, tool, { silent? })`가 진입점이다. `use-claude-store`의 assistant 이벤트 핸들러가 `extractor.feedToolUse(tool)` 호출 직후 루프를 돌려 호출한다.
+  - 비-silent 호출은 `pendingTurn`에 ID를 추가해 `result` 이벤트 시 FR-1002의 자동 팝업 플로우와 동일하게 처리된다.
+  - 성공 시 `filePath`를 `POST /api/artifacts/register`로 서버 레지스트리에 등록한다(FR-1009).
+- 구현: `src/lib/claude/artifact-from-tool.ts`, `src/lib/claude/artifact-extractor.ts`의 `classifyByPath`/`isBinaryKind`/`titleFromPath`, `src/stores/use-artifact-store.ts`의 `ingestToolUse`/`findByFilePath`.
+
+### FR-1009: 교차 프로젝트 바이너리 접근 및 오피스 뷰어
+
+- 시스템은 현재 활성 프로젝트가 변경된 이후에도 같은 Claude 세션에서 생성된 이미지/PDF/Word/Excel/PowerPoint 아티팩트를 프리뷰·내보내기할 수 있어야 한다.
+- 서버 측 아티팩트 레지스트리
+  - `src/lib/claude/artifact-registry.ts`에 최대 1024개 경로를 유지하는 인-프로세스 Map(초과 시 가장 오래된 항목 축출).
+  - `POST /api/artifacts/register` — `{ paths: string[] }`를 받아 절대 경로 여부와 `fs.stat()`을 검증하고 50MB(`MAX_BINARY_SIZE`) 상한을 지킨 파일만 레지스트리에 추가한다. 기존 파일 API와 동일한 레이트 리미터(`rateLimit`/`clientKey`)를 통과해야 한다.
+  - `GET /api/artifacts/raw?path=<abs>` — 레지스트리에 등록된 경로에 한해서만 바이트를 스트리밍한다. `resolveSafe` 프로젝트 샌드박스는 우회하지만, 레지스트리에 있는 경로만 읽으므로 현재 세션에서 캡처한 파일로 범위가 제한된다. Content-Type은 `docx`/`xlsx`/`xlsm`/`pptx`/이미지·PDF 등을 포함한 MIME 테이블로 산정한다.
+- 클라이언트 측 동작
+  - `useArtifactStore.ingestToolUse`는 새 바이너리 아티팩트가 생길 때마다 해당 `filePath`를 `registerArtifactPaths`로 등록한다.
+  - `onRehydrateStorage`는 `localStorage`에서 복원한 모든 파일 기반 아티팩트 경로를 한 번에 재등록한다(서버 재시작 대응).
+  - `src/lib/claude/artifact-url.ts`의 `fetchArtifactBytes(filePath)`는 `/api/artifacts/raw`를 먼저 시도하고 실패 시 `/api/files/raw`로 폴백한다. Docx/Xlsx/Pptx 변환기 모두 이 헬퍼로 바이트를 받는다.
+  - Export 다운로드 경로(`artifact-export.ts`의 `downloadBinaryFile`)도 동일한 순서로 시도한다.
+- 뷰어 종속성 (오피스 파일 미리보기)
+  - `mammoth` — DOCX → HTML 변환. 동적 import로 최초 DOCX 열람 시에만 번들링된다.
+  - `xlsx` (SheetJS) — XLSX → HTML 테이블. 동적 import.
+  - `jszip` — PPTX 해제 및 OOXML 접근. 동적 import.
+- 보안 제약
+  - 레지스트리는 메모리에 저장되며 서버 재시작 시 비워진다(하이드레이션 경로에서 재등록).
+  - 레지스트리 등록 경로라도 파일이 현재 존재하지 않거나 50MB를 넘으면 `/api/artifacts/raw`가 각각 `404`/`413`을 반환한다.
+  - `resolveSafe`의 denied-segment 목록(`.env`, `.git`, `.claude`, 자격 증명 등)은 Claude가 직접 Write하지 않는 한 레지스트리에 들어갈 일이 없으므로 본 경로에서는 별도 재검사를 수행하지 않는다.
+- 구현: `src/app/api/artifacts/register/route.ts`, `src/app/api/artifacts/raw/route.ts`, `src/lib/claude/artifact-registry.ts`, `src/lib/claude/artifact-url.ts`, `src/components/panels/preview/docx-preview.tsx`, `src/components/panels/preview/xlsx-preview.tsx`, `src/components/panels/preview/pptx-preview.tsx`, `src/components/panels/preview/pdf-preview.tsx`(`srcOverride` 프롭).
+
 ### FR-1007: 구현
 
-- `src/lib/claude/artifact-extractor.ts` — 정규식 기반 아티팩트 추출기.
-- `src/lib/claude/artifact-export.ts` — 복사·다운로드·PDF 인쇄·Word·PNG 내보내기 헬퍼.
-- `src/stores/use-artifact-store.ts` — zustand 스토어 (`persist` 미들웨어).
-- `src/components/modals/artifacts-modal.tsx` — 갤러리 다이얼로그 (Preview/Source 토글 + 안전한 렌더러).
+- `src/lib/claude/artifact-extractor.ts` — 정규식 기반 추출기 + `classifyByPath`/`isBinaryKind`/`titleFromPath`.
+- `src/lib/claude/artifact-from-tool.ts` — Write/Edit/MultiEdit 도구 호출로부터 아티팩트 레코드 생성·갱신.
+- `src/lib/claude/artifact-export.ts` — 인라인 텍스트 복사/다운로드, PDF 인쇄, Word, PNG, 파일 기반 Original 다운로드 헬퍼.
+- `src/lib/claude/artifact-registry.ts` — 서버 측 인-프로세스 아티팩트 경로 레지스트리.
+- `src/lib/claude/artifact-url.ts` — `/api/artifacts/raw` → `/api/files/raw` 폴백 fetch 헬퍼.
+- `src/app/api/artifacts/register/route.ts`, `src/app/api/artifacts/raw/route.ts` — 아티팩트 레지스트리 REST 엔드포인트.
+- `src/stores/use-artifact-store.ts` — zustand 스토어 (`persist` v2, `ingestToolUse`, `findByFilePath`, 하이드레이션 재등록).
+- `src/components/modals/artifacts-modal.tsx` — 갤러리 다이얼로그 (Preview/Source 토글, 파일 기반 fallback 카드, 10종 종류 배지).
+- `src/components/panels/preview/docx-preview.tsx` / `xlsx-preview.tsx` / `pptx-preview.tsx` — 오피스 파일 뷰어.
+- `src/components/panels/preview/pdf-preview.tsx` — `srcOverride` 프롭으로 아티팩트 URL 지원.
+- `src/stores/use-preview-store.ts` — `PreviewType`/`detectPreviewType` 확장 (docx/xlsx/pptx 포함).
+- `src/components/panels/preview/preview-router.tsx` — 확장된 타입에 대한 라우팅.
 - `src/components/panels/claude/claude-chat-panel.tsx` — 트리거 버튼 및 배지.
 - `src/hooks/use-global-shortcuts.ts` — `Cmd/Ctrl + Shift + A` 토글 단축키.
-- `src/stores/use-claude-store.ts` — 어시스턴트 메시지 수신 및 세션 로드 시 추출기 호출, `result` 시점에 자동 팝업 플러시.
+- `src/stores/use-claude-store.ts` — assistant 이벤트에서 `ingestToolUse` 호출, 세션 로드 시 추출기 호출, `result` 시점에 자동 팝업 플러시.

@@ -1,4 +1,4 @@
-export declare function getActiveRoot(): string;
+export declare function getActiveRoot(): string | null;
 export declare function getRecents(): string[];
 export declare function setActiveRoot(newRoot: string): string;
 export declare function onActiveRootChange(listener: (root: string) => void): () => void;

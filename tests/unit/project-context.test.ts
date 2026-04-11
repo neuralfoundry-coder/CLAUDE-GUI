@@ -78,9 +78,29 @@ describe('project-context', () => {
     expect(() => mod.setActiveRoot(fsRoot)).toThrow(/root/);
   });
 
-  it('rejects home directory', async () => {
+  it('accepts home directory as an explicit user choice', async () => {
+    // Previously rejected as a guardrail, but the home directory is now a
+    // legitimate project root for users who run ClaudeGUI against dotfiles
+    // or scripts under `~`. The filesystem-root guard still blocks `/`.
     const mod = await loadModule();
-    expect(() => mod.setActiveRoot(os.homedir())).toThrow(/home/i);
+    expect(() => mod.setActiveRoot(os.homedir())).not.toThrow();
+  });
+
+  it('returns null active root when no env var and no persisted state', async () => {
+    delete process.env.PROJECT_ROOT;
+    const mod = await loadModule();
+    expect(mod.getActiveRoot()).toBe(null);
+  });
+
+  it('setActiveRoot activates a null store and persists the choice', async () => {
+    delete process.env.PROJECT_ROOT;
+    const mod = await loadModule();
+    expect(mod.getActiveRoot()).toBe(null);
+    mod.setActiveRoot(tmpB);
+    expect(mod.getActiveRoot()).toBe(path.resolve(tmpB));
+    const stateFile = path.join(stateHome, '.claudegui', 'state.json');
+    const raw = await fs.readFile(stateFile, 'utf-8');
+    expect(JSON.parse(raw).lastRoot).toBe(path.resolve(tmpB));
   });
 
   it('rejects file paths (not directories)', async () => {

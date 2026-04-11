@@ -15,10 +15,11 @@
  * - Font-size changes mutate `term.options.fontSize` in place; no restart.
  */
 
-import type { Terminal, ITerminalAddon, IBufferRange, ITheme } from '@xterm/xterm';
+import type { Terminal, ITerminalAddon, IBufferRange } from '@xterm/xterm';
 import type { FitAddon as FitAddonT } from '@xterm/addon-fit';
 import type { SearchAddon as SearchAddonT, ISearchOptions } from '@xterm/addon-search';
 import { TerminalSocket, createTerminalSocket } from './terminal-socket';
+import { TERMINAL_THEMES } from './terminal-themes';
 import { useLayoutStore, type Theme as AppTheme } from '@/stores/use-layout-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useConnectionStore } from '@/stores/use-connection-store';
@@ -32,105 +33,6 @@ import {
 const HIGH_WATERMARK = 100 * 1024;
 const LOW_WATERMARK = 10 * 1024;
 const INPUT_CHUNK_SIZE = 4 * 1024;
-
-/**
- * xterm ITheme mapping for each ClaudeGUI app theme. Palettes are tuned to
- * match the editor/UI tokens defined in `src/app/globals.css`.
- */
-const TERMINAL_THEMES: Record<AppTheme, ITheme> = {
-  dark: {
-    background: '#0a0a0a',
-    foreground: '#e4e4e7',
-    cursor: '#e4e4e7',
-    cursorAccent: '#0a0a0a',
-    selectionBackground: '#3f3f46',
-    black: '#18181b',
-    red: '#f87171',
-    green: '#4ade80',
-    yellow: '#facc15',
-    blue: '#60a5fa',
-    magenta: '#c084fc',
-    cyan: '#22d3ee',
-    white: '#e4e4e7',
-    brightBlack: '#52525b',
-    brightRed: '#fca5a5',
-    brightGreen: '#86efac',
-    brightYellow: '#fde047',
-    brightBlue: '#93c5fd',
-    brightMagenta: '#d8b4fe',
-    brightCyan: '#67e8f9',
-    brightWhite: '#fafafa',
-  },
-  light: {
-    background: '#ffffff',
-    foreground: '#18181b',
-    cursor: '#18181b',
-    cursorAccent: '#ffffff',
-    selectionBackground: '#d4d4d8',
-    black: '#27272a',
-    red: '#dc2626',
-    green: '#16a34a',
-    yellow: '#ca8a04',
-    blue: '#2563eb',
-    magenta: '#9333ea',
-    cyan: '#0891b2',
-    white: '#f4f4f5',
-    brightBlack: '#52525b',
-    brightRed: '#ef4444',
-    brightGreen: '#22c55e',
-    brightYellow: '#eab308',
-    brightBlue: '#3b82f6',
-    brightMagenta: '#a855f7',
-    brightCyan: '#06b6d4',
-    brightWhite: '#ffffff',
-  },
-  'high-contrast': {
-    background: '#000000',
-    foreground: '#ffffff',
-    cursor: '#ffff00',
-    cursorAccent: '#000000',
-    selectionBackground: '#ffffff',
-    black: '#000000',
-    red: '#ff6060',
-    green: '#00ff00',
-    yellow: '#ffff00',
-    blue: '#00b7ff',
-    magenta: '#ff00ff',
-    cyan: '#00ffff',
-    white: '#ffffff',
-    brightBlack: '#808080',
-    brightRed: '#ff8787',
-    brightGreen: '#87ff87',
-    brightYellow: '#ffff87',
-    brightBlue: '#87d7ff',
-    brightMagenta: '#ff87ff',
-    brightCyan: '#87ffff',
-    brightWhite: '#ffffff',
-  },
-  'retro-green': {
-    background: '#0b0f0a',
-    foreground: '#33ff66',
-    cursor: '#33ff66',
-    cursorAccent: '#0b0f0a',
-    selectionBackground: '#0f3f22',
-    black: '#0b0f0a',
-    red: '#ff6666',
-    green: '#33ff66',
-    yellow: '#bfff4d',
-    blue: '#4dffbf',
-    magenta: '#bfffbf',
-    cyan: '#7fffbf',
-    white: '#ccffcc',
-    brightBlack: '#1a3320',
-    brightRed: '#ff9999',
-    brightGreen: '#66ff99',
-    brightYellow: '#ccff66',
-    brightBlue: '#66ffcc',
-    brightMagenta: '#ccffcc',
-    brightCyan: '#99ffcc',
-    brightWhite: '#e6ffe6',
-  },
-};
 
 type ReservedKeyPredicate = (event: KeyboardEvent) => boolean;
 
@@ -249,6 +151,7 @@ class TerminalManager {
       if (!primaryMod) return false;
 
       if (event.shiftKey && k === 'r') return true;
+      if (event.shiftKey && k === 'o') return true;
       if (event.shiftKey && k === 'enter') return true;
       if (
         !event.shiftKey &&

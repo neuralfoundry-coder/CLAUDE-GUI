@@ -1,10 +1,13 @@
 import type { ApiResponse, FileEntry, FileStat } from '@/types/files';
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  // FormData must not carry an explicit content-type — the browser sets the
+  // multipart boundary automatically.
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData;
   const res = await fetch(url, {
     ...init,
     headers: {
-      'content-type': 'application/json',
+      ...(isFormData ? {} : { 'content-type': 'application/json' }),
       ...(init?.headers || {}),
     },
   });
@@ -57,6 +60,33 @@ export const filesApi = {
     return apiFetch('/api/files/reveal', {
       method: 'POST',
       body: JSON.stringify({ path }),
+    });
+  },
+
+  upload(
+    destDir: string,
+    files: File[],
+  ): Promise<{
+    uploaded: Array<{ name: string; size: number; writtenPath: string }>;
+  }> {
+    const fd = new FormData();
+    fd.set('destDir', destDir);
+    for (const f of files) {
+      // Preserve the filename explicitly — some File objects originating
+      // from DataTransferItem.getAsFile() report an empty name otherwise.
+      fd.append('files', f, f.name);
+    }
+    return apiFetch('/api/files/upload', { method: 'POST', body: fd });
+  },
+};
+
+export const terminalApi = {
+  openNative(
+    cwd?: string,
+  ): Promise<{ launcher: string; cwd: string; platform: string }> {
+    return apiFetch('/api/terminal/open-native', {
+      method: 'POST',
+      body: JSON.stringify(cwd ? { cwd } : {}),
     });
   },
 };

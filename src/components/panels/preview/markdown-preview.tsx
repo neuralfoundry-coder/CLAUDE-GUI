@@ -13,15 +13,17 @@ interface MarkdownPreviewProps {
 
 export function MarkdownPreview({ content }: MarkdownPreviewProps) {
   return (
-    <div className="scrollbar-thin h-full overflow-y-auto bg-background p-6">
-      <article className="prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeSanitize, rehypeHighlight, rehypeKatex]}
-        >
-          {content}
-        </ReactMarkdown>
-      </article>
+    <div className="h-full w-full bg-muted p-2">
+      <div className="scrollbar-thin h-full overflow-y-auto rounded-sm bg-background p-6 shadow-sm ring-1 ring-border/70">
+        <article className="prose prose-sm dark:prose-invert max-w-none">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkMath]}
+            rehypePlugins={[rehypeSanitize, rehypeHighlight, rehypeKatex]}
+          >
+            {content}
+          </ReactMarkdown>
+        </article>
+      </div>
     </div>
   );
 }

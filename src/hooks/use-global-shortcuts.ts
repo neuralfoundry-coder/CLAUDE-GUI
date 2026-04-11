@@ -4,6 +4,7 @@ import { useLayoutStore } from '@/stores/use-layout-store';
 import { useArtifactStore } from '@/stores/use-artifact-store';
 import { useTerminalStore } from '@/stores/use-terminal-store';
 import { terminalManager } from '@/lib/terminal/terminal-manager';
+import { terminalApi } from '@/lib/api-client';
 import { getActiveEditorSelectionOrLine } from '@/components/panels/editor/monaco-editor-wrapper';
 import { useKeyboardShortcut, isFocusInsideTerminal } from './use-keyboard-shortcut';
 
@@ -105,6 +106,23 @@ export function useGlobalShortcuts(): void {
         const s = useTerminalStore.getState();
         if (!s.splitEnabled) return;
         s.focusPane(s.activePaneIndex === 0 ? 1 : 0);
+      },
+    },
+
+    // Cmd/Ctrl+Shift+O — open the active terminal's cwd (or project root) in
+    // the OS terminal app. Works from anywhere; we prefer the focused tab's
+    // cwd if it exists, otherwise the server falls back to the project root.
+    {
+      key: 'o',
+      meta: true,
+      ctrl: true,
+      shift: true,
+      handler: () => {
+        const { activeSessionId, sessions } = useTerminalStore.getState();
+        const cwd = sessions.find((s) => s.id === activeSessionId)?.cwd ?? null;
+        void terminalApi.openNative(cwd ?? undefined).catch((err) => {
+          alert(`Could not open system terminal: ${(err as Error).message}`);
+        });
       },
     },
 

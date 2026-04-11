@@ -1,13 +1,22 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Plus, X, RotateCw } from 'lucide-react';
+import { Plus, X, RotateCw, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useTerminalStore, type TerminalSession } from '@/stores/use-terminal-store';
 import { useProjectStore } from '@/stores/use-project-store';
+import { terminalApi } from '@/lib/api-client';
 import { XTerminalAttach } from './x-terminal';
 import { TerminalSearchOverlay } from './terminal-search-overlay';
+
+async function openInSystemTerminal(cwd: string | null | undefined): Promise<void> {
+  try {
+    await terminalApi.openNative(cwd ?? undefined);
+  } catch (err) {
+    alert(`Could not open system terminal: ${(err as Error).message}`);
+  }
+}
 
 function basename(path: string | null): string | null {
   if (!path) return null;
@@ -251,6 +260,16 @@ export function TerminalPanel() {
           aria-label="New terminal"
         >
           <Plus className="h-3 w-3" aria-hidden="true" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          onClick={() => openInSystemTerminal(activeSession?.cwd)}
+          title="Open in system terminal (⇧⌘O)"
+          aria-label="Open in system terminal"
+        >
+          <ExternalLink className="h-3 w-3" aria-hidden="true" />
         </Button>
       </div>
       <div className="relative flex-1 overflow-hidden">

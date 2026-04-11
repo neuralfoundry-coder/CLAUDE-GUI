@@ -21,12 +21,14 @@ export function SlidePreview({ content }: SlidePreviewProps) {
   }, [content]);
 
   return (
-    <iframe
-      ref={iframeRef}
-      src="/reveal-host.html"
-      sandbox="allow-scripts"
-      className="h-full w-full border-0 bg-black"
-      title="Slide preview"
-    />
+    <div className="h-full w-full bg-muted p-2">
+      <iframe
+        ref={iframeRef}
+        src="/reveal-host.html"
+        sandbox="allow-scripts"
+        className="h-full w-full border-0 bg-black shadow-sm ring-1 ring-border/70"
+        title="Slide preview"
+      />
+    </div>
   );
 }

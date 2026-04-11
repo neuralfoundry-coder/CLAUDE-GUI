@@ -10,6 +10,9 @@ import { MarkdownPreview } from './markdown-preview';
 import { ImagePreview } from './image-preview';
 import { PdfPreview } from './pdf-preview';
 import { SlidePreview } from './slide-preview';
+import { DocxPreview } from './docx-preview';
+import { XlsxPreview } from './xlsx-preview';
+import { PptxPreview } from './pptx-preview';
 
 export function PreviewRouter() {
   const currentFile = usePreviewStore((s) => s.currentFile);
@@ -46,7 +49,7 @@ export function PreviewRouter() {
   if (!filePath || type === 'none') {
     return (
       <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-        Select a previewable file (HTML, Markdown, PDF, image, slides)
+        Select a previewable file (HTML, Markdown, PDF, image, slides, docx, xlsx, pptx)
       </div>
     );
   }
@@ -56,5 +59,8 @@ export function PreviewRouter() {
   if (type === 'image') return <ImagePreview path={filePath} />;
   if (type === 'pdf') return <PdfPreview path={filePath} />;
   if (type === 'slides') return <SlidePreview content={content} />;
+  if (type === 'docx') return <DocxPreview path={filePath} />;
+  if (type === 'xlsx') return <XlsxPreview path={filePath} />;
+  if (type === 'pptx') return <PptxPreview path={filePath} />;
   return null;
 }

@@ -34,7 +34,7 @@ function resolveInitialRoot(persisted) {
   const envRoot = process.env.PROJECT_ROOT;
   if (envRoot && isUsableDir(envRoot)) return path.resolve(envRoot);
   if (persisted.lastRoot && isUsableDir(persisted.lastRoot)) return path.resolve(persisted.lastRoot);
-  return path.resolve(process.cwd());
+  return null;
 }
 
 function isUsableDir(p) {
@@ -52,13 +52,15 @@ function getStore() {
     const persisted = safeReadState();
     const activeRoot = resolveInitialRoot(persisted);
     const recents = Array.isArray(persisted.recents) ? persisted.recents.filter(isUsableDir) : [];
-    if (!recents.includes(activeRoot)) recents.unshift(activeRoot);
+    if (activeRoot && !recents.includes(activeRoot)) recents.unshift(activeRoot);
     g[GLOBAL_KEY] = {
       activeRoot,
       recents: recents.slice(0, MAX_RECENTS),
       listeners: new Set(),
     };
-    safeWriteState({ lastRoot: activeRoot, recents: g[GLOBAL_KEY].recents });
+    if (activeRoot) {
+      safeWriteState({ lastRoot: activeRoot, recents: g[GLOBAL_KEY].recents });
+    }
   }
   return g[GLOBAL_KEY];
 }
@@ -109,13 +111,9 @@ export function validateProjectRoot(absPath) {
   if (!path.isAbsolute(absPath)) {
     throw new ProjectRootError('Path must be absolute', 4400);
   }
-  const home = os.homedir();
   const root = path.parse(absPath).root;
   if (absPath === root) {
     throw new ProjectRootError('Filesystem root is not allowed as project root', 4403);
-  }
-  if (absPath === home) {
-    throw new ProjectRootError('Home directory is not allowed as project root', 4403);
   }
   let stat;
   try {

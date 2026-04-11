@@ -19,11 +19,22 @@ import {
   type ExportFormat,
 } from '@/lib/claude/artifact-export';
 import { MarkdownPreview } from '@/components/panels/preview/markdown-preview';
+import { PdfPreview } from '@/components/panels/preview/pdf-preview';
+import { DocxPreview } from '@/components/panels/preview/docx-preview';
+import { XlsxPreview } from '@/components/panels/preview/xlsx-preview';
+import { PptxPreview } from '@/components/panels/preview/pptx-preview';
+import { artifactRawUrl } from '@/lib/claude/artifact-url';
 
 type ViewMode = 'preview' | 'source';
 
-function canPreview(kind: Artifact['kind']): boolean {
-  return kind === 'html' || kind === 'svg' || kind === 'markdown';
+function canPreview(artifact: Artifact): boolean {
+  const { kind, source, filePath } = artifact;
+  if (kind === 'html' || kind === 'svg' || kind === 'markdown') return true;
+  if (kind === 'image') return source === 'inline' || !!filePath;
+  // File-backed binary kinds require a reachable filePath for the viewer to
+  // fetch bytes through /api/files/raw.
+  if (kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'pptx') return !!filePath;
+  return false;
 }
 
 function kindLabel(kind: Artifact['kind']): string {
@@ -38,6 +49,16 @@ function kindLabel(kind: Artifact['kind']): string {
       return 'Code';
     case 'text':
       return 'Text';
+    case 'image':
+      return 'Image';
+    case 'pdf':
+      return 'PDF';
+    case 'docx':
+      return 'DOCX';
+    case 'xlsx':
+      return 'XLSX';
+    case 'pptx':
+      return 'PPTX';
   }
 }
 
@@ -51,6 +72,16 @@ function kindBadgeClass(kind: Artifact['kind']): string {
       return 'bg-blue-500/20 text-blue-400';
     case 'code':
       return 'bg-emerald-500/20 text-emerald-400';
+    case 'image':
+      return 'bg-pink-500/20 text-pink-400';
+    case 'pdf':
+      return 'bg-red-500/20 text-red-400';
+    case 'docx':
+      return 'bg-sky-500/20 text-sky-400';
+    case 'xlsx':
+      return 'bg-green-500/20 text-green-400';
+    case 'pptx':
+      return 'bg-amber-500/20 text-amber-400';
     default:
       return 'bg-muted text-muted-foreground';
   }
@@ -108,7 +139,7 @@ export function ArtifactsModal() {
   const selected = sorted.find((a) => a.id === selectedId) ?? null;
 
   useEffect(() => {
-    if (selected && !canPreview(selected.kind) && viewMode === 'preview') {
+    if (selected && !canPreview(selected) && viewMode === 'preview') {
       setViewMode('source');
     }
   }, [selected, viewMode]);
@@ -136,7 +167,8 @@ export function ArtifactsModal() {
           <DialogHeader className="border-b px-5 py-3">
             <DialogTitle className="text-base">Generated Content</DialogTitle>
             <DialogDescription className="text-xs">
-              All HTML, code, markdown, and SVG that Claude produced in this workspace.
+              Every HTML, SVG, Markdown, code, image, PDF, Word, Excel, and PowerPoint document
+              Claude has produced this session — kept regardless of which project you switch to.
             </DialogDescription>
           </DialogHeader>
 
@@ -172,8 +204,8 @@ export function ArtifactsModal() {
             <aside className="w-64 shrink-0 overflow-y-auto border-r">
               {sorted.length === 0 ? (
                 <div className="p-4 text-center text-xs text-muted-foreground">
-                  No generated content yet. Ask Claude to write code, HTML, SVG, or a markdown
-                  document.
+                  No generated content yet. Ask Claude to write code, HTML, SVG, Markdown, Word,
+                  Excel, or PowerPoint documents — every Write/Edit gets captured here.
                 </div>
               ) : (
                 <ul>
@@ -228,12 +260,15 @@ export function ArtifactsModal() {
                         </span>
                         <h3 className="truncate text-sm font-semibold">{selected.title}</h3>
                       </div>
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        {selected.language || 'text'} · {selected.content.length} chars
+                      <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                        {selected.language || 'text'}
+                        {selected.source === 'file'
+                          ? ` · ${selected.filePath ?? 'on disk'}`
+                          : ` · ${selected.content.length} chars`}
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
-                      {canPreview(selected.kind) && (
+                      {canPreview(selected) && (
                         <div className="mr-1 flex items-center rounded-md border">
                           <button
                             type="button"
@@ -361,6 +396,53 @@ function ArtifactPreview({ artifact, mode }: ArtifactPreviewProps) {
 
   if (artifact.kind === 'markdown') {
     return <MarkdownPreview content={artifact.content} />;
+  }
+
+  if (artifact.kind === 'image') {
+    // Prefer the session-scoped artifact registry so images captured in a
+    // previous project still render after the user switches directories.
+    // Inline SVG text captured via a fenced block falls back to data URI.
+    if (artifact.filePath) {
+      const src = artifactRawUrl(artifact.filePath);
+      return (
+        <div className="flex h-full items-center justify-center bg-white p-6">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={src} alt={artifact.title} className="max-h-full max-w-full object-contain" />
+        </div>
+      );
+    }
+    const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(artifact.content)}`;
+    return (
+      <div className="flex h-full items-center justify-center bg-white p-6">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={dataUri} alt={artifact.title} className="max-h-full max-w-full object-contain" />
+      </div>
+    );
+  }
+
+  if (artifact.kind === 'pdf' && artifact.filePath) {
+    return <PdfPreview path={artifact.filePath} srcOverride={artifactRawUrl(artifact.filePath)} />;
+  }
+  if (artifact.kind === 'docx' && artifact.filePath) {
+    return <DocxPreview path={artifact.filePath} />;
+  }
+  if (artifact.kind === 'xlsx' && artifact.filePath) {
+    return <XlsxPreview path={artifact.filePath} />;
+  }
+  if (artifact.kind === 'pptx' && artifact.filePath) {
+    return <PptxPreview path={artifact.filePath} />;
+  }
+
+  if (artifact.source === 'file' && artifact.filePath) {
+    // Binary artifact captured from a project we are no longer in — show the
+    // metadata card with an Export affordance the user can still trigger.
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-xs text-muted-foreground">
+        <div className="font-medium text-foreground">{artifact.title}</div>
+        <div>{artifact.filePath}</div>
+        <div>Preview requires the source project to be active. Use Export to download the file.</div>
+      </div>
+    );
   }
 
   return (

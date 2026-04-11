@@ -26,7 +26,11 @@ const DENIED_SEGMENTS = new Set([
 ]);
 
 export function getProjectRoot(): string {
-  return getActiveRoot();
+  const root = getActiveRoot();
+  if (!root) {
+    throw new SandboxError('No project is open', 4412);
+  }
+  return root;
 }
 
 function isDeniedSegment(segment: string): boolean {

@@ -1,4 +1,3 @@
-import path from 'node:path';
 import { getActiveRoot } from '../src/lib/project/project-context.mjs';
 import { createDebug } from '../src/lib/debug.mjs';
 import {
@@ -129,11 +128,17 @@ export default async function claudeHandler(ws, _req) {
     const abort = new AbortController();
     currentAbort = abort;
 
-    let cwd;
-    try {
-      cwd = getActiveRoot();
-    } catch {
-      cwd = path.resolve(process.cwd());
+    const cwd = getActiveRoot();
+    if (!cwd) {
+      dbg.warn('query rejected: no active project root', { requestId });
+      send({
+        type: 'error',
+        requestId,
+        code: 4412,
+        message: 'No project is open. Open a folder in the file explorer before running Claude queries.',
+      });
+      currentAbort = null;
+      return;
     }
     dbg.info('query start', { requestId, sessionId: sessionId ?? '(new)', cwd });
 

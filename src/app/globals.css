@@ -10,10 +10,23 @@
   src: local('VT323'), url('/fonts/vt323.woff2') format('woff2');
 }
 
+/*
+ * Terminal host surface colors. The xterm WebGL canvas mounts into a
+ * `<div>` that briefly shows through before its first frame renders; we
+ * style that host with these variables so light/retro-green/high-contrast
+ * themes do not show a black flash on mount, tab switch, or theme toggle.
+ *
+ * Keep `--terminal-bg`/`--terminal-fg` in sync with the matching
+ * `TERMINAL_THEMES[theme].background/foreground` entries in
+ * `src/lib/terminal/terminal-manager.ts`. Drift is caught by
+ * `tests/unit/terminal-themes-contrast.test.ts`.
+ */
 @layer base {
   :root {
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
+    --terminal-bg: #ffffff;
+    --terminal-fg: #18181b;
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
     --popover: 0 0% 100%;
@@ -37,6 +50,8 @@
   .dark {
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
+    --terminal-bg: #0a0a0a;
+    --terminal-fg: #e4e4e7;
     --card: 222.2 84% 4.9%;
     --card-foreground: 210 40% 98%;
     --popover: 222.2 84% 4.9%;
@@ -59,6 +74,8 @@
   .high-contrast {
     --background: 0 0% 0%;
     --foreground: 0 0% 100%;
+    --terminal-bg: #000000;
+    --terminal-fg: #ffffff;
     --card: 0 0% 0%;
     --card-foreground: 0 0% 100%;
     --primary: 60 100% 50%;
@@ -79,6 +96,8 @@
   .retro-green {
     --background: 120 100% 3%;
     --foreground: 120 100% 78%;
+    --terminal-bg: #0b0f0a;
+    --terminal-fg: #33ff66;
     --card: 120 100% 5%;
     --card-foreground: 120 100% 80%;
     --popover: 120 100% 4%;

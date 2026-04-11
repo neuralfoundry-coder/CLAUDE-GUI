@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { getProjectRoot } from '@/lib/fs/resolve-safe';
+import { getActiveRoot } from '@/lib/project/project-context.mjs';
 
 export interface ClaudeSettings {
   permissions?: {
@@ -15,12 +15,15 @@ export interface ClaudeSettings {
   [key: string]: unknown;
 }
 
-function settingsFilePath(): string {
-  return path.join(getProjectRoot(), '.claude', 'settings.json');
+function settingsFilePath(): string | null {
+  const root = getActiveRoot();
+  if (!root) return null;
+  return path.join(root, '.claude', 'settings.json');
 }
 
 export async function loadSettings(): Promise<ClaudeSettings> {
   const p = settingsFilePath();
+  if (!p) return {};
   try {
     const content = await fs.readFile(p, 'utf-8');
     return JSON.parse(content) as ClaudeSettings;
@@ -32,6 +35,7 @@ export async function loadSettings(): Promise<ClaudeSettings> {
 
 export async function saveSettings(settings: ClaudeSettings): Promise<void> {
   const p = settingsFilePath();
+  if (!p) throw new Error('No project is open');
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
 }

@@ -58,9 +58,9 @@ export function LiveHtmlPreview() {
           )}
         </Button>
       </div>
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden bg-muted p-2">
         {showSource ? (
-          <pre className="h-full overflow-auto bg-background p-3 text-xs font-mono">
+          <pre className="h-full overflow-auto bg-background p-3 text-xs font-mono shadow-sm ring-1 ring-border/70">
             {source || '(waiting for content…)'}
           </pre>
         ) : (
@@ -70,7 +70,7 @@ export function LiveHtmlPreview() {
             sandbox="allow-scripts"
             referrerPolicy="no-referrer"
             title="Live HTML preview"
-            className="h-full w-full border-0 bg-white"
+            className="h-full w-full border-0 bg-white shadow-sm ring-1 ring-border/70"
           />
         )}
       </div>

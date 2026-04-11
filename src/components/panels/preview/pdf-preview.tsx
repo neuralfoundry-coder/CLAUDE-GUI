@@ -1,13 +1,16 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { usePreviewStore } from '@/stores/use-preview-store';
 
 const Document = dynamic(() => import('react-pdf').then((m) => m.Document), { ssr: false });
 const Page = dynamic(() => import('react-pdf').then((m) => m.Page), { ssr: false });
+
+// Padding between the page canvas and the scroll container edges.
+const PAGE_PADDING = 16;
 
 async function configurePdfWorker() {
   if (typeof window === 'undefined') return;
@@ -21,13 +24,28 @@ async function configurePdfWorker() {
 
 interface PdfPreviewProps {
   path: string;
+  /**
+   * Optional URL override. The artifact gallery uses this to point at
+   * `/api/artifacts/raw` so captured PDFs keep loading after the user
+   * switches to a different project (the main `/api/files/raw` endpoint
+   * enforces the current project's sandbox).
+   */
+  srcOverride?: string;
 }
 
-export function PdfPreview({ path }: PdfPreviewProps) {
+interface PageViewportLike {
+  getViewport: (options: { scale: number }) => { width: number; height: number };
+}
+
+export function PdfPreview({ path, srcOverride }: PdfPreviewProps) {
   const [numPages, setNumPages] = useState(0);
   const [ready, setReady] = useState(false);
   const pageNumber = usePreviewStore((s) => s.pageNumber);
   const setPage = usePreviewStore((s) => s.setPage);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [nativeSize, setNativeSize] = useState<{ w: number; h: number } | null>(null);
 
   useEffect(() => {
     configurePdfWorker()
@@ -35,7 +53,35 @@ export function PdfPreview({ path }: PdfPreviewProps) {
       .catch(() => setReady(true));
   }, []);
 
-  const src = `/api/files/raw?path=${encodeURIComponent(path)}`;
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      setContainerSize({ w: rect.width, h: rect.height });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ready]);
+
+  // Reset captured native size when the file changes so the next page
+  // recomputes its fit against the new document.
+  useEffect(() => {
+    setNativeSize(null);
+  }, [path]);
+
+  const src = srcOverride ?? `/api/files/raw?path=${encodeURIComponent(path)}`;
+
+  const fitWidth = (() => {
+    if (!nativeSize || !containerSize.w || !containerSize.h) return undefined;
+    const availW = Math.max(0, containerSize.w - PAGE_PADDING * 2);
+    const availH = Math.max(0, containerSize.h - PAGE_PADDING * 2);
+    if (availW === 0 || availH === 0) return undefined;
+    const aspect = nativeSize.w / nativeSize.h;
+    return Math.min(availW, availH * aspect);
+  })();
 
   if (!ready) return <div className="p-4 text-xs text-muted-foreground">Loading PDF viewer…</div>;
 
@@ -62,9 +108,27 @@ export function PdfPreview({ path }: PdfPreviewProps) {
           <ChevronRight className="h-4 w-4" />
         </Button>
       </div>
-      <div className="scrollbar-thin flex-1 overflow-auto p-4">
+      <div
+        ref={containerRef}
+        className="scrollbar-thin flex flex-1 items-center justify-center overflow-auto p-4"
+      >
         <Document file={src} onLoadSuccess={({ numPages: n }) => setNumPages(n)}>
-          <Page pageNumber={pageNumber} renderTextLayer={false} renderAnnotationLayer={false} />
+          <div className="bg-white shadow-md ring-1 ring-border/70">
+            <Page
+              pageNumber={pageNumber}
+              width={fitWidth}
+              renderTextLayer={false}
+              renderAnnotationLayer={false}
+              onLoadSuccess={(page: PageViewportLike) => {
+                const vp = page.getViewport({ scale: 1 });
+                setNativeSize((prev) =>
+                  prev && prev.w === vp.width && prev.h === vp.height
+                    ? prev
+                    : { w: vp.width, h: vp.height },
+                );
+              }}
+            />
+          </div>
         </Document>
       </div>
     </div>

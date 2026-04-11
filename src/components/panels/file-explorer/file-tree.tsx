@@ -5,11 +5,12 @@ import { ChevronRight, ChevronDown } from 'lucide-react';
 import { FileIcon } from './file-icon';
 import { GitStatusIndicator } from './git-status-indicator';
 import type { TreeNode } from './use-file-tree';
-import { filesApi } from '@/lib/api-client';
+import { filesApi, terminalApi } from '@/lib/api-client';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { usePreviewStore, detectPreviewType } from '@/stores/use-preview-store';
 import { useTerminalStore } from '@/stores/use-terminal-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
+import { useProjectStore } from '@/stores/use-project-store';
 import { cn } from '@/lib/utils';
 import {
   ContextMenu,
@@ -29,6 +30,8 @@ function Node({ node, style, dragHandle, onOpenDir }: NodeProps) {
   const createTerminal = useTerminalStore((s) => s.createSession);
   const terminalCollapsed = useLayoutStore((s) => s.terminalCollapsed);
   const togglePanel = useLayoutStore((s) => s.togglePanel);
+  const activeRoot = useProjectStore((s) => s.activeRoot);
+  const openProject = useProjectStore((s) => s.openProject);
 
   const onClick = () => {
     if (node.data.isDirectory) {
@@ -80,6 +83,28 @@ function Node({ node, style, dragHandle, onOpenDir }: NodeProps) {
     }
   };
 
+  const onOpenInSystemTerminal = async () => {
+    const target = node.data.isDirectory
+      ? node.data.path
+      : node.data.path.split('/').slice(0, -1).join('/');
+    try {
+      await terminalApi.openNative(target || undefined);
+    } catch (err) {
+      alert(`Could not open system terminal: ${(err as Error).message}`);
+    }
+  };
+
+  const onOpenAsProjectRoot = async () => {
+    if (!activeRoot || !node.data.isDirectory) return;
+    const sep = activeRoot.includes('\\') && !activeRoot.includes('/') ? '\\' : '/';
+    const abs = `${activeRoot.replace(/[/\\]+$/, '')}${sep}${node.data.path}`;
+    try {
+      await openProject(abs);
+    } catch (err) {
+      alert(`Open as project root failed: ${(err as Error).message}`);
+    }
+  };
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -112,7 +137,18 @@ function Node({ node, style, dragHandle, onOpenDir }: NodeProps) {
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        {node.data.isDirectory && (
+          <>
+            <ContextMenuItem onSelect={onOpenAsProjectRoot}>
+              Open as project root
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         <ContextMenuItem onSelect={onOpenTerminalHere}>Open terminal here</ContextMenuItem>
+        <ContextMenuItem onSelect={onOpenInSystemTerminal}>
+          Open in system terminal
+        </ContextMenuItem>
         <ContextMenuItem onSelect={onRevealInFinder}>
           Reveal in {navigator.userAgent.includes('Mac') ? 'Finder' : 'File Explorer'}
         </ContextMenuItem>

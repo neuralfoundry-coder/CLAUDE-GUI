@@ -20,6 +20,13 @@
         height: 100%;
         margin: 0;
       }
+      /* Always show the slide boundary so the content layout is
+         visually distinct from the iframe / panel background. */
+      .reveal .slides > section,
+      .reveal .slides > section.present {
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28),
+          0 6px 24px rgba(0, 0, 0, 0.45);
+      }
     </style>
   </head>
   <body>
@@ -30,7 +37,20 @@
     </div>
     <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
     <script>
-      Reveal.initialize({ hash: false, controls: true, progress: true });
+      // Contain-fit: pin logical slide size and let Reveal scale down
+      // aggressively so the full slide is visible at any aspect ratio,
+      // in both panel and fullscreen modes.
+      Reveal.initialize({
+        hash: false,
+        controls: true,
+        progress: true,
+        width: 960,
+        height: 700,
+        margin: 0.04,
+        minScale: 0.05,
+        maxScale: 2.0,
+        center: true,
+      });
 
       window.addEventListener('message', (event) => {
         const data = event.data;

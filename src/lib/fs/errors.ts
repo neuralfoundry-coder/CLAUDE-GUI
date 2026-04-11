@@ -19,7 +19,8 @@ export function apiSuccess<T>(data: T) {
 
 export function handleApiError(err: unknown) {
   if (err instanceof SandboxError) {
-    return apiError(err.message, err.code, 403);
+    const http = err.code === 4412 ? 412 : 403;
+    return apiError(err.message, err.code, http);
   }
   const e = err as NodeJS.ErrnoException;
   if (e.code === 'ENOENT') return apiError('File not found', 4404, 404);

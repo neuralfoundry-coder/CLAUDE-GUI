@@ -260,6 +260,17 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           for (const tool of tools) {
             extractor.feedToolUse(tool);
           }
+          // Ingest Write/Edit/MultiEdit tool_use blocks into the artifact
+          // gallery so any file Claude writes — not just `.html` — shows up
+          // in "Generated Content" regardless of whether it was ever printed
+          // inline as a fenced code block. See FR-1008.
+          {
+            const artifactStore = useArtifactStore.getState();
+            const toolSessionId = asst.session_id ?? null;
+            for (const tool of tools) {
+              artifactStore.ingestToolUse(nextId('tool'), toolSessionId, tool);
+            }
+          }
           let newAssistantMessageId: string | null = null;
           set((s) => {
             const nextMessages = [...s.messages];

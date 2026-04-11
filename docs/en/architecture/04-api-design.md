@@ -120,6 +120,42 @@ Renames or moves a file/directory.
 }
 ```
 
+#### `POST /api/files/upload`
+
+Copies local OS files into the project-root sandbox. Triggered by drag-and-drop from the OS file manager or clipboard paste in the web explorer (FR-208).
+
+**Content-Type**: `multipart/form-data`
+
+**Form fields**:
+- `destDir` (optional, default `""`): path relative to the project root. Empty string means the project root itself.
+- `files` (repeated, required): `File` instances to upload. Multiple files are attached by repeating this field name.
+
+**Server validation**:
+- `resolveSafe(destDir)` restricts the destination to the project-root sandbox.
+- Each filename is normalized with `path.basename`. Names equal to `.`, `..`, or containing `/`, `\`, or `\0` are rejected with `400`.
+- Per-file cap: 50 MB (`MAX_BINARY_SIZE`). Per-request total cap: 200 MB. Exceeding either returns `413`.
+- If a filename already exists, the server does not overwrite; it disambiguates with a ` (n)` suffix (e.g. `report.pdf` → `report (1).pdf`).
+- Subject to the shared 1200 req/min files-API rate limit.
+
+**Response**:
+```json
+{
+  "success": true,
+  "data": {
+    "uploaded": [
+      { "name": "logo.png", "size": 12345, "writtenPath": "assets/logo.png" }
+    ]
+  }
+}
+```
+
+**Error codes**:
+- `400` — `destDir` is not a string / no files / invalid filename / destination is not a directory
+- `403` — path escapes the sandbox / denied segment (`.env`, `.git`, …)
+- `404` — destination directory does not exist
+- `413` — a single file or the whole request exceeds the size limit
+- `429` — rate limited
+
 #### `GET /api/files/raw`
 
 Responds with the file as binary (for image and PDF viewers).

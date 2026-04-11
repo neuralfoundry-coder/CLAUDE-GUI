@@ -50,13 +50,20 @@ async function rebuildWatcher() {
       dbg.error('close failed', err);
     }
     sharedWatcher = null;
+    watcherRoot = null;
+  }
+  if (!root) {
+    dbg.info('no active project root; watcher idle');
+    return null;
   }
   dbg.info('starting watcher on', root);
   sharedWatcher = await loadWatcher(root);
   watcherRoot = root;
 
   const broadcastEvent = (event) => (p) => {
-    const rel = path.relative(root, p) || '.';
+    const currentRoot = watcherRoot;
+    if (!currentRoot) return;
+    const rel = path.relative(currentRoot, p) || '.';
     dbg.trace(event, rel);
     broadcastAll({
       type: 'change',

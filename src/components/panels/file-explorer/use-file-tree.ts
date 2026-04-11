@@ -58,6 +58,13 @@ export function useFileTree() {
   }, []);
 
   const refreshRoot = useCallback(async () => {
+    if (!activeRoot) {
+      setRootNodes([]);
+      setLoadedPaths(new Set(['']));
+      setLoading(false);
+      setError(null);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -70,7 +77,7 @@ export function useFileTree() {
     } finally {
       setLoading(false);
     }
-  }, [loadDirectory]);
+  }, [loadDirectory, activeRoot]);
 
   const loadSubtree = useCallback(
     async (path: string) => {

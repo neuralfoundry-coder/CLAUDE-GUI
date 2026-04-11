@@ -9,6 +9,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 import { terminalManager } from '@/lib/terminal/terminal-manager';
+import { terminalApi } from '@/lib/api-client';
 import { useTerminalStore } from '@/stores/use-terminal-store';
 
 interface XTerminalAttachProps {
@@ -20,6 +21,9 @@ const PASTE_WARN_BYTES = 10 * 1024 * 1024;
 export function XTerminalAttach({ sessionId }: XTerminalAttachProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const openSearchOverlay = useTerminalStore((s) => s.openSearchOverlay);
+  const sessionCwd = useTerminalStore(
+    (s) => s.sessions.find((sess) => sess.id === sessionId)?.cwd ?? null,
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -65,13 +69,21 @@ export function XTerminalAttach({ sessionId }: XTerminalAttachProps) {
   const handleSelectAll = () => terminalManager.selectAll(sessionId);
   const handleClear = () => terminalManager.clearBuffer(sessionId);
   const handleFind = () => openSearchOverlay();
+  const handleOpenNative = async () => {
+    try {
+      await terminalApi.openNative(sessionCwd ?? undefined);
+    } catch (err) {
+      alert(`Could not open system terminal: ${(err as Error).message}`);
+    }
+  };
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
           ref={hostRef}
-          className="h-full w-full bg-[#0a0a0a]"
+          className="h-full w-full"
+          style={{ background: 'var(--terminal-bg)' }}
           onClick={() => terminalManager.activate(sessionId)}
         />
       </ContextMenuTrigger>
@@ -83,6 +95,9 @@ export function XTerminalAttach({ sessionId }: XTerminalAttachProps) {
         <ContextMenuItem onSelect={handleClear}>Clear</ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={handleFind}>Find…</ContextMenuItem>
+        <ContextMenuItem onSelect={handleOpenNative}>
+          Open in system terminal
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );

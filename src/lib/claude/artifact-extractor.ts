@@ -1,4 +1,23 @@
-export type ArtifactKind = 'html' | 'svg' | 'markdown' | 'code' | 'text';
+export type ArtifactKind =
+  | 'html'
+  | 'svg'
+  | 'markdown'
+  | 'code'
+  | 'text'
+  | 'image'
+  | 'pdf'
+  | 'docx'
+  | 'xlsx'
+  | 'pptx';
+
+/**
+ * How an artifact's bytes are reached by the viewer / exporter:
+ * - `inline`: the full content is stored as a string in `content`.
+ * - `file`: the content lives on disk at `filePath`; viewers fetch it via
+ *   `/api/files/raw`. This is used for true binary formats (docx/xlsx/pptx/
+ *   pdf/image) where base64-in-localStorage would blow the quota.
+ */
+export type ArtifactSource = 'inline' | 'file';
 
 export interface ExtractedArtifact {
   id: string;
@@ -8,8 +27,15 @@ export interface ExtractedArtifact {
   language: string;
   kind: ArtifactKind;
   title: string;
+  /** Inline text content for text artifacts. Empty string when `source === 'file'`. */
   content: string;
+  /** Absolute path to the file on disk (Write/Edit tool_use) when available. */
+  filePath?: string;
+  /** Byte size hint for file-backed artifacts. */
+  byteSize?: number;
+  source: ArtifactSource;
   createdAt: number;
+  updatedAt: number;
 }
 
 const FENCE_RE = /```([a-zA-Z0-9+._-]*)\n([\s\S]*?)```/g;
@@ -19,6 +45,12 @@ const RAW_HTML_DOC_RE = /<!doctype html[\s\S]*?<\/html>/gi;
 const MARKDOWN_LANGS = new Set(['md', 'markdown', 'mdx']);
 const HTML_LANGS = new Set(['html', 'htm', 'xhtml']);
 const SVG_LANGS = new Set(['svg']);
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif']);
+const PDF_EXTS = new Set(['pdf']);
+const DOCX_EXTS = new Set(['docx']);
+const XLSX_EXTS = new Set(['xlsx', 'xlsm']);
+const PPTX_EXTS = new Set(['pptx']);
 
 const MIN_BLOCK_LENGTH = 24;
 
@@ -32,6 +64,47 @@ function classify(language: string, content: string): ArtifactKind {
   if (trimmed.startsWith('<svg')) return 'svg';
   if (trimmed.startsWith('<!doctype html') || trimmed.startsWith('<html')) return 'html';
   return 'text';
+}
+
+function basename(p: string): string {
+  const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function extOf(p: string): string {
+  const name = basename(p);
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
+
+/**
+ * Classify an artifact from its file extension. Used by the Write/Edit
+ * tool-use ingestion path so binary formats (pptx/docx/xlsx/pdf/image) get
+ * routed to their dedicated previewers even though they are never emitted as
+ * inline fenced code blocks.
+ */
+export function classifyByPath(filePath: string): ArtifactKind {
+  const ext = extOf(filePath);
+  if (HTML_LANGS.has(ext)) return 'html';
+  if (SVG_LANGS.has(ext)) return 'svg';
+  if (MARKDOWN_LANGS.has(ext)) return 'markdown';
+  if (IMAGE_EXTS.has(ext)) return 'image';
+  if (PDF_EXTS.has(ext)) return 'pdf';
+  if (DOCX_EXTS.has(ext)) return 'docx';
+  if (XLSX_EXTS.has(ext)) return 'xlsx';
+  if (PPTX_EXTS.has(ext)) return 'pptx';
+  if (ext) return 'code';
+  return 'text';
+}
+
+/** A kind is "binary" if its bytes are not realistically representable as a
+ *  JavaScript string (and therefore must be served from disk via /api/files/raw). */
+export function isBinaryKind(kind: ArtifactKind): boolean {
+  return kind === 'pdf' || kind === 'docx' || kind === 'xlsx' || kind === 'pptx' || kind === 'image';
+}
+
+export function titleFromPath(filePath: string): string {
+  return basename(filePath) || 'artifact';
 }
 
 function titleFor(kind: ArtifactKind, language: string, content: string, fallback: string): string {
@@ -55,6 +128,11 @@ function titleFor(kind: ArtifactKind, language: string, content: string, fallbac
 
 export function extensionFor(language: string, kind: ArtifactKind): string {
   const lang = language.toLowerCase();
+  if (kind === 'image') return lang || 'png';
+  if (kind === 'pdf') return 'pdf';
+  if (kind === 'docx') return 'docx';
+  if (kind === 'xlsx') return 'xlsx';
+  if (kind === 'pptx') return 'pptx';
   const table: Record<string, string> = {
     typescript: 'ts',
     ts: 'ts',
@@ -136,7 +214,9 @@ export function extractArtifacts(
       kind,
       title: titleFor(kind, rawLang, body, String(index)),
       content: body,
+      source: 'inline',
       createdAt: now,
+      updatedAt: now,
     });
     consumedRanges.push([match.index, match.index + match[0].length]);
   }
@@ -165,7 +245,9 @@ export function extractArtifacts(
       kind: 'html',
       title: titleFor('html', 'html', body, String(index)),
       content: body,
+      source: 'inline',
       createdAt: now,
+      updatedAt: now,
     });
   }
 
@@ -186,7 +268,9 @@ export function extractArtifacts(
       kind: 'svg',
       title: titleFor('svg', 'svg', body, String(index)),
       content: body,
+      source: 'inline',
       createdAt: now,
+      updatedAt: now,
     });
   }
 

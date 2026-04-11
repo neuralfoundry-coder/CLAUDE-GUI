@@ -14,13 +14,15 @@ export function HtmlPreview({ content }: HtmlPreviewProps) {
   }, [content]);
 
   return (
-    <iframe
-      ref={iframeRef}
-      srcDoc={content}
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      className="h-full w-full border-0 bg-white"
-      title="HTML preview"
-    />
+    <div className="h-full w-full bg-muted p-2">
+      <iframe
+        ref={iframeRef}
+        srcDoc={content}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        className="h-full w-full border-0 bg-white shadow-sm ring-1 ring-border/70"
+        title="HTML preview"
+      />
+    </div>
   );
 }

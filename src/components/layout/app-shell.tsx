@@ -33,6 +33,13 @@ export function AppShell() {
   useGlobalShortcuts();
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [loginPromptOpen, setLoginPromptOpen] = useState(false);
+  const activeRoot = useProjectStore((s) => s.activeRoot);
+  const projectInitialized = useProjectStore((s) => s.initialized);
+
+  // Force-open the project picker on first boot when no project is active.
+  useEffect(() => {
+    if (projectInitialized && !activeRoot) setProjectPickerOpen(true);
+  }, [projectInitialized, activeRoot]);
 
   useEffect(() => {
     // Boot shared WebSocket clients so connection status updates early.

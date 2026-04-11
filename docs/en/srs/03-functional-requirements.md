@@ -80,6 +80,34 @@
 - Only nodes visible on screen shall be rendered to the DOM, to support large projects.
 - `react-arborist`'s built-in virtualization shall be used.
 
+### FR-208: Local file drag-and-drop / paste upload
+
+- The user shall be able to **drag and drop** files from the local OS file manager (macOS Finder, Windows Explorer, etc.) onto the web file-explorer panel to copy them into the current project root.
+- The user shall be able to **paste** files/images from the clipboard into the web file-explorer panel (`Cmd+V` / `Ctrl+V`) to copy them into the project root. When the panel has focus, `clipboardData.files` from the `onPaste` event is consumed.
+- While dragging, the panel shall render a `ring-2 ring-primary` border together with a "Drop files to upload to project root" overlay to provide visual feedback. Only drags whose `e.dataTransfer.types` include `'Files'` are accepted, so the handler is distinguished from react-arborist's internal node drags.
+- Uploads use the `POST /api/files/upload` endpoint (see `04-api-design.md`). The payload is `multipart/form-data` with a `destDir` field (path relative to the project root, empty meaning root) and one or more repeated `files` fields.
+- The server shall enforce the following:
+  - Use `resolveSafe(destDir)` to restrict the destination directory to the project-root sandbox.
+  - Normalize each filename with `path.basename` and reject names equal to `.`, `..`, or containing `/`, `\`, or `\0`.
+  - Reject individual files larger than `MAX_BINARY_SIZE` (50 MB) and reject any request whose total size exceeds 200 MB with `413 Payload Too Large`.
+  - If a filename already exists, do not overwrite — disambiguate by appending ` (1)`, ` (2)`, etc.
+- On success, the client calls `refreshRoot()` to refresh the tree immediately. The `/ws/files` watcher also emits a change event, but the manual refresh avoids waiting for chokidar debouncing.
+- On failure, the header status label renders `upload failed: <message>` highlighted with `text-destructive`.
+- Implementation: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (drop/paste handlers, overlay).
+
+### FR-209: Explorer root navigation (up / down re-rooting)
+
+- The file explorer must be able to **move the active project root to a parent directory or to any descendant directory**. The newly chosen directory becomes the active root and is immediately reflected across the entire process (file API sandbox, new terminal session cwd, Claude query cwd, chokidar watch target).
+- **UI**:
+  - An **↑ Up button** (`lucide-react`'s `ArrowUp`) in the panel header calls `useProjectStore.openParent()`, which sets `path.dirname(activeRoot)` as the new root. If the parent would become the filesystem root (`/` or `C:\`), the backend rejects with `4403` and the button is disabled.
+  - A **breadcrumb bar** below the header renders each path segment of the current root as a clickable button. The trailing segment highlights the current location; clicking any other segment re-roots to that ancestor.
+  - The right-click **context menu on directory nodes gains a top-level "Open as project root"** item (not shown on file nodes). Selecting it calls `openProject()` with the directory's absolute path.
+- **Constraints**:
+  - The filesystem root (`/` or Windows drive root) is still rejected (see `FR-908`).
+  - `$HOME` is now allowed as an explicit user choice (the previous `4403` ban is removed). This supports the legitimate use case of editing dotfile/script projects under `~`. The dotfile deny list in `resolveSafe` (`.env`, `.git`, `.ssh`, `.claude`, `.aws`, `.npmrc`, `id_rsa`, `id_ed25519`, `credentials`, …) still blocks access to sensitive files.
+- **State transitions**: Changing the root resets existing editor tabs and preview selection (FR-908 behavior) and reloads the file tree against the new root. Running terminal sessions are preserved, but newly created sessions start in the new root.
+- Implementation: `src/components/panels/file-explorer/file-explorer-panel.tsx` (Up button, breadcrumb), `src/components/panels/file-explorer/file-tree.tsx` (context menu item), `src/stores/use-project-store.ts` (`openParent()`, `parentDirectory()`).
+
 ---
 
 ## 3.3 Code Editor (FR-300)
@@ -146,6 +174,8 @@
 - Output that happens to start with `{` (e.g. `cat package.json`) is never misinterpreted as a control frame.
 - The terminal pipeline shall stay fully separate from the Claude chat input. `/ws/terminal` and `/ws/claude` shall not share symbols or state.
 - The server shall spawn the shell in **login + interactive** mode. The shell resolution order, flag mapping, and environment variables are specified in `FR-410`.
+- **Visibility requirement (WCAG AA)**: every `foreground` and ANSI-16 color in `TERMINAL_THEMES` shall meet a **contrast ratio ≥ 4.5:1** against the theme's `background`. The only exceptions are the `black`/`brightBlack` slots that by xterm convention map to the app background tone (and only when they do in fact satisfy WCAG against that background) and the `cursor`/`selectionBackground` entries that render as inverted overlays. This is enforced automatically by `tests/unit/terminal-themes-contrast.test.ts`.
+- The palette is defined in a single source `src/lib/terminal/terminal-themes.ts` and imported by `TerminalManager`, which propagates it to every instance via `setTheme(theme)`.
 
 ### FR-402: ANSI escape code rendering
 
@@ -314,10 +344,23 @@
 
 ### FR-419: Terminal theme sync and font settings
 
-- Terminal colors shall follow `useLayoutStore.theme` (`dark` / `light` / `high-contrast` / `retro-green`). `TerminalManager` declares `TERMINAL_THEMES` mapping each app theme to an xterm `ITheme`, and subscribes to the layout store on boot so `setTheme(theme)` propagates to every live instance.
+- Terminal colors shall follow `useLayoutStore.theme` (`dark` / `light` / `high-contrast` / `retro-green`). `TerminalManager` imports `TERMINAL_THEMES` from `src/lib/terminal/terminal-themes.ts` and subscribes to the layout store on boot so `setTheme(theme)` propagates to every live instance.
+- **Host background sync**: the xterm host `<div>` must not flash a wrong color during theme toggles, tab switches, or panel mounts before the WebGL canvas paints. To enforce this, `src/app/globals.css` declares `--terminal-bg` / `--terminal-fg` CSS variables on each of `:root`, `.dark`, `.high-contrast`, `.retro-green`, and `x-terminal.tsx` consumes them via `style={{ background: 'var(--terminal-bg)' }}`. The CSS variable values MUST match `TERMINAL_THEMES[theme].background`/`foreground` exactly; drift is detected by `tests/unit/terminal-themes-contrast.test.ts`.
 - Terminal font family and ligature toggle are persisted in `useSettingsStore` as `terminalFontFamily` / `terminalFontLigatures` (defaults: `JetBrains Mono, Menlo, monospace` / `false`). On change the manager re-applies `term.options.fontFamily` to every instance and triggers `fit()`.
 - A `terminalCopyOnSelect` setting (default `false`) mirrors the xterm selection to the system clipboard via `onSelectionChange` → `navigator.clipboard.writeText`.
 - All three settings are exposed as Command Palette commands: "Terminal: Set Font Family…", "Terminal: Enable/Disable Font Ligatures", "Terminal: Enable/Disable Copy-on-Select".
+
+### FR-420: OS terminal bypass (Open in system terminal)
+
+- Users shall be able to open the **current tab's cwd** (or the active project root if none) in the OS default terminal app via `Cmd/Ctrl+Shift+O`, the `ExternalLink` icon button in the terminal tab strip, the "Open in system terminal" entry in the xterm context menu, or the "Open in system terminal" entry in the file-explorer directory context menu. The internal xterm session is not affected.
+- Endpoint: `POST /api/terminal/open-native`, body `{ cwd?: string }`. When omitted, `getActiveRoot()` is used. `cwd` is normalized against the project root via `resolveSafe`; if it points at a file, `path.dirname` is applied automatically.
+- Platform launcher selection is delegated to the pure function `resolveLauncher({platform, cwd, env, exists})` in `src/app/api/terminal/open-native/launchers.ts`:
+  - **darwin**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `open -na <value> <cwd>`; otherwise iTerm (when `/Applications/iTerm.app` exists) else Terminal.app.
+  - **win32**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `<value> -d <cwd>`; otherwise Windows Terminal when `%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe` exists; otherwise `cmd.exe /c start "" cmd.exe /K cd /d <cwd>`.
+  - **linux/BSD**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `$TERMINAL` → `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xfce4-terminal` → `tilix` → `alacritty` → `kitty` → `wezterm` → `xterm`, picking the first binary on PATH. The cwd flag differs per emulator (`--working-directory`, `-d`, `start --cwd`, …) and is captured in a per-binary table. `xterm` falls back to `-e 'cd <escaped> && exec $SHELL'` since it has no cwd flag.
+- `CLAUDEGUI_EXTERNAL_TERMINAL` overrides the OS default. On macOS the value is passed to `open -a`; on Linux it is looked up on PATH as a binary name; on Windows it is treated as a full executable path.
+- Error handling: if no terminal is installed or the override cannot be resolved, `resolveLauncher` raises `NoLauncherError` → HTTP 501 (`code: 4501`). `spawn` failures (e.g. ENOENT) are raced against an `error` event for a 100 ms window and reported as HTTP 500 (`code: 5500`) with a reason string. `resolveSafe` violations → 403 (`code: 4403`). A missing cwd → 404 (`code: 4404`).
+- Security: the child process is launched with `spawn(..., { detached: true, stdio: 'ignore' })` and `child.unref()` so the server never consumes its stdio. The `/ws/terminal` + `127.0.0.1` bind invariant holds; `0.0.0.0` exposure remains prohibited.
 
 ---
 
@@ -522,6 +565,44 @@
 - The user must be able to exit fullscreen with `Esc`.
 - Fullscreen state is tracked in `usePreviewStore.fullscreen`.
 
+### FR-612: Contain-fit default rendering and content outline
+
+- Previews (slides, PDF, HTML, Markdown) shall display the full content layout uncropped in **both panel and fullscreen modes**, regardless of the container's aspect ratio (contain-fit default).
+  - **Slides**: reveal.js is initialized with a fixed logical size (`width: 960, height: 700`) plus `margin: 0.04`, `minScale: 0.05`, and `maxScale: 2.0`, so a single slide always fits the viewport at any aspect ratio.
+  - **PDF**: a `ResizeObserver` watches the scroll container, and the first `Page.onLoadSuccess` captures the native viewport via `getViewport({ scale: 1 })`. The page is then rendered with `width = min(availableWidth, availableHeight × aspect)` so the whole page fits the container. The cached native size is reset whenever the file path changes.
+  - **HTML / Live HTML / Markdown**: the iframe or document container is wrapped in a `bg-muted` outer box with an inner `ring-1 ring-border/70` so the content surface is visually separated from the surrounding UI.
+- Every preview type shall **always render a visible content boundary**, even when the content background collides with the panel background (e.g. a white document on a white panel, or a black slide inside a black iframe). Specifically:
+  - The slide section draws its outline in `reveal-host.html` with `box-shadow: 0 0 0 1px rgba(255,255,255,0.28), 0 6px 24px rgba(0,0,0,0.45)`.
+  - The PDF page canvas is wrapped with `ring-1 ring-border/70` + `shadow-md`.
+  - HTML / Live HTML iframes and the Markdown document container are wrapped with `ring-1 ring-border/70` + `shadow-sm`.
+- These rules apply identically regardless of the value of `usePreviewStore.fullscreen`.
+- Implementation: `public/reveal-host.html`, `src/components/panels/preview/pdf-preview.tsx`, `src/components/panels/preview/html-preview.tsx`, `src/components/panels/preview/live-html-preview.tsx`, `src/components/panels/preview/markdown-preview.tsx`, `src/components/panels/preview/slide-preview.tsx`.
+
+### FR-613: One-click preview download
+
+- The preview panel header shall provide a dropdown (icon: `Download`) that immediately downloads the currently rendered content. The dropdown shall list **only the formats that apply** to the current `PreviewType`.
+- **Download must remain available while the live preview is streaming.** When the live preview is active (`useLivePreviewStore.mode !== 'idle'` with `autoSwitch` on), the menu treats the streamed `buffer` (or the in-memory content of the editor tab that matches `generatedFilePath`, when the user has opened the generated file) as an inline HTML artifact, so the user can **immediately download whatever has been generated so far**. The full HTML format matrix (Source `.html` / PDF / Word `.doc`) applies. For a five-page document being streamed, the user can grab the current buffer — already containing the finished pages — at any moment; once streaming finishes the menu automatically targets the final document.
+- The dropdown caption distinguishes the snapshot source: `Download (streaming…)` while `mode === 'live-code'` (partial, not yet renderable), `Download live buffer` once renderable HTML is available, and `Download as` for regular file previews.
+- If the live buffer is empty (`buffer === ''`) the menu is not rendered — there are no bytes to download.
+- Format matrix (type → available formats):
+
+  | PreviewType | Available formats |
+  |---|---|
+  | `html` | Source (`.html`), PDF (print dialog), Word (`.doc`) |
+  | `markdown` | Source (`.md`), HTML (`.html`), PDF (print dialog), Word (`.doc`) |
+  | `slides` | Source (`.md`), HTML (`.html`), PDF (print dialog) |
+  | `image` (SVG) | Source (`.svg`), PNG (`.png`), PDF (print dialog) |
+  | `image` (PNG/JPEG/GIF/WebP …) | Original file (raw bytes) |
+  | `pdf` | Original file |
+  | `docx` | Original file |
+  | `xlsx` | Original file |
+  | `pptx` | Original file |
+
+- Text-backed types (`html`/`markdown`/`slides`, plus `.svg` images) reuse the in-memory content from the editor tab when available; otherwise they fetch from disk via `filesApi.read()` before converting and downloading. File-backed binary types (`pdf`/`image` except SVG/`docx`/`xlsx`/`pptx`) stream the original bytes from `/api/files/raw?path=...`.
+- PDF export opens `window.open()` + `window.print()` to trigger the browser print dialog and lets the user save via the OS "Save as PDF" flow — the same policy as the artifact export pipeline (FR-1004). No server-side PDF renderer (Puppeteer, etc.) is required.
+- DOCX/XLSX/PPTX binary types expose only "Original file" because the viewer already reads the file via `/api/files/raw`. Transcoding (e.g. DOCX → PDF) is out of scope for v1.0.
+- Implementation: `src/lib/preview/preview-download.ts` (adapts the live preview state into an `ExtractedArtifact` shape and reuses the download/print pipeline in `src/lib/claude/artifact-export.ts`), `src/components/panels/preview/preview-download-menu.tsx` (header dropdown), `src/components/panels/preview/preview-panel.tsx` (header placement).
+
 ---
 
 ## 3.7 Presentation Features (FR-700)
@@ -617,6 +698,7 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 | `Cmd+Shift+R` / `Ctrl+Shift+R` | Restart active session (`FR-408`/`FR-411`/`FR-414`) |
 | `Cmd+D` / `Ctrl+D` | Toggle terminal split view (`FR-418`) |
 | `Cmd+]` / `Ctrl+]` · `Cmd+[` / `Ctrl+[` | Cycle active pane when split mode is on |
+| `Cmd+Shift+O` / `Ctrl+Shift+O` | Open current tab's cwd in the OS default terminal app (`FR-420`) — active globally |
 | `Cmd+Shift+Enter` / `Ctrl+Shift+Enter` | **Run editor selection (or current line) in the active terminal**; focus stays in the editor |
 
 **Implementation notes**:
@@ -676,20 +758,27 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 ### FR-908: Runtime project hot-swap (v0.3)
 
 - The system shall allow switching the project root at runtime (no server restart).
-- `GET /api/project` returns the current root plus the recents list.
+- `GET /api/project` returns the current root (`null` when nothing is active) plus the recents list.
 - `POST /api/project` (body `{ path }`) switches the root after the following checks:
   - Absolute path (relative paths are rejected with `4400`)
   - Directory exists (`4404` / `4400`)
   - Readable (`4403`)
-  - Must not be the filesystem root (`/`) or `$HOME` (`4403`)
+  - **Filesystem root (`/` or Windows drive root) is rejected (`4403`)**. The former `$HOME` ban has been removed — users can now re-root to `~` or arbitrary ancestors through the file explorer's Up button, breadcrumb, or "Open as project root" context menu (`FR-209`). Dotfile access continues to be blocked by `resolveSafe`'s deny list.
+- **Bootstrap root resolution**: (1) `PROJECT_ROOT` env var, (2) `~/.claudegui/state.json` `lastRoot`, (3) **no fallback** — if none of these resolves, `getActiveRoot()` returns `null`. The previous silent `process.cwd()` fallback has been removed to prevent the server's launch directory from quietly becoming the project root (which caused Claude to generate files in arbitrary locations).
+- **Behavior when no active root is set**:
+  - After `useProjectStore.refresh()` completes at boot, if `activeRoot === null` the client **force-opens the project picker modal** (implemented in `AppShell` via `useEffect`).
+  - The Claude WS handler, on `runQuery`, checks `getActiveRoot()` — if `null` it immediately emits `{ code: 4412, message: "No project is open. Open a folder in the file explorer before running Claude queries." }` and does not start the query.
+  - `resolveSafe`/`getProjectRoot()` throw `SandboxError('No project is open', 4412)` while the root is `null`. File API routes map this to HTTP `412 Precondition Failed`.
+  - The `chokidar` watcher remains idle while the root is `null`; the `onActiveRootChange` listener starts the real watcher once a root is set.
+  - Newly spawned terminal sessions fall back to the user's home directory (`os.homedir()`) when the root is `null`, preserving the existing "running sessions are never killed" policy.
 - On switch:
   - The chokidar watcher is closed on the old root and restarted on the new one.
   - All `/ws/files` clients receive `{ type: 'project-changed', root, timestamp }`.
   - Newly spawned PTY sessions use the new root as `cwd` (existing sessions are left alone).
   - Claude queries also use the new root as `cwd`.
 - Clients that receive `project-changed` reset their editor tabs and preview selection and reload the file tree.
-- State is persisted to `~/.claudegui/state.json` as `{ lastRoot, recents }`.
-- Implementation: `src/lib/project/project-context.mjs`, `src/app/api/project/route.ts`, `src/stores/use-project-store.ts`, `src/components/modals/project-picker-modal.tsx`.
+- State is persisted to `~/.claudegui/state.json` as `{ lastRoot, recents }`. While the active root is `null`, nothing is written to `state.json`.
+- Implementation: `src/lib/project/project-context.mjs`, `src/app/api/project/route.ts`, `src/stores/use-project-store.ts`, `src/components/modals/project-picker-modal.tsx`, `src/components/layout/app-shell.tsx`, `server-handlers/claude-handler.mjs`, `src/lib/fs/resolve-safe.ts`, `server-handlers/files-handler.mjs`.
 
 ---
 
@@ -701,9 +790,11 @@ The following shortcuts are active **only when the terminal panel has focus** (e
   - Fenced code blocks in any language: HTML, SVG, Markdown, TypeScript/JavaScript, Python, Go, Rust, Shell, CSS, JSON, YAML, and so on.
   - Stand-alone `<!doctype html> … </html>` documents that appear outside of any fence.
   - Stand-alone `<svg …> … </svg>` elements that appear outside of any fence.
-- Each artifact shall have a stable id of the form `{messageId}:{index}`.
+- Text-derived artifacts have a stable id of the form `{messageId}:{index}`.
+- Artifacts derived from Write/Edit tool_use blocks use a path-based id of the form `file:{absolutePath}` so repeat Writes/Edits to the same file collapse into a single entry (see FR-1008).
 - On session restore the same ids are reused so duplicates do not accumulate.
-- Blocks shorter than 24 characters are treated as noise and dropped.
+- Text blocks shorter than 24 characters are treated as noise and dropped.
+- The set of artifact kinds is extended to: `html`, `svg`, `markdown`, `code`, `text`, `image`, `pdf`, `docx`, `xlsx`, `pptx`. Binary kinds (`image`/`pdf`/`docx`/`xlsx`/`pptx`) are stored with `source = "file"` and an absolute `filePath` instead of inline content.
 
 ### FR-1002: Auto-popup behaviour
 
@@ -714,32 +805,42 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 ### FR-1003: Persistent storage (localStorage)
 
 - Extracted artifacts shall be persisted in the browser's `localStorage` and the gallery shall be restored intact across page reloads.
-- Storage key: `claudegui-artifacts` (zustand `persist` middleware).
+- Storage key: `claudegui-artifacts` (zustand `persist` middleware, `version: 2`).
 - The store is capped at 200 artifacts; when the cap is exceeded, the oldest entries are evicted first.
 - The `autoOpen` preference is persisted under the same key.
+- Binary artifacts (`source: "file"`) are not base64-encoded into localStorage; only their absolute `filePath` and metadata are stored, keeping the persisted payload small.
+- After rehydration the `onRehydrateStorage` hook collects every artifact with a `filePath` and re-registers them via `POST /api/artifacts/register` so FR-1009's cross-project access path is restored.
+- v1 → v2 migration: legacy v1 records are patched to `source: "inline"`, `updatedAt: createdAt` so old galleries keep rendering.
 
 ### FR-1004: Copy and export
 
 - Every artifact in the gallery supports two actions:
-  - **Copy** — write the raw text to the clipboard via `navigator.clipboard.writeText`.
-  - **Export** — a dropdown menu offers the applicable formats for the artifact's `kind`:
-    - **Source** — download using the language-appropriate extension (`.ts`, `.py`, `.html`, `.svg`, `.md`, etc.).
+  - **Copy** — inline artifacts write their raw text to the clipboard; file-backed artifacts write the absolute `filePath` instead (`navigator.clipboard.writeText`).
+  - **Export** — a dropdown menu offers the applicable formats for the artifact's `kind` and `source`:
+    - **Source** — download using the language-appropriate extension (`.ts`, `.py`, `.html`, `.svg`, `.md`, etc.) for inline text artifacts.
     - **HTML (.html)** — download the markdown/code/SVG artifact as a stand-alone `<!doctype html>` document.
     - **PDF** — open a print-ready popup window and call `window.print()`, letting the OS "Save as PDF" dialog produce the file.
     - **Word (.doc)** — download MS Word-compatible HTML with the `application/msword` MIME type (opens in Word and Pages).
     - **SVG → PNG** — rasterise via `<canvas>` and download a PNG.
     - **Plain text (.txt)** — fallback for generic code and text artifacts.
-- The Export menu is built dynamically by `availableExports(artifact)` based on the artifact's kind.
+    - **Original (.docx/.xlsx/.pptx/.pdf/image)** — file-backed binary artifacts. `GET /api/artifacts/raw?path=…` is tried first and `GET /api/files/raw` is used as a fallback so the raw file on disk can be downloaded verbatim.
+- The Export menu is built dynamically by `availableExports(artifact)` based on the artifact's `kind` and `source`.
 
 ### FR-1005: Gallery UI
 
 - The gallery is a modal dialog laid out as a left-hand list and a right-hand detail preview.
-- Each list row shows a kind badge (HTML/SVG/Markdown/Code/Text), the artifact title, the language, and a relative timestamp.
+- Each list row shows a kind badge (HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), the artifact title (the file's basename for file-backed entries), its language or extension, and a relative timestamp.
 - The detail area exposes a **Preview / Source** toggle. Preview is the default, and per-kind rendering is as follows:
   - **HTML**: `<iframe sandbox="allow-scripts">` with `srcDoc` (no `allow-same-origin`, matching the main preview-panel policy).
   - **SVG**: rendered via `data:image/svg+xml;charset=utf-8,…` in an `<img>` so embedded scripts and event handlers cannot execute.
   - **Markdown**: reuses the existing `MarkdownPreview` component (`react-markdown` + `remark-gfm` + `rehype-sanitize`).
+  - **Image**: inline SVG uses a data URI; file-backed images are served from `GET /api/artifacts/raw?path=…` through an `<img>` tag.
+  - **PDF**: reuses `PdfPreview` via the `srcOverride` prop, pointing at `/api/artifacts/raw`.
+  - **DOCX**: `DocxPreview` converts bytes to HTML via `mammoth/mammoth.browser` and injects the result into a fully sandboxed iframe (`sandbox=""`, no scripts).
+  - **XLSX/XLSM**: `XlsxPreview` converts each sheet with SheetJS (`xlsx`) via `sheet_to_html` and exposes a sheet tab switcher.
+  - **PPTX**: `PptxPreview` unzips the OOXML with JSZip, pulls title + body lines from the `<a:t>` runs in every `ppt/slides/slideN.xml`, and surfaces referenced media images as `URL.createObjectURL` thumbnails (approximate rendering).
   - **Code/Text**: Preview is not offered; the view falls back to Source mode.
+  - **File-backed binary whose source project is inactive and whose registry registration failed**: a fallback card shows the title, absolute path, and an Export button.
 - Copy, Export, and Delete actions remain available, along with the top-bar `Auto-open on new content` checkbox and `Clear all` button.
 - Accessibility: the modal is built on Radix Dialog and closes on ESC.
 
@@ -749,12 +850,58 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 - A small badge on that button shows the current artifact count (capped at `99+`).
 - The global shortcut **`Cmd/Ctrl + Shift + A`** toggles the gallery (`src/hooks/use-global-shortcuts.ts`).
 
+### FR-1008: Capture from Write/Edit tool_use
+
+- The system shall observe Claude's `Write`/`Edit`/`MultiEdit` tool_use blocks and ingest them into the artifact gallery in addition to the fenced-text pipeline. This fixes the bug where the final slide — written straight to disk without an inline fenced block — was missing from "Generated Content".
+- Processing rules:
+  - **Write**: classify by the `file_path` extension (see the kind list in FR-1001).
+    - Text-ish kinds (html/svg/markdown/code/text): snapshot `input.content` into `content` and mark `source = "inline"`.
+    - Binary kinds (image/pdf/docx/xlsx/pptx): keep no content, only `source = "file"` and `filePath = input.file_path`.
+  - **Edit/MultiEdit**: look up the existing artifact by `filePath`, then let `artifactFromEdit` apply the `edits[]` patches against its inline content and bump `updatedAt`. If no existing entry is found, the helper returns `null` and nothing changes.
+  - All tool_use artifacts share the `file:{absolutePath}` id so `dedupe()` preserves the original `createdAt` while overwriting the latest `content`/`updatedAt`.
+- Store behaviour:
+  - `useArtifactStore.ingestToolUse(messageId, sessionId, tool, { silent? })` is the entry point. `use-claude-store`'s assistant-event handler runs a loop right after `extractor.feedToolUse(tool)` and calls it for every tool.
+  - Non-silent calls push the new id into `pendingTurn`, so the gallery auto-popup flow from FR-1002 fires on the turn's `result` event.
+  - On success the `filePath` is forwarded to `POST /api/artifacts/register` so FR-1009's cross-project access path works.
+- Implementation: `src/lib/claude/artifact-from-tool.ts`, the `classifyByPath`/`isBinaryKind`/`titleFromPath` helpers in `src/lib/claude/artifact-extractor.ts`, and `ingestToolUse`/`findByFilePath` in `src/stores/use-artifact-store.ts`.
+
+### FR-1009: Cross-project binary access and office viewers
+
+- The system shall let the user preview and export image/PDF/Word/Excel/PowerPoint artifacts captured earlier in the current Claude session even after switching to a different project.
+- Server-side artifact registry
+  - `src/lib/claude/artifact-registry.ts` holds an in-process Map capped at 1024 paths (oldest evicted when the cap is hit).
+  - `POST /api/artifacts/register` — accepts `{ paths: string[] }`, verifies each is an absolute path that exists and stays under the 50 MB `MAX_BINARY_SIZE` cap, then adds it to the registry. The route uses the same rate limiter (`rateLimit`/`clientKey`) as the main files API.
+  - `GET /api/artifacts/raw?path=<abs>` — streams the bytes of a previously registered path, bypassing the project-scoped `resolveSafe` sandbox but limited to files the registry has already admitted. Content-Type is resolved through a MIME table that covers `docx`/`xlsx`/`xlsm`/`pptx`, PDFs, and images.
+- Client-side behaviour
+  - `useArtifactStore.ingestToolUse` registers every new binary artifact's `filePath` via `registerArtifactPaths`.
+  - `onRehydrateStorage` re-registers every persisted file-backed artifact in a single call so server restarts are transparent.
+  - `src/lib/claude/artifact-url.ts` exposes `fetchArtifactBytes(filePath)`, which tries `/api/artifacts/raw` first and falls back to `/api/files/raw`. The DOCX/XLSX/PPTX converters all use it.
+  - The `downloadBinaryFile` helper in `artifact-export.ts` follows the same order for Export downloads.
+- Viewer dependencies
+  - `mammoth` — DOCX → HTML. Dynamically imported so its bundle only loads on the first DOCX preview.
+  - `xlsx` (SheetJS) — XLSX → HTML table. Dynamically imported.
+  - `jszip` — PPTX OOXML unpacking. Dynamically imported.
+- Security constraints
+  - The registry is in-memory only; it is dropped on server restart and repopulated through the hydration path.
+  - Even admitted paths will return `404`/`413` from `/api/artifacts/raw` if the file no longer exists or exceeds the 50 MB cap.
+  - `resolveSafe`'s denied-segment list (`.env`, `.git`, `.claude`, credentials) is not re-checked here because Claude does not Write to those paths in practice.
+- Implementation: `src/app/api/artifacts/register/route.ts`, `src/app/api/artifacts/raw/route.ts`, `src/lib/claude/artifact-registry.ts`, `src/lib/claude/artifact-url.ts`, `src/components/panels/preview/docx-preview.tsx`, `src/components/panels/preview/xlsx-preview.tsx`, `src/components/panels/preview/pptx-preview.tsx`, `src/components/panels/preview/pdf-preview.tsx` (`srcOverride` prop).
+
 ### FR-1007: Implementation
 
-- `src/lib/claude/artifact-extractor.ts` — regex-based artifact extractor.
-- `src/lib/claude/artifact-export.ts` — copy, download, print-to-PDF, Word, and PNG export helpers.
-- `src/stores/use-artifact-store.ts` — zustand store (with the `persist` middleware).
-- `src/components/modals/artifacts-modal.tsx` — the gallery dialog (Preview/Source toggle with safe renderers).
+- `src/lib/claude/artifact-extractor.ts` — regex-based extractor + `classifyByPath`/`isBinaryKind`/`titleFromPath`.
+- `src/lib/claude/artifact-from-tool.ts` — builds and patches artifact records from Write/Edit/MultiEdit tool_use.
+- `src/lib/claude/artifact-export.ts` — inline copy/download, print-to-PDF, Word, PNG, and file-backed "Original" export helpers.
+- `src/lib/claude/artifact-registry.ts` — server-side in-process artifact path registry.
+- `src/lib/claude/artifact-url.ts` — `/api/artifacts/raw` → `/api/files/raw` fallback fetch helper.
+- `src/app/api/artifacts/register/route.ts`, `src/app/api/artifacts/raw/route.ts` — REST endpoints for the artifact registry.
+- `src/stores/use-artifact-store.ts` — zustand store (`persist` v2, `ingestToolUse`, `findByFilePath`, hydration re-registration).
+- `src/components/modals/artifacts-modal.tsx` — the gallery dialog (Preview/Source toggle, file-backed fallback card, 10-kind badges).
+- `src/components/panels/preview/docx-preview.tsx` / `xlsx-preview.tsx` / `pptx-preview.tsx` — office previewers.
+- `src/components/panels/preview/pdf-preview.tsx` — adds the `srcOverride` prop so artifact URLs can be used.
+- `src/stores/use-preview-store.ts` — `PreviewType`/`detectPreviewType` extended for docx/xlsx/pptx.
+- `src/components/panels/preview/preview-router.tsx` — routes the extended types to the new viewers.
 - `src/components/panels/claude/claude-chat-panel.tsx` — trigger button and badge.
 - `src/hooks/use-global-shortcuts.ts` — `Cmd/Ctrl + Shift + A` toggle shortcut.
+- `src/stores/use-claude-store.ts` — calls `ingestToolUse` on every assistant-event tool_use, invokes the extractor on session load, and flushes the gallery auto-popup on `result`.
 - `src/stores/use-claude-store.ts` — calls the extractor when assistant messages arrive and when sessions are loaded; flushes the auto-popup on the `result` event.

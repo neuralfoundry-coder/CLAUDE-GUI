@@ -2,7 +2,16 @@
 
 import { create } from 'zustand';
 
-export type PreviewType = 'html' | 'pdf' | 'markdown' | 'image' | 'slides' | 'none';
+export type PreviewType =
+  | 'html'
+  | 'pdf'
+  | 'markdown'
+  | 'image'
+  | 'slides'
+  | 'docx'
+  | 'xlsx'
+  | 'pptx'
+  | 'none';
 
 interface PreviewState {
   currentFile: string | null;
@@ -34,6 +43,9 @@ export function detectPreviewType(path: string | null): PreviewType {
   if (ext === 'html' || ext === 'htm') return path.includes('slides') || path.endsWith('.reveal.html') ? 'slides' : 'html';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'md' || ext === 'markdown') return 'markdown';
-  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) return 'image';
+  if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif'].includes(ext)) return 'image';
+  if (ext === 'docx') return 'docx';
+  if (ext === 'xlsx' || ext === 'xlsm') return 'xlsx';
+  if (ext === 'pptx') return 'pptx';
   return 'none';
 }

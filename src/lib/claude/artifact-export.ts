@@ -2,7 +2,7 @@
 
 import { extensionFor, type ExtractedArtifact } from '@/lib/claude/artifact-extractor';
 
-export type ExportFormat = 'source' | 'md' | 'html' | 'pdf' | 'doc' | 'svg' | 'png' | 'txt';
+export type ExportFormat = 'source' | 'md' | 'html' | 'pdf' | 'doc' | 'svg' | 'png' | 'txt' | 'file';
 
 export interface ExportOption {
   format: ExportFormat;
@@ -10,6 +10,15 @@ export interface ExportOption {
 }
 
 export function availableExports(artifact: ExtractedArtifact): ExportOption[] {
+  // File-backed binary artifacts (docx/xlsx/pptx/pdf/image from /api/files/raw)
+  // expose a single "Original file" download — everything else would require
+  // a round-trip decode + re-encode we don't support.
+  if (artifact.source === 'file' && artifact.filePath) {
+    return [
+      { format: 'file', label: `Original (.${extensionFor(artifact.language, artifact.kind)})` },
+    ];
+  }
+
   const options: ExportOption[] = [
     { format: 'source', label: `Source (.${extensionFor(artifact.language, artifact.kind)})` },
   ];
@@ -39,11 +48,37 @@ export function availableExports(artifact: ExtractedArtifact): ExportOption[] {
 }
 
 export async function copyArtifact(artifact: ExtractedArtifact): Promise<void> {
+  if (artifact.source === 'file') {
+    await navigator.clipboard.writeText(artifact.filePath ?? artifact.title);
+    return;
+  }
   await navigator.clipboard.writeText(artifact.content);
+}
+
+async function downloadBinaryFile(artifact: ExtractedArtifact): Promise<void> {
+  if (!artifact.filePath) return;
+  const tryFetch = async (url: string): Promise<Blob | null> => {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.blob();
+  };
+  // Registry first so captured binaries still download after a project switch.
+  const blob =
+    (await tryFetch(`/api/artifacts/raw?path=${encodeURIComponent(artifact.filePath)}`)) ??
+    (await tryFetch(`/api/files/raw?path=${encodeURIComponent(artifact.filePath)}`));
+  if (!blob) throw new Error('Download failed');
+  const ext = extensionFor(artifact.language, artifact.kind);
+  triggerDownload(blob, `${safeName(artifact.title)}.${ext}`);
 }
 
 export function exportArtifact(artifact: ExtractedArtifact, format: ExportFormat): void {
   switch (format) {
+    case 'file': {
+      void downloadBinaryFile(artifact).catch((err) => {
+        console.error('[artifacts] download failed', err);
+      });
+      return;
+    }
     case 'source': {
       const ext = extensionFor(artifact.language, artifact.kind);
       downloadBlob(artifact.content, `${safeName(artifact.title)}.${ext}`, mimeForExt(ext));
