@@ -1,6 +1,20 @@
 import type { ITheme } from '@xterm/xterm';
 import type { Theme as AppTheme } from '@/stores/use-layout-store';
 
+/** Concrete themes that have a direct color mapping (excludes 'system'). */
+export type ConcreteTheme = Exclude<AppTheme, 'system'>;
+
+/**
+ * Resolve 'system' to the concrete OS preference; pass-through for others.
+ */
+export function resolveTheme(theme: AppTheme): ConcreteTheme {
+  if (theme !== 'system') return theme;
+  if (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    return 'dark';
+  }
+  return 'light';
+}
+
 /**
  * xterm ITheme mapping for each ClaudeGUI app theme.
  *
@@ -13,7 +27,7 @@ import type { Theme as AppTheme } from '@/stores/use-layout-store';
  * / `--terminal-fg` CSS variables in `src/app/globals.css`, so the xterm
  * host `<div>` does not flash a wrong color before WebGL paints.
  */
-export const TERMINAL_THEMES: Record<AppTheme, ITheme> = {
+export const TERMINAL_THEMES: Record<ConcreteTheme, ITheme> = {
   dark: {
     background: '#0a0a0a',
     foreground: '#e4e4e7',

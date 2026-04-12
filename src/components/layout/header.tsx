@@ -1,6 +1,9 @@
 'use client';
 
-import { Moon, Sun, Contrast, Terminal, Sidebar, Eye, FolderOpen, MonitorSmartphone } from 'lucide-react';
+import {
+  Moon, Sun, Contrast, Terminal, Sidebar, Eye, FolderOpen, MonitorSmartphone,
+  Monitor, Code2, MessageSquare,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLayoutStore, type Theme } from '@/stores/use-layout-store';
 import { useProjectStore } from '@/stores/use-project-store';
@@ -11,9 +14,10 @@ const THEME_ICONS: Record<Theme, React.ComponentType<{ className?: string }>> = 
   light: Sun,
   'high-contrast': Contrast,
   'retro-green': MonitorSmartphone,
+  system: Monitor,
 };
 
-const THEME_CYCLE: Theme[] = ['dark', 'light', 'high-contrast', 'retro-green'];
+const THEME_CYCLE: Theme[] = ['dark', 'light', 'high-contrast', 'retro-green', 'system'];
 
 interface HeaderProps {
   onOpenProjectPicker?: () => void;
@@ -43,7 +47,7 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
     <header className="flex h-10 items-center justify-between border-b bg-background px-3">
       <div className="flex items-center gap-2">
         <span className="text-sm font-semibold">ClaudeGUI</span>
-        <span className="text-xs text-muted-foreground">v0.3.0</span>
+        <span className="text-xs text-muted-foreground">v0.5.0</span>
         <button
           type="button"
           onClick={onOpenProjectPicker}
@@ -62,25 +66,43 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
           size="icon"
           onClick={() => togglePanel('fileExplorer')}
           aria-label="Toggle sidebar"
-          title="Toggle sidebar (⌘B)"
+          title="Toggle sidebar (⌃⌘B)"
         >
           <Sidebar className="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"
           size="icon"
+          onClick={() => togglePanel('editor')}
+          aria-label="Toggle editor"
+          title="Toggle editor (⌃⌘E)"
+        >
+          <Code2 className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={() => togglePanel('terminal')}
           aria-label="Toggle terminal"
-          title="Toggle terminal (⌘J)"
+          title="Toggle terminal (⌃⌘J)"
         >
           <Terminal className="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"
           size="icon"
+          onClick={() => togglePanel('claude')}
+          aria-label="Toggle Claude chat"
+          title="Toggle Claude chat (⌃⌘K)"
+        >
+          <MessageSquare className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={() => togglePanel('preview')}
           aria-label="Toggle preview"
-          title="Toggle preview"
+          title="Toggle preview (⌃⌘P)"
         >
           <Eye className="h-4 w-4" />
         </Button>

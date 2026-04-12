@@ -56,6 +56,7 @@ export class TerminalSocket {
     } catch {
       /* ignore */
     }
+    this.ws = null;
   }
 
   get readyState(): number {

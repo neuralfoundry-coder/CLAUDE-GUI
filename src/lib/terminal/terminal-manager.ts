@@ -19,7 +19,7 @@ import type { Terminal, ITerminalAddon, IBufferRange } from '@xterm/xterm';
 import type { FitAddon as FitAddonT } from '@xterm/addon-fit';
 import type { SearchAddon as SearchAddonT, ISearchOptions } from '@xterm/addon-search';
 import { TerminalSocket, createTerminalSocket } from './terminal-socket';
-import { TERMINAL_THEMES } from './terminal-themes';
+import { TERMINAL_THEMES, resolveTheme } from './terminal-themes';
 import { useLayoutStore, type Theme as AppTheme } from '@/stores/use-layout-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useConnectionStore } from '@/stores/use-connection-store';
@@ -237,7 +237,7 @@ class TerminalManager {
       scrollback: 10000,
       fontFamily: settings.terminalFontFamily || 'JetBrains Mono, Menlo, monospace',
       fontSize,
-      theme: TERMINAL_THEMES[layout.theme] ?? TERMINAL_THEMES.dark,
+      theme: TERMINAL_THEMES[resolveTheme(layout.theme)] ?? TERMINAL_THEMES.dark,
       allowProposedApi: true,
     });
     const fitAddon = new fitMod.FitAddon();
@@ -722,7 +722,7 @@ class TerminalManager {
   }
 
   setTheme(theme: AppTheme): void {
-    const t = TERMINAL_THEMES[theme];
+    const t = TERMINAL_THEMES[resolveTheme(theme)];
     if (!t) return;
     for (const inst of this.instances.values()) {
       inst.term.options.theme = t;

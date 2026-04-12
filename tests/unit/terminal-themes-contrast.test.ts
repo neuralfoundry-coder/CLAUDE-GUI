@@ -79,10 +79,10 @@ describe('TERMINAL_THEMES ↔ globals.css parity', () => {
   // Each block is either `:root` (light), `.dark`, `.high-contrast`, or
   // `.retro-green`. We match the selector, then the first `--terminal-bg`
   // and `--terminal-fg` that appear before the closing brace.
-  const blockPattern = /(:root|\.dark|\.high-contrast|\.retro-green)\s*\{([^}]*)\}/g;
+  const blockPattern = /(:root|\.light|\.dark|\.high-contrast|\.retro-green)\s*\{([^}]*)\}/g;
 
   const selectorToTheme: Record<string, keyof typeof TERMINAL_THEMES> = {
-    ':root': 'light',
+    '.light': 'light',
     '.dark': 'dark',
     '.high-contrast': 'high-contrast',
     '.retro-green': 'retro-green',
