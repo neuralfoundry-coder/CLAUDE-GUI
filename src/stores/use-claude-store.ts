@@ -473,6 +473,7 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
 
       case 'error': {
         finalizeExtractor();
+        useArtifactStore.getState().flushPendingOpen();
         set((s) => ({
           isStreaming: false,
           streamingChunks: [],

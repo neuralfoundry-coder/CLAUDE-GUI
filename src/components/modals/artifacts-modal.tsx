@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Copy, Download, Trash2, Check, Eye, Code2 } from 'lucide-react';
+import { Copy, Download, Trash2, Check, Eye, Code2, Search, X } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -138,6 +138,31 @@ export function ArtifactsModal() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('preview');
   const [now, setNow] = useState(() => Date.now());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [kindFilter, setKindFilter] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    let list = sorted;
+    if (kindFilter) {
+      list = list.filter((a) => a.kind === kindFilter);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(
+        (a) =>
+          a.title.toLowerCase().includes(q) ||
+          a.language.toLowerCase().includes(q) ||
+          (a.filePath && a.filePath.toLowerCase().includes(q)),
+      );
+    }
+    return list;
+  }, [sorted, searchQuery, kindFilter]);
+
+  const availableKinds = useMemo(() => {
+    const kinds = new Set(sorted.map((a) => a.kind));
+    return Array.from(kinds).sort();
+  }, [sorted]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -358,15 +383,77 @@ export function ArtifactsModal() {
           </div>
 
           <div className="flex min-h-0 flex-1">
-            <aside className="w-64 shrink-0 overflow-y-auto border-r">
+            <aside className="flex w-64 shrink-0 flex-col border-r">
+              {/* Search & filter bar */}
+              {sorted.length > 0 && (
+                <div className="border-b px-2 py-1.5">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                    <input
+                      ref={searchRef}
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search artifacts..."
+                      className="h-6 w-full rounded border bg-background pl-7 pr-6 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        aria-label="Clear search"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                  {availableKinds.length > 1 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setKindFilter(null)}
+                        className={cn(
+                          'rounded px-1.5 py-0.5 text-[9px] font-medium transition-colors',
+                          kindFilter === null
+                            ? 'bg-primary/20 text-primary'
+                            : 'text-muted-foreground hover:bg-muted',
+                        )}
+                      >
+                        All
+                      </button>
+                      {availableKinds.map((k) => (
+                        <button
+                          key={k}
+                          type="button"
+                          onClick={() => setKindFilter(kindFilter === k ? null : k)}
+                          className={cn(
+                            'rounded px-1.5 py-0.5 text-[9px] font-medium uppercase transition-colors',
+                            kindFilter === k
+                              ? kindBadgeClass(k as Artifact['kind'])
+                              : 'text-muted-foreground hover:bg-muted',
+                          )}
+                        >
+                          {kindLabel(k as Artifact['kind'])}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="flex-1 overflow-y-auto">
               {sorted.length === 0 ? (
                 <div className="p-4 text-center text-xs text-muted-foreground">
                   No generated content yet. Ask Claude to write code, HTML, SVG, Markdown, Word,
                   Excel, or PowerPoint documents — every Write/Edit gets captured here.
                 </div>
+              ) : filtered.length === 0 ? (
+                <div className="p-4 text-center text-xs text-muted-foreground">
+                  No artifacts match your search.
+                </div>
               ) : (
                 <ul>
-                  {sorted.map((a) => {
+                  {filtered.map((a) => {
                     const active = a.id === selectedId;
                     return (
                       <li key={a.id}>
@@ -409,12 +496,18 @@ export function ArtifactsModal() {
                             <span className="truncate">{a.language || 'text'}</span>
                             <span>{formatRelative(a.createdAt, now)}</span>
                           </div>
+                          {a.filePath && (
+                            <div className="w-full truncate font-mono text-[9px] text-muted-foreground/60" title={a.filePath}>
+                              {a.filePath.split('/').slice(-2).join('/')}
+                            </div>
+                          )}
                         </div>
                       </li>
                     );
                   })}
                 </ul>
               )}
+              </div>
             </aside>
 
             <section className="flex min-w-0 flex-1 flex-col">

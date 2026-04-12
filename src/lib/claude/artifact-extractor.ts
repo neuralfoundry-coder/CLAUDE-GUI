@@ -46,11 +46,11 @@ const MARKDOWN_LANGS = new Set(['md', 'markdown', 'mdx']);
 const HTML_LANGS = new Set(['html', 'htm', 'xhtml']);
 const SVG_LANGS = new Set(['svg']);
 
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif']);
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'avif', 'tiff', 'tif']);
 const PDF_EXTS = new Set(['pdf']);
-const DOCX_EXTS = new Set(['docx']);
-const XLSX_EXTS = new Set(['xlsx', 'xlsm']);
-const PPTX_EXTS = new Set(['pptx']);
+const DOCX_EXTS = new Set(['docx', 'doc']);
+const XLSX_EXTS = new Set(['xlsx', 'xlsm', 'xls']);
+const PPTX_EXTS = new Set(['pptx', 'ppt']);
 
 const MIN_BLOCK_LENGTH = 24;
 
@@ -175,6 +175,31 @@ export function extensionFor(language: string, kind: ArtifactKind): string {
     'c#': 'cs',
     cs: 'cs',
     csharp: 'cs',
+    csv: 'csv',
+    xml: 'xml',
+    ini: 'ini',
+    env: 'env',
+    dockerfile: 'Dockerfile',
+    makefile: 'Makefile',
+    graphql: 'graphql',
+    gql: 'graphql',
+    proto: 'proto',
+    r: 'r',
+    lua: 'lua',
+    dart: 'dart',
+    scala: 'scala',
+    groovy: 'groovy',
+    haskell: 'hs',
+    hs: 'hs',
+    elixir: 'ex',
+    ex: 'ex',
+    clojure: 'clj',
+    clj: 'clj',
+    zig: 'zig',
+    nim: 'nim',
+    vue: 'vue',
+    svelte: 'svelte',
+    astro: 'astro',
   };
   if (table[lang]) return table[lang];
   if (kind === 'html') return 'html';

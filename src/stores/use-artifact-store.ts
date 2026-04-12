@@ -12,7 +12,10 @@ import {
   type ToolUseLike,
 } from '@/lib/claude/artifact-from-tool';
 
+/** Maximum artifacts kept in-memory during a session. */
 const MAX_ARTIFACTS = 200;
+/** Maximum artifacts persisted to localStorage (keeps the most recent). */
+const MAX_PERSISTED = 30;
 
 export type Artifact = ExtractedArtifact;
 
@@ -159,7 +162,14 @@ export const useArtifactStore = create<ArtifactState>()(
         });
       },
 
-      open: (highlightedId = null) => set({ isOpen: true, highlightedId }),
+      open: (highlightedId = null) =>
+        set((s) => ({
+          isOpen: true,
+          // When opening without a specific target, default to the most
+          // recent artifact so the preview pane is never blank.
+          highlightedId:
+            highlightedId ?? s.artifacts[s.artifacts.length - 1]?.id ?? null,
+        })),
       close: () => set({ isOpen: false }),
       toggle: () => set((s) => ({ isOpen: !s.isOpen })),
       setAutoOpen: (enabled) => set({ autoOpen: enabled }),
@@ -180,9 +190,11 @@ export const useArtifactStore = create<ArtifactState>()(
     }),
     {
       name: 'claudegui-artifacts',
-      version: 3,
+      version: 4,
       partialize: (state) => ({
-        artifacts: state.artifacts,
+        // Only persist the most recent 30 artifacts to avoid blowing
+        // the localStorage quota with large inline content.
+        artifacts: state.artifacts.slice(-MAX_PERSISTED),
         autoOpen: state.autoOpen,
         modalSize: state.modalSize,
       }),
@@ -214,6 +226,14 @@ export const useArtifactStore = create<ArtifactState>()(
         }
         if (fromVersion < 3) {
           working = { ...working, modalSize: working.modalSize ?? null };
+        }
+        if (fromVersion < 4) {
+          // v4: trim persisted artifacts to MAX_PERSISTED (30) — older
+          // versions stored up to 200 which could blow the localStorage quota.
+          const arts = working.artifacts ?? [];
+          if (arts.length > MAX_PERSISTED) {
+            working = { ...working, artifacts: arts.slice(arts.length - MAX_PERSISTED) };
+          }
         }
         return working as ArtifactState;
       },
