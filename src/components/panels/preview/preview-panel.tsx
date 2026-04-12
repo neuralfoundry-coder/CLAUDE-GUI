@@ -33,7 +33,14 @@ export function PreviewPanel() {
   const selectedSlideIndex = usePreviewStore((s) => s.selectedSlideIndex);
   const { supported: ttsSupported, speaking, speak, stop } = useSpeechSynthesis();
 
-  const path = currentFile ?? activeTab?.path ?? null;
+  // Keep in sync with PreviewRouter: prefer the active editor tab when it
+  // is previewable so toolbar buttons (source toggle, TTS, etc.) match the
+  // content being rendered.
+  const activeTabPreviewable =
+    activeTab && detectPreviewType(activeTab.path) !== 'none';
+  const path = activeTabPreviewable
+    ? activeTab.path
+    : currentFile ?? activeTab?.path ?? null;
   const type = detectPreviewType(path);
   const showLive = autoSwitch && liveMode !== 'idle';
   const showSourceToggle = !showLive && isSourceToggleable(type);

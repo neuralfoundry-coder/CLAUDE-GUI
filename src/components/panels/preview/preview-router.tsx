@@ -26,7 +26,14 @@ export function PreviewRouter() {
   const [contentKey, setContentKey] = useState(0);
   const prevFileRef = useRef<string | null>(null);
 
-  const filePath = currentFile ?? activeTab?.path ?? null;
+  // Prefer the active editor tab when it is a previewable file so that
+  // switching tabs in the editor always updates the preview.  Fall back to
+  // the explicitly-set currentFile (from the file explorer) otherwise.
+  const activeTabPreviewable =
+    activeTab && detectPreviewType(activeTab.path) !== 'none';
+  const filePath = activeTabPreviewable
+    ? activeTab.path
+    : currentFile ?? activeTab?.path ?? null;
   const type = detectPreviewType(filePath);
 
   // Bump contentKey when the user navigates back to a previously-viewed file
