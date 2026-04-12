@@ -20,8 +20,16 @@
 
 ### FR-103: Panel collapse/expand
 
-- Each panel shall be collapsible and expandable.
+- **All five panels** shall be collapsible and expandable.
+  - File Explorer, Editor, Terminal, Claude Chat, Preview
 - When collapsed, panels may display icons only (`collapsedSize: 4px`) or be fully hidden (`collapsedSize: 0`).
+- The editor panel header shall expose a `Code2` icon toggle button, and the Claude chat panel header shall expose a `MessageSquare` icon toggle button to control collapse/expand of each panel.
+- Corresponding keyboard shortcuts:
+  - `Ctrl+Cmd+B` / `Ctrl+Alt+B` — toggle file explorer
+  - `Ctrl+Cmd+E` / `Ctrl+Alt+E` — toggle editor
+  - `Ctrl+Cmd+J` / `Ctrl+Alt+J` — toggle terminal
+  - `Ctrl+Cmd+K` / `Ctrl+Alt+K` — toggle Claude chat
+  - `Ctrl+Cmd+P` / `Ctrl+Alt+P` — toggle preview
 
 ### FR-104: Layout state persistence
 
@@ -33,6 +41,19 @@
 
 - The center area shall be split vertically into editor (top) and terminal (bottom).
 - Nested `PanelGroup` structures shall be supported.
+
+### FR-106: Double-click resize handle reset
+
+- Double-clicking a `PanelResizeHandle` shall reset the adjacent panels to their default sizes.
+- This allows users to quickly restore the layout without manual dragging.
+
+### FR-107: Responsive mobile layout
+
+- When the viewport width is **below 1280px**, the app shall switch to a single-panel tab mode.
+- A bottom tab bar shall be provided with the following five tabs for panel switching:
+  - Files, Editor, Terminal, Claude, Preview
+- When a tab is selected, only the corresponding panel shall be displayed full-screen; all others shall be hidden.
+- When the viewport returns to 1280px or above, the previous four-panel (or last saved) layout shall be automatically restored.
 
 ---
 
@@ -183,6 +204,11 @@
 - Multiple files shall be openable simultaneously as tabs.
 - Each tab shall maintain an independent Monaco model.
 - Closing tabs and reordering tabs via drag shall be supported.
+- A right-click context menu on tabs shall be supported:
+  - **Close** — close the tab
+  - **Close Others** — close all tabs except the selected one
+  - **Close to the Right** — close all tabs to the right of the selected tab
+  - **Close All** — close all tabs
 
 ### FR-303: Syntax highlighting
 
@@ -220,6 +246,45 @@
 - Change events are received via the WebSocket `/ws/files` channel.
 - Content is updated while preserving the user's cursor position.
 - If the editor has unsaved changes, a conflict notification shall be displayed.
+
+### FR-309: AI inline code completion
+
+- Inline code completion (ghost text) powered by Claude shall be supported.
+- After the user stops typing, a completion suggestion shall appear after a configurable delay (default 500ms).
+- The Tab key accepts the suggestion; the Esc key dismisses it.
+- The `completion_request`/`completion_response` messages on the WebSocket `/ws/claude` channel are used.
+- Code context around the cursor (100 lines before, 30 lines after) shall be sent for accurate completions.
+- Completion can be enabled/disabled in settings.
+
+### FR-310: Editor panel header and settings
+
+- An "Editor" header bar shall be displayed at the top of the editor panel (consistent with other panels).
+- The right side of the header shall display:
+  - Language label for the current file
+  - Cursor position (Ln, Col)
+  - AI completion loading indicator
+  - Settings dropdown (gear icon)
+- The settings dropdown shall provide the following options:
+  - Tab size (2/4/8)
+  - Spaces/tabs toggle
+  - Word wrap on/off
+  - Minimap on/off
+  - Sticky scroll on/off
+  - Bracket colors on/off
+  - Whitespace rendering (none/boundary/all)
+  - AI completion on/off
+
+### FR-311: Advanced editing features
+
+- The following Monaco Editor advanced features shall be enabled by default:
+  - Auto-closing brackets/quotes
+  - Bracket pair colorization and guide lines
+  - Code folding (indentation-based)
+  - Find/Replace (Cmd+F / Cmd+H)
+  - Multi-cursor editing (Alt+click)
+  - Smooth scrolling and cursor animation
+  - Sticky scroll (current scope display)
+  - Linked editing
 
 ---
 
@@ -441,6 +506,20 @@
   - `assistant`: iterate `message.content[]` blocks — `text` blocks are shown as assistant messages, `tool_use` blocks as tool messages
   - `user`: tool-execution feedback — not surfaced in the UI
   - `result`: final result (`total_cost_usd`, `usage.input_tokens`/`output_tokens`, `session_id`, `subtype`)
+- **Message type system (v0.6)**: Each `ChatMessage` is refined with a `kind: MessageKind` field.
+  - `MessageKind = 'text' | 'tool_use' | 'tool_result' | 'system' | 'error' | 'auto_decision'`
+  - `tool_use` messages store the full `toolInput` and are displayed as collapsible cards (no 300-char truncation).
+  - `isStreaming?: boolean` identifies messages currently receiving chunks.
+- **Progressive text streaming (v0.6)**: Consecutive `assistant` events within the same turn append to the existing message's `content` instead of creating a new one. On `result`, `isStreaming` is set to `false`.
+- **Message filter (v0.6)**: `messageFilter: Set<MessageKind>` allows toggling visible types. A filter bar below the header displays chips per kind with count badges. User messages are excluded from filtering (always visible).
+- **Message renderers (v0.6)**: Dedicated renderers per `kind`:
+  - `text`: react-markdown + streaming cursor animation
+  - `tool_use`: collapsible card (tool name header + expandable JSON body)
+  - `auto_decision`: inline pill/badge (allow=green, deny=red)
+  - `error`: red background + error icon
+  - `system`: centered divider
+- **Typing indicator (v0.6)**: When `isStreaming` is true and no assistant message is actively streaming, a "Claude is thinking..." pulse indicator is shown.
+- Implementation: `src/stores/use-claude-store.ts` (`MessageKind`, `ChatMessage` extension, `messageFilter`, `toggleFilter`, progressive append), `src/components/panels/claude/chat-message-item.tsx`, `src/components/panels/claude/chat-filter-bar.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
 ### FR-503: Session management
 
@@ -551,6 +630,40 @@
 - When the prompt is sent, `@` references are passed verbatim to the Claude Agent SDK via `sendQuery(prompt)`. Reference resolution / file-content expansion is delegated to the SDK / CLI's standard grammar; the GUI performs no client-side preprocessing.
 - Implementation: `src/lib/fs/list-project-files.ts`, `src/components/panels/claude/use-file-mentions.ts`, `src/components/panels/claude/mention-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
+### FR-512: Model Selection
+
+- Users shall be able to select the Claude model via a dropdown in the Claude chat panel header.
+- Options: `Auto` (default, SDK default model) and supported models (`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`).
+- Each model item displays the model name, context window size, and input price tier.
+- The selected model is stored in `useSettingsStore.selectedModel` and persisted via `localStorage`.
+- When sending a query, the selected model ID is included in `ClaudeQueryMessage.options.model` and forwarded to the server.
+- Implementation: `src/lib/claude/model-specs.ts`, `src/components/panels/claude/model-selector.tsx`, `src/stores/use-settings-store.ts`, `src/lib/websocket/claude-client.ts`.
+
+### FR-513: Model Spec Display
+
+- The session info bar expanded state shall display detailed specs of the active model.
+- Displayed items: max output tokens, input/output price (per 1M tokens), capability badges (`vision`, `code`, `extended-thinking`).
+- Model specs are looked up from static data in `src/lib/claude/model-specs.ts`. Matching uses the SDK response's `system.init.model` or the user-selected model ID; on exact-match failure, prefix matching is attempted.
+- Implementation: `src/components/panels/claude/session-info-bar.tsx`, `src/lib/claude/model-specs.ts`.
+
+### FR-514: Context Usage Visual Progress Bar
+
+- In addition to the FR-504 context usage text, a visual progress bar shall be provided.
+- Collapsed state: an inline mini progress bar (40px wide, 3px tall) next to the context percentage.
+- Expanded state: a full-width progress bar (6px tall, rounded) with numeric labels.
+- Color thresholds are the same as FR-504: <50% green (`bg-emerald-500`), 50-80% yellow (`bg-amber-500`), ≥80% red (`bg-red-500`).
+- Implementation: `src/components/panels/claude/session-info-bar.tsx`.
+
+### FR-515: Activity Stream Filters
+
+- A `MessageKind`-based filter toggle bar shall be provided above the message area in the Claude chat panel.
+- Filter categories: Text (`text`), Tools (`tool_use`, `tool_result`), Auto (`auto_decision`), Errors (`error`).
+- Each filter button includes an icon, label, and a badge showing the current count of messages of that kind.
+- Toggle action immediately hides or shows messages of the corresponding category.
+- User messages (`role: 'user'`) are always displayed regardless of filters.
+- Filter state is managed in `useClaudeStore.messageFilter` and all filters are reset to active on session reset.
+- Implementation: `src/components/panels/claude/chat-filter-bar.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
 ### FR-520: Native application run mode (v0.3)
 
 - ClaudeGUI shall be runnable as a native application (`.dmg` / `.msi`) via Tauri v2.
@@ -608,18 +721,24 @@
 - Page navigation shall be provided for multi-page content (PDF, presentations).
 - UI elements: previous/next buttons, current/total page display, page jump.
 
-### FR-610: HTML streaming live preview (v0.3)
+### FR-610: Universal streaming live preview (v0.3 → v0.6 extension)
 
-- The preview panel shall update in real time **independently of the file-selection state** when it detects an HTML code fence (` ```html `) or a `Write`/`Edit` `tool_use` targeting a `.html` file in a Claude assistant response.
-- For partial content, if a renderable marker is present (`<!doctype`, `<html`, `<body`, or a balanced top-level tag), the preview renders via iframe `srcdoc`; otherwise it falls back to a source-code view.
-- The iframe must be sandboxed with `sandbox="allow-scripts"` and must never use `allow-same-origin`.
-- Buffer updates are debounced at 150 ms.
-- On query completion (`result`), the extractor finalizes and freezes the final HTML.
-- **Editor handoff rule**: when an HTML file path is detected from a `Write`/`Edit` `tool_use`, it is stored in `useLivePreviewStore.generatedFilePath`. When the user opens that file in an editor tab, the live preview must switch its source from the frozen buffer to the editor tab's `content` — even after stream finalization — and re-render the `iframe srcdoc` on every keystroke (debounced by 150 ms). The status label switches to `Live · Editor` in this state. Code-fence-only generations (no file path) continue to render from the buffer as before.
-- **Partial-edit preservation rule**: when an `Edit`/`MultiEdit` `tool_use` targets a `.html` file, the `new_string` snippet must not be treated as the full document. Instead, the `HtmlStreamExtractor` shall apply the `old_string → new_string` replacement (honoring the `replace_all` flag, and iterating the `edits[]` array in order for `MultiEdit`) against the last known full HTML — obtained from a prior `Write`, a completed code fence, or an explicit `seedBaseline()` call — and publish the patched document. This ensures that editing one page of a five-page HTML preserves the rendering of the other pages.
-- **Live-preview buffer persistence**: starting a new Claude query must not wipe `useLivePreviewStore.buffer` or `generatedFilePath`. Follow-up `Edit`/`MultiEdit` operations rely on the previous render as their baseline; the next incoming chunk replaces the buffer via `appendChunk` as soon as it arrives.
-- **Baseline disk fallback**: when an `Edit`/`MultiEdit` arrives and no in-memory baseline exists (e.g. the very first interaction in a fresh session is an edit), the `HtmlStreamExtractor` emits `onNeedBaseline(filePath, apply)`. `useClaudeStore` asynchronously reads the file via `/api/files/read` and calls `apply(content)`, at which point the extractor applies the queued edits on top. If the read fails, the preview is left unchanged.
-- Implementation: `src/lib/claude/html-stream-extractor.ts` (`onWritePath`, `onNeedBaseline`, `seedBaseline`), `src/stores/use-live-preview-store.ts` (buffer-preserving `startStream`), `src/stores/use-claude-store.ts` (`onNeedBaseline` → `/api/files/read` fallback, extractor seeding), `src/components/panels/preview/live-html-preview.tsx` (editor-store subscription).
+- The preview panel shall update in real time **independently of the file-selection state** when it detects **any language code fence** (` ```html `, ` ```python `, ` ```typescript `, etc.) or a `Write`/`Edit`/`MultiEdit` `tool_use` targeting **any file type** in a Claude assistant response.
+- **Multi-page model (v0.6)**: Each code fence or `tool_use` within a single stream is managed as an independent "page (`LivePage`)". Each page has `id`, `kind` (html/svg/markdown/code/text), `language`, `title`, `content`, `renderable`, `complete`, and `viewMode` (source/rendered) properties.
+- **Per-kind rendering**:
+  - `html`: renders via iframe `srcdoc` when renderable markers are detected (`<!doctype`, `<html`, `<body`, or balanced top-level tag); falls back to source view otherwise. iframe uses `sandbox="allow-scripts"` (never `allow-same-origin`). Debounce 150ms.
+  - `svg`: renders via iframe when `</svg>` closing tag is detected; source view otherwise.
+  - `markdown`: always progressively renderable (react-markdown). Debounce 200ms.
+  - `code`: highlight.js syntax-highlighted source view (JavaScript, TypeScript, Python, CSS, JSON, Bash, YAML, SQL, and more).
+  - `text`: plain `<pre>` block source view.
+- **Per-page code/preview dual mode**: Every page can toggle between source view and rendered view via `viewMode`. When `renderable` transitions from false to true, the view automatically switches to rendered mode.
+- **Page navigation**: When multiple pages exist, a tab bar is displayed at the top showing kind label (HTML/SVG/MD/Code/Text) + title + streaming indicator per tab. Left/right arrows for navigation.
+- **Partial-edit preservation rule**: `Edit`/`MultiEdit` `tool_use` applies `old_string → new_string` replacement against per-file baselines maintained by `UniversalStreamExtractor`. This applies to all text file types, not just HTML.
+- **Live-preview page persistence**: Starting a new Claude query does not wipe `useLivePreviewStore.pages`. Follow-up `Edit`/`MultiEdit` operations can continue from previous pages.
+- **Baseline disk fallback**: When no in-memory baseline exists, `UniversalStreamExtractor` emits `onNeedBaseline(filePath, apply)`. `useClaudeStore` asynchronously reads the file via `/api/files/read` and calls `apply(content)`.
+- **Editor handoff rule**: File paths detected from `Write`/`Edit` `tool_use` are stored in `LivePage.filePath`. When the user opens that file in an editor tab, the live preview uses the editor tab's `content` as its source.
+- On query completion (`result`), mode transitions to `'complete'`.
+- Implementation: `src/lib/claude/universal-stream-extractor.ts` (universal extractor), `src/lib/claude/html-stream-extractor.ts` (legacy, deprecated), `src/stores/use-live-preview-store.ts` (multi-page `LivePage[]` model), `src/stores/use-claude-store.ts` (extractor wiring, baseline fallback), `src/components/panels/preview/live-stream-preview.tsx` (universal live preview), `src/components/panels/preview/page-nav-bar.tsx` (page navigation), `src/components/panels/preview/source-preview.tsx` (extended syntax highlighting).
 
 ### FR-611: Preview fullscreen mode (v0.3)
 
@@ -1024,5 +1143,6 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 - A single SVG source (`public/branding/claudegui.svg`) is the authoritative source for every icon raster.
 - The build script (`scripts/build-icons.mjs`, macOS only) uses `qlmanage` + `sips` to produce 16/32/48/64/128/180/256/512 PNGs and packs six of those sizes into a Vista+-compatible PNG-in-ICO `claudegui.ico`.
 - `src/app/icon.svg` and `src/app/apple-icon.png` (180×180) are exposed automatically by Next.js App Router file-based metadata, so opening `localhost:3000` shows the same mascot as a favicon without any explicit `<link rel="icon">`.
-- The desktop shortcut and the browser favicon use the **same mascot**, ensuring visual consistency between the OS-level entry point and the in-app experience.
-- Implementation: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `scripts/install/install.sh`, `scripts/install/install.ps1`.
+- Tauri desktop app icons are also generated from the same SVG source: `installer/tauri/src-tauri/icons/` receives `32x32.png`, `128x128.png`, `128x128@2x.png` (256×256), `icon.ico`, and `icon.icns` (built via `iconutil`).
+- The desktop shortcut, Tauri native app, and the browser favicon all use the **same mascot**, ensuring visual consistency across every entry point.
+- Implementation: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `installer/tauri/src-tauri/icons/`, `scripts/install/install.sh`, `scripts/install/install.ps1`.

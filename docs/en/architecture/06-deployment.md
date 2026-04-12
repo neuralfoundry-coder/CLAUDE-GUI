@@ -565,6 +565,7 @@ This path **complements rather than replaces** the Tauri `.dmg`/`.msi` native in
 | `src/app/icon.svg` | Next.js App Router auto-served favicon |
 | `src/app/apple-icon.png` | iOS home-screen icon (180×180) |
 | `scripts/build-icons.mjs` | macOS-only asset regeneration script |
+| `installer/tauri/src-tauri/icons/` | Tauri desktop app icons (32x32, 128x128, @2x, .icns, .ico) |
 | `scripts/install/install.sh` | macOS / Linux installer (`install_desktop_launcher` function) |
 | `scripts/install/install.ps1` | Windows installer (`Install-DesktopLauncher` function) |
 
@@ -623,4 +624,4 @@ After editing the SVG mascot (`public/branding/claudegui.svg`), regenerate every
 node scripts/build-icons.mjs
 ```
 
-The script uses `qlmanage` (SVG rendering), `sips` (exact-square resize), and an in-script PNG-in-ICO packer. It does not run on Windows or Linux and exits with an error there — the committed artifacts under `public/branding/` are the canonical outputs.
+The script uses `qlmanage` (SVG rendering), `sips` (exact-square resize), an in-script PNG-in-ICO packer, and `iconutil` (macOS `.icns` generation). It also generates Tauri desktop app icons (`installer/tauri/src-tauri/icons/`) from the same SVG source, ensuring the desktop app and favicon share the same mascot character. It does not run on Windows or Linux and exits with an error there — the committed artifacts are the canonical outputs.

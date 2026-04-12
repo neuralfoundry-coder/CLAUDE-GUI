@@ -108,7 +108,10 @@
 
 ### NFR-302: Theme support
 
-- Four themes shall be provided: **dark (default)**, **light**, **high-contrast**, and **Retro — Green Phosphor** (v0.3).
+- Five themes shall be provided: **dark (default)**, **light**, **high-contrast**, **Retro — Green Phosphor** (v0.3), and **system** (v0.5).
+- The **system** theme auto-detects the OS preference via `window.matchMedia('(prefers-color-scheme: dark)')` and dynamically follows changes. When the OS switches between dark and light mode, the app updates in real time without user intervention.
+- The `color-scheme` CSS property shall be set on each theme class to ensure that native UI elements (scrollbars, form controls, selection highlights) follow the app theme independently of the OS mode.
+- An inline script in `layout.tsx` shall read the persisted theme from `localStorage` before React hydration to prevent a flash of unstyled content (FOUC).
 - Switching themes shall consistently update every panel (editor, terminal, file tree, preview).
 - The retro theme offers an optional CRT scanline overlay (`retroScanlines` flag) and uses `VT323` → `IBM Plex Mono` → `monospace` as its font stack.
 - Theme selection shall be available from the command palette or the settings UI.
@@ -151,7 +154,7 @@
 ### NFR-403: Minimum resolution
 
 - Resolutions of **1280 × 720** or higher shall be supported.
-- Below 1280 width, the UI falls back to a single-panel tab mode.
+- Below 1280px viewport width, the UI falls back to a **single-panel tab mode**. A bottom tab bar (Files, Editor, Terminal, Claude, Preview) provides navigation between panels, displaying only one panel full-screen at a time.
 
 ### NFR-404: Node.js compatibility
 

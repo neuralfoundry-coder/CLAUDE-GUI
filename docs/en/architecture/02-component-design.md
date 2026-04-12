@@ -14,52 +14,45 @@
       <SettingsButton />
     </Header>
 
-    <PanelGroup direction="horizontal">
-      <Panel id="file-explorer" collapsible>
-        <FileExplorerPanel>
-          <FileExplorerHeader />
-          <FileTree />                 (react-arborist)
-        </FileExplorerPanel>
-      </Panel>
+    {isDesktop ? (
+      <!-- Desktop layout (>= 1280px): all 5 panels collapsible -->
+      <PanelGroup direction="horizontal">
+        <Panel id="file-explorer" ref={fileExplorerRef} collapsible collapsedSize={0}>
+          <FileExplorerPanel />
+        </Panel>
 
-      <PanelResizeHandle />
+        <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
-      <Panel id="center">
-        <PanelGroup direction="vertical">
-          <Panel id="editor">
-            <EditorPanel>
-              <EditorTabBar />
-              <MonacoEditor />         (@monaco-editor/react)
-              <DiffAcceptBar />        (when Claude edits)
-            </EditorPanel>
-          </Panel>
+        <Panel id="center">
+          <PanelGroup direction="vertical">
+            <Panel id="editor" ref={editorRef} collapsible collapsedSize={0}>
+              <EditorPanel />
+            </Panel>
 
-          <PanelResizeHandle />
+            <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
-          <Panel id="terminal" collapsible>
-            <TerminalPanel>
-              <TerminalTabBar />
-              <XTerminal />            (xterm.js)
-            </TerminalPanel>
-          </Panel>
-        </PanelGroup>
-      </Panel>
+            <Panel id="terminal" ref={terminalRef} collapsible collapsedSize={0}>
+              <TerminalPanel />
+            </Panel>
+          </PanelGroup>
+        </Panel>
 
-      <PanelResizeHandle />
+        <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
-      <Panel id="preview" collapsible>
-        <PreviewPanel>
-          <PreviewHeader />
-          <PreviewRouter>              (by file type)
-            <HTMLPreview />            (iframe srcdoc)
-            <PDFPreview />             (react-pdf)
-            <MarkdownPreview />        (react-markdown)
-            <ImagePreview />           (react-zoom-pan-pinch)
-            <SlidePreview />           (reveal.js)
-          </PreviewRouter>
-        </PreviewPanel>
-      </Panel>
-    </PanelGroup>
+        <Panel id="claude" ref={claudeRef} collapsible collapsedSize={0}>
+          <ClaudeChatPanel />
+        </Panel>
+
+        <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
+
+        <Panel id="preview" ref={previewRef} collapsible collapsedSize={0}>
+          <PreviewPanel />
+        </Panel>
+      </PanelGroup>
+    ) : (
+      <!-- Mobile layout (< 1280px) -->
+      <MobileShell />
+    )}
 
     <StatusBar />
     <CommandPalette />                 (cmdk modal)
@@ -67,6 +60,16 @@
   </RootLayout>
 </App>
 ```
+
+**Panel collapse implementation**: all 5 panels use the `collapsible` prop and `ImperativePanelHandle` imperative API from `react-resizable-panels`. Instead of conditional rendering (`{!collapsed && <Panel />}`), panels are always rendered and controlled via `collapse()`/`expand()` calls, preserving internal state (terminal buffers, editor models, etc.) across collapses. The store's `setCollapsed` action is synced to `ImperativePanelHandle.collapse()`/`expand()` through `useEffect` hooks.
+
+**Double-click resize reset**: each `PanelResizeHandle` wires an `onDoubleClick` handler (`handleDoubleClickReset`) that resets adjacent panels to `DEFAULT_PANEL_SIZES`.
+
+**Responsive mobile layout**: the `useMediaQuery('(min-width: 1280px)')` hook detects viewport width. Below 1280px, `<MobileShell />` renders a bottom tab bar with a single-panel view. It has 5 tabs (Files, Editor, Terminal, Claude, Preview) and `useLayoutStore.mobileActivePanel` tracks the active tab.
+
+**New files**:
+- `src/hooks/use-media-query.ts` — `useMediaQuery` hook. Tracks viewport changes via `window.matchMedia` listener. Returns `true` (desktop-first) during SSR.
+- `src/components/layout/mobile-shell.tsx` — Mobile tab layout. Switches between 5 `PanelId` tabs via a bottom tab bar.
 
 ## 2.2 Server Component Structure
 
@@ -142,12 +145,14 @@ Related global stores:
 
 ```
 src/components/panels/editor/
-├── editor-panel.tsx                # container
+├── editor-panel.tsx                # container (header bar + tab bar + editor)
 ├── editor-tab-bar.tsx              # tab list
-├── editor-tab.tsx                  # individual tab (close button, dirty indicator)
-├── monaco-editor-wrapper.tsx       # Monaco wrapper
+├── editor-settings-dropdown.tsx    # editor settings dropdown (gear icon)
+├── monaco-editor-wrapper.tsx       # Monaco wrapper (extended options + cursor tracking)
+├── claude-completion-provider.ts   # Claude AI inline completion provider
 ├── diff-accept-bar.tsx             # AI diff accept/reject UI
-└── use-editor-models.ts            # Monaco model management
+src/lib/editor/
+└── language-map.ts                 # file extension → language mapping utility
 ```
 
 ### State management
@@ -157,21 +162,33 @@ src/components/panels/editor/
 interface EditorState {
   tabs: EditorTab[];
   activeTabId: string | null;
+  cursorLine: number | null;        // current cursor line
+  cursorCol: number | null;         // current cursor column
+  completionLoading: boolean;       // AI completion in progress
   openFile(path: string): void;
   closeTab(id: string): void;
   setActiveTab(id: string): void;
-  markDirty(id: string, dirty: boolean): void;
-  applyClaudeEdit(path: string, edit: EditOperation): void;
+  setCursorPosition(line: number, col: number): void;
+  setCompletionLoading(loading: boolean): void;
+  applyClaudeEdit(path: string, modified: string): void;
 }
 
 interface EditorTab {
   id: string;
   path: string;
-  modelId: string;     // Monaco model reference
+  content: string;
+  originalContent: string;
   dirty: boolean;
   locked: boolean;     // while Claude is editing
   diff?: DiffState;    // pending AI changes
 }
+
+// useSettingsStore (Zustand, persist)
+// Editor-related settings:
+//   editorWordWrap, editorTabSize, editorUseSpaces,
+//   editorMinimapEnabled, editorRenderWhitespace,
+//   editorStickyScroll, editorBracketColors,
+//   editorCompletionEnabled, editorCompletionDelay
 ```
 
 ### Model management
@@ -179,6 +196,15 @@ interface EditorTab {
 - A dedicated Monaco model is created per file (`monaco.editor.createModel`).
 - On tab close, `dispose()` is called on the model (to prevent leaks).
 - Switching tabs only swaps the model on the editor instance → cursor/scroll/undo are preserved automatically.
+
+### AI inline completion
+
+- `claude-completion-provider.ts` registers a Monaco `InlineCompletionsProvider`
+- After typing stops, debounce (500ms) → WebSocket `completion_request` sent
+- Server-side (`claude-handler.mjs`) calls Agent SDK `query()` with `maxTurns: 1`
+- Response displayed as ghost text, accepted with Tab
+- `AbortController` auto-cancels previous requests
+- Cursor context window (100 lines before / 30 lines after) handles large files
 
 ### AI diff handling
 
@@ -214,7 +240,7 @@ function acceptDiff(tabId: string) {
 - **Attach point**: `XTerminalAttach` (`src/components/panels/terminal/x-terminal.tsx`) — the host div is wrapped in a Radix `ContextMenu`. Its `<div>` background is bound to `style={{ background: 'var(--terminal-bg)' }}` so theme toggles, tab switches, and first-mount never flash black (FR-419).
 - **Container + tab UI**: `TerminalPanel` (`src/components/panels/terminal/terminal-panel.tsx`) — inline rename, cwd label, unread indicator, project-change banner, Restart chip, split-pane renderer, "Open in system terminal" `ExternalLink` button (`FR-420`)
 - **Search overlay**: `TerminalSearchOverlay` (`src/components/panels/terminal/terminal-search-overlay.tsx`)
-- **Theme palette**: `src/lib/terminal/terminal-themes.ts` (`TERMINAL_THEMES`) — single source of truth. `TerminalManager` imports and propagates it via `setTheme`. The hex values must stay in parity with `--terminal-bg`/`--terminal-fg` in `globals.css`; `tests/unit/terminal-themes-contrast.test.ts` catches drift.
+- **Theme palette**: `src/lib/terminal/terminal-themes.ts` (`TERMINAL_THEMES`) — single source of truth. Exports `ConcreteTheme` (all themes except `'system'`) and `resolveTheme()`. `resolveTheme(theme)` evaluates `window.matchMedia('(prefers-color-scheme: dark)')` when the input is `'system'` and returns `'dark'`/`'light'`; otherwise it passes the theme through unchanged. `TerminalManager` imports and propagates it via `setTheme`. The hex values must stay in parity with `--terminal-bg`/`--terminal-fg` in `globals.css`; `tests/unit/terminal-themes-contrast.test.ts` catches drift.
 - **State**: `useTerminalStore` (`src/stores/use-terminal-store.ts`) — tab list, active session ID, session status (`connecting` / `open` / `closed` / `exited`), cwd, displayName, unread, searchOverlayOpen, splitEnabled, primarySessionId, secondarySessionId, activePaneIndex
 - **Socket wrapper**: `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`) — no auto-reconnect. When a reconnect is needed the manager opens a new socket carrying the `serverSessionId` via URL query (FR-414).
 - **Server-side session registry**: `server-handlers/terminal/session-registry.mjs` (`TerminalSessionRegistry` singleton) — manages PTY lifetime, 256 KB ring buffer, 30-minute GC, and transient/exit listener fan-out. ADR-020.
@@ -513,6 +539,9 @@ The dropdown (`MentionPopover`) is placed `absolute bottom-full` inside a `relat
 ### useLayoutStore
 
 ```typescript
+type Theme = 'dark' | 'light' | 'high-contrast' | 'retro-green' | 'system';
+type PanelId = 'fileExplorer' | 'editor' | 'terminal' | 'claude' | 'preview';
+
 interface LayoutState {
   // panel sizes (%)
   fileExplorerSize: number;
@@ -520,25 +549,33 @@ interface LayoutState {
   terminalSize: number;
   previewSize: number;
 
-  // collapsed state
+  // collapsed state — all 5 panels are collapsible
   fileExplorerCollapsed: boolean;
+  editorCollapsed: boolean;
   terminalCollapsed: boolean;
+  claudeCollapsed: boolean;
   previewCollapsed: boolean;
 
-  // theme
-  theme: 'dark' | 'light' | 'high-contrast';
+  // theme — 'system' follows OS preference (prefers-color-scheme)
+  theme: Theme;
+
+  // mobile — active tab when viewport < 1280px
+  mobileActivePanel: PanelId;
 
   // actions
   setPanelSize(panel: string, size: number): void;
-  togglePanel(panel: string): void;
+  togglePanel(panel: PanelId): void;
+  setCollapsed(panel: PanelId, collapsed: boolean): void;
+  resetPanelSizes(): void;
   setTheme(theme: Theme): void;
+  setMobileActivePanel(panel: PanelId): void;
 }
 
-// persist middleware applied
+// persist middleware applied (v3 migration: adds editorCollapsed, claudeCollapsed, mobileActivePanel)
 export const useLayoutStore = create<LayoutState>()(
   persist(
     (set) => ({ ... }),
-    { name: 'claudegui-layout' }
+    { name: 'claudegui-layout', version: 3 }
   )
 );
 ```
@@ -610,6 +647,49 @@ SDK does not provide remain `null` and are rendered as "-" in the UI. Values
 such as the context window size are never hardcoded — only data present in
 actual responses is exposed.
 
+#### ModelSelector (Claude panel header)
+
+`src/components/panels/claude/model-selector.tsx` provides a model selection
+dropdown in the Claude chat panel header (FR-512).
+
+- Reads the current model from `useSettingsStore.selectedModel` and updates
+  it via `setSelectedModel`.
+- The model list is sourced from the `MODEL_SPECS` constant in
+  `src/lib/claude/model-specs.ts`.
+- The selected model is persisted to `localStorage` via `useSettingsStore`'s
+  `persist` middleware.
+- On query send, `claude-client.ts`'s `sendQuery` reads `selectedModel` and
+  includes it in `ClaudeQueryMessage.options.model`.
+- Uses the shadcn/ui `DropdownMenu` component.
+
+#### ChatFilterBar (Claude panel)
+
+`src/components/panels/claude/chat-filter-bar.tsx` provides a `MessageKind`-based
+filter toggle bar above the message area (FR-515).
+
+- Text, Tools, Auto, and Errors categories each render as icon + label + count
+  badge toggle buttons.
+- State is managed via `useClaudeStore.messageFilter` (Set\<MessageKind\>) and
+  the `toggleFilter` action.
+- `claude-chat-panel.tsx` uses `useMemo` to filter:
+  `messages.filter(m => messageFilter.has(m.kind))`, rendering only matching
+  messages.
+- **Performance**: Uses `useShallow` to derive kind-based counts instead of subscribing to the full `messages` array, preventing unnecessary re-renders during streaming.
+- User messages (`role: 'user'`) are always displayed regardless of filters.
+
+#### ChatMessageItem (Claude panel)
+
+`src/components/panels/claude/chat-message-item.tsx` provides specialized
+rendering based on the `ChatMessage.kind` field.
+
+- `text`: ReactMarkdown + remarkGfm markdown rendering. Blinking cursor
+  during streaming.
+- `tool_use`: collapsible tool name header + JSON args. Collapsed by default.
+- `auto_decision`: shield icon + allow/deny color label.
+- `error`: destructive background + alert icon.
+- `system`: bot icon + muted text.
+- **Performance**: Wrapped with `React.memo` and a custom comparator (`id`, `content`, `isStreaming`) so only the actively-changing message re-renders. The message list uses `@tanstack/react-virtual` for virtualization, mounting only viewport-visible items in the DOM.
+
 #### SessionInfoBar (Claude panel)
 
 `src/components/panels/claude/session-info-bar.tsx` subscribes to the active
@@ -617,9 +697,16 @@ session's `SessionStats` from `useClaudeStore` and renders a collapsible bar
 at the bottom of the Claude chat panel.
 
 - Collapsed (default): a single line (h-6) —
-  `{model} · {turns} turns · ctx {used}/{limit} ({pct}) · {tokens} tok · {updated}`.
+  `{model} · {turns} turns · ctx {percent} [progress bar] · {tokens} tok · {updated}`.
+  An inline mini progress bar (40px, 3px) is shown next to the context
+  percentage (FR-514).
 - Expanded: session ID, model, turn count, duration, input / output /
-  cache-read tokens, and last-updated relative time.
+  cache-read tokens, and last-updated relative time. Additionally:
+  - **Context progress bar**: full-width visual progress bar with numeric
+    labels (FR-514).
+  - **Model specs**: max output tokens, input/output price, capability badges
+    (FR-513). Model spec lookup uses `findModelSpec` from
+    `src/lib/claude/model-specs.ts`.
 - The cumulative cost (`total_cost_usd`) is an estimate emitted by the Agent
   SDK and is intentionally **not** surfaced in either the collapsed or
   expanded view. It is still accumulated into `SessionStats.costUsd` and
@@ -651,8 +738,17 @@ interface PreviewState {
 
 - **React components**: subscribe via `use...Store()` hooks.
 - **WebSocket handlers**: call `use...Store.getState().setState(...)` directly (outside React).
-- **Persisted stores**: `useLayoutStore` (user layout) and `useArtifactStore` (generated-content cache).
+- **Persisted stores**: `useLayoutStore` (user layout), `useArtifactStore` (generated-content cache), and `useSettingsStore` (terminal font, selected model, and other user preferences).
 - **Non-persisted**: editor/terminal/claude/preview (session data is fetched from the server).
+- **Persist throttle**: `useLayoutStore` uses a custom storage adapter with 1-second debounce to minimize synchronous `localStorage` I/O during rapid state changes (e.g. panel resize drag). A synchronous flush is performed on `beforeunload`.
+
+### Theme management — system theme, color-scheme, and FOUC prevention
+
+`Theme` is `'dark' | 'light' | 'high-contrast' | 'retro-green' | 'system'`. `'system'` follows the OS `prefers-color-scheme` media query.
+
+- **`useTheme` hook** (`src/hooks/use-theme.ts`): subscribes to `useLayoutStore.theme` and, when it is `'system'`, listens for the `change` event on `window.matchMedia('(prefers-color-scheme: dark)')` to resolve to `'dark'`/`'light'`. It applies the resolved theme class to `<html>` and sets the `color-scheme` CSS property to `'light'` or `'dark'` so that native UI elements (scrollbars, form controls) follow the app theme.
+- **`resolveTheme()` utility** (`src/lib/terminal/terminal-themes.ts`): SSR-safe resolver that converts `'system'` to `'dark'`/`'light'`. Used by `TerminalManager` to pick the correct xterm ITheme on theme switches.
+- **FOUC prevention**: an inline `<script>` in `src/app/layout.tsx`'s `<head>` reads the persisted theme from `localStorage` and immediately applies the `<html>` class and `color-scheme` before React hydration. This eliminates the flash from default-dark to the actual theme on first paint.
 
 ---
 

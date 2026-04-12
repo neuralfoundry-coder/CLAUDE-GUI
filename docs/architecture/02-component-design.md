@@ -12,52 +12,45 @@
       <SettingsButton />
     </Header>
 
-    <PanelGroup direction="horizontal">
-      <Panel id="file-explorer" collapsible>
-        <FileExplorerPanel>
-          <FileExplorerHeader />
-          <FileTree />                 (react-arborist)
-        </FileExplorerPanel>
-      </Panel>
+    {isDesktop ? (
+      <!-- 데스크톱 레이아웃 (≥ 1280px): 5패널 모두 collapsible -->
+      <PanelGroup direction="horizontal">
+        <Panel id="file-explorer" ref={fileExplorerRef} collapsible collapsedSize={0}>
+          <FileExplorerPanel />
+        </Panel>
 
-      <PanelResizeHandle />
+        <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
-      <Panel id="center">
-        <PanelGroup direction="vertical">
-          <Panel id="editor">
-            <EditorPanel>
-              <EditorTabBar />
-              <MonacoEditor />         (@monaco-editor/react)
-              <DiffAcceptBar />        (when Claude edits)
-            </EditorPanel>
-          </Panel>
+        <Panel id="center">
+          <PanelGroup direction="vertical">
+            <Panel id="editor" ref={editorRef} collapsible collapsedSize={0}>
+              <EditorPanel />
+            </Panel>
 
-          <PanelResizeHandle />
+            <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
-          <Panel id="terminal" collapsible>
-            <TerminalPanel>
-              <TerminalTabBar />
-              <XTerminal />            (xterm.js)
-            </TerminalPanel>
-          </Panel>
-        </PanelGroup>
-      </Panel>
+            <Panel id="terminal" ref={terminalRef} collapsible collapsedSize={0}>
+              <TerminalPanel />
+            </Panel>
+          </PanelGroup>
+        </Panel>
 
-      <PanelResizeHandle />
+        <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
-      <Panel id="preview" collapsible>
-        <PreviewPanel>
-          <PreviewHeader />
-          <PreviewRouter>              (by file type)
-            <HTMLPreview />            (iframe srcdoc)
-            <PDFPreview />             (react-pdf)
-            <MarkdownPreview />        (react-markdown)
-            <ImagePreview />           (react-zoom-pan-pinch)
-            <SlidePreview />           (reveal.js)
-          </PreviewRouter>
-        </PreviewPanel>
-      </Panel>
-    </PanelGroup>
+        <Panel id="claude" ref={claudeRef} collapsible collapsedSize={0}>
+          <ClaudeChatPanel />
+        </Panel>
+
+        <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
+
+        <Panel id="preview" ref={previewRef} collapsible collapsedSize={0}>
+          <PreviewPanel />
+        </Panel>
+      </PanelGroup>
+    ) : (
+      <!-- 모바일 레이아웃 (< 1280px) -->
+      <MobileShell />
+    )}
 
     <StatusBar />
     <CommandPalette />                 (cmdk modal)
@@ -65,6 +58,16 @@
   </RootLayout>
 </App>
 ```
+
+**패널 접힘 구현**: 5개 패널 모두 `react-resizable-panels`의 `collapsible` 프롭과 `ImperativePanelHandle` 명령형 API를 사용한다. 조건부 렌더링(`{!collapsed && <Panel />}`)이 아닌 항상 렌더링 + `collapse()`/`expand()` 호출 방식으로, 패널 접힘 시에도 내부 상태(터미널 버퍼, 에디터 모델 등)가 보존된다. 스토어의 `setCollapsed` 액션이 `useEffect`를 통해 `ImperativePanelHandle.collapse()`/`expand()`로 동기화된다.
+
+**더블클릭 리사이즈 리셋**: 각 `PanelResizeHandle`의 `onDoubleClick`에 `handleDoubleClickReset` 핸들러가 연결되어 인접 패널을 `DEFAULT_PANEL_SIZES`로 복원한다.
+
+**반응형 모바일 레이아웃**: `useMediaQuery('(min-width: 1280px)')` 훅이 뷰포트 너비를 감지한다. 1280px 미만에서는 `<MobileShell />`이 하단 탭 바와 단일 패널 뷰를 렌더링한다. 5개 탭(Files, Editor, Terminal, Claude, Preview)으로 구성되며 `useLayoutStore.mobileActivePanel`이 현재 활성 탭을 관리한다.
+
+**새 파일**:
+- `src/hooks/use-media-query.ts` — `useMediaQuery` 훅. `window.matchMedia` 리스너로 뷰포트 변경을 추적. SSR에서는 `true`(데스크톱 우선) 반환.
+- `src/components/layout/mobile-shell.tsx` — 모바일 탭 레이아웃. 5개 `PanelId` 탭과 각 패널 컴포넌트를 하단 탭 바로 전환.
 
 ## 2.2 서버 컴포넌트 구조
 
@@ -140,12 +143,14 @@ src/components/panels/file-explorer/
 
 ```
 src/components/panels/editor/
-├── editor-panel.tsx                # 컨테이너
+├── editor-panel.tsx                # 컨테이너 (헤더 바 + 탭 바 + 에디터)
 ├── editor-tab-bar.tsx              # 탭 목록
-├── editor-tab.tsx                  # 개별 탭 (닫기 버튼, 더티 표시)
-├── monaco-editor-wrapper.tsx       # Monaco 래퍼
+├── editor-settings-dropdown.tsx    # 에디터 설정 드롭다운 (기어 아이콘)
+├── monaco-editor-wrapper.tsx       # Monaco 래퍼 (확장 옵션 + 커서 추적)
+├── claude-completion-provider.ts   # Claude AI 인라인 자동완성 프로바이더
 ├── diff-accept-bar.tsx             # AI diff 수락/거절 UI
-└── use-editor-models.ts            # Monaco 모델 관리
+src/lib/editor/
+└── language-map.ts                 # 파일 확장자 → 언어 매핑 유틸리티
 ```
 
 ### 상태 관리
@@ -155,21 +160,33 @@ src/components/panels/editor/
 interface EditorState {
   tabs: EditorTab[];
   activeTabId: string | null;
+  cursorLine: number | null;        // 현재 커서 행
+  cursorCol: number | null;         // 현재 커서 열
+  completionLoading: boolean;       // AI 자동완성 로딩 중
   openFile(path: string): void;
   closeTab(id: string): void;
   setActiveTab(id: string): void;
-  markDirty(id: string, dirty: boolean): void;
-  applyClaudeEdit(path: string, edit: EditOperation): void;
+  setCursorPosition(line: number, col: number): void;
+  setCompletionLoading(loading: boolean): void;
+  applyClaudeEdit(path: string, modified: string): void;
 }
 
 interface EditorTab {
   id: string;
   path: string;
-  modelId: string;     // Monaco model reference
+  content: string;
+  originalContent: string;
   dirty: boolean;
   locked: boolean;     // Claude 편집 중
   diff?: DiffState;    // AI 변경사항 대기 중
 }
+
+// useSettingsStore (Zustand, persist)
+// 에디터 관련 설정:
+//   editorWordWrap, editorTabSize, editorUseSpaces,
+//   editorMinimapEnabled, editorRenderWhitespace,
+//   editorStickyScroll, editorBracketColors,
+//   editorCompletionEnabled, editorCompletionDelay
 ```
 
 ### 모델 관리
@@ -177,6 +194,15 @@ interface EditorTab {
 - 파일별로 독립 Monaco 모델 생성 (`monaco.editor.createModel`)
 - 탭 닫을 때 모델 `dispose()` 호출 (메모리 누수 방지)
 - 탭 간 전환 시 에디터 인스턴스에 모델만 교체 → 커서/스크롤/undo 자동 유지
+
+### AI 인라인 자동완성
+
+- `claude-completion-provider.ts`에서 Monaco `InlineCompletionsProvider`를 등록
+- 사용자 타이핑 멈춤 후 디바운스(500ms) → WebSocket `completion_request` 전송
+- 서버 사이드(`claude-handler.mjs`)에서 Agent SDK `query()`를 `maxTurns: 1`로 호출
+- 응답을 ghost text로 표시, Tab으로 수락
+- `AbortController`로 이전 요청 자동 취소
+- 커서 전후 코드 컨텍스트(100줄/30줄) 윈도우로 대용량 파일 대응
 
 ### AI diff 처리
 
@@ -212,7 +238,7 @@ function acceptDiff(tabId: string) {
 - **attach point**: `XTerminalAttach`(`src/components/panels/terminal/x-terminal.tsx`) — Radix `ContextMenu`로 감싼 호스트 div. 호스트 `<div>`의 배경은 `style={{ background: 'var(--terminal-bg)' }}`로 CSS 변수에 바인딩되어 테마 토글·탭 전환·첫 마운트에서 검정 플래시를 내지 않는다(FR-419).
 - **컨테이너 + 탭 UI**: `TerminalPanel`(`src/components/panels/terminal/terminal-panel.tsx`) — 인라인 rename, cwd 라벨, unread 인디케이터, 프로젝트 전환 배너, Restart 칩, 스플릿 pane 렌더러, "Open in system terminal" `ExternalLink` 버튼 (`FR-420`)
 - **검색 오버레이**: `TerminalSearchOverlay`(`src/components/panels/terminal/terminal-search-overlay.tsx`)
-- **테마 팔레트**: `src/lib/terminal/terminal-themes.ts` (`TERMINAL_THEMES`) — 단일 소스. `TerminalManager`가 import 해 `setTheme`으로 전파하며, `globals.css`의 `--terminal-bg`/`--terminal-fg` CSS 변수와 hex 파리티를 유지해야 한다(`tests/unit/terminal-themes-contrast.test.ts`가 검증).
+- **테마 팔레트**: `src/lib/terminal/terminal-themes.ts` (`TERMINAL_THEMES`) — 단일 소스. `ConcreteTheme` 타입(`'system'`을 제외한 실제 색상 테마)과 `resolveTheme()` 유틸리티를 노출한다. `resolveTheme(theme)`는 `'system'`이면 `window.matchMedia('(prefers-color-scheme: dark)')`를 평가해 `'dark'`/`'light'`로 변환하고, 그 외에는 그대로 반환한다. `TerminalManager`가 import 해 `setTheme`으로 전파하며, `globals.css`의 `--terminal-bg`/`--terminal-fg` CSS 변수와 hex 파리티를 유지해야 한다(`tests/unit/terminal-themes-contrast.test.ts`가 검증).
 - **상태**: `useTerminalStore`(`src/stores/use-terminal-store.ts`) — 탭 목록, 활성 세션 ID, 세션 상태(`connecting`/`open`/`closed`/`exited`), cwd, displayName, unread, searchOverlayOpen, splitEnabled, primarySessionId, secondarySessionId, activePaneIndex
 - **소켓 래퍼**: `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`) — 자동 재연결 없음 (ReconnectingWebSocket 대비). 재연결이 필요할 때는 매니저가 `serverSessionId`를 URL에 실어 새 소켓을 연다(FR-414).
 - **서버측 세션 레지스트리**: `server-handlers/terminal/session-registry.mjs` (`TerminalSessionRegistry` 싱글턴) — PTY 수명·링 버퍼(256 KB)·GC(30분)·transient/exit 리스너 fan-out 관리. ADR-020.
@@ -510,6 +536,9 @@ export async function* handleQuery({
 ### useLayoutStore
 
 ```typescript
+type Theme = 'dark' | 'light' | 'high-contrast' | 'retro-green' | 'system';
+type PanelId = 'fileExplorer' | 'editor' | 'terminal' | 'claude' | 'preview';
+
 interface LayoutState {
   // 패널 크기 (%)
   fileExplorerSize: number;
@@ -517,25 +546,33 @@ interface LayoutState {
   terminalSize: number;
   previewSize: number;
 
-  // 접힘 상태
+  // 접힘 상태 — 5개 패널 모두 접힘 가능
   fileExplorerCollapsed: boolean;
+  editorCollapsed: boolean;
   terminalCollapsed: boolean;
+  claudeCollapsed: boolean;
   previewCollapsed: boolean;
 
-  // 테마
-  theme: 'dark' | 'light' | 'high-contrast';
+  // 테마 — 'system'은 OS 설정(prefers-color-scheme)을 따름
+  theme: Theme;
+
+  // 모바일 — < 1280px에서 활성 탭
+  mobileActivePanel: PanelId;
 
   // 액션
   setPanelSize(panel: string, size: number): void;
-  togglePanel(panel: string): void;
+  togglePanel(panel: PanelId): void;
+  setCollapsed(panel: PanelId, collapsed: boolean): void;
+  resetPanelSizes(): void;
   setTheme(theme: Theme): void;
+  setMobileActivePanel(panel: PanelId): void;
 }
 
-// persist 미들웨어 적용
+// persist 미들웨어 적용 (v3 마이그레이션: editorCollapsed, claudeCollapsed, mobileActivePanel 추가)
 export const useLayoutStore = create<LayoutState>()(
   persist(
     (set) => ({ ... }),
-    { name: 'claudegui-layout' }
+    { name: 'claudegui-layout', version: 3 }
   )
 );
 ```
@@ -604,13 +641,46 @@ interface ClaudeState {
 SDK가 값을 주지 않은 필드는 `null`로 유지되며, UI에서는 "-"로 표시한다. 컨텍스트 윈도우
 크기 같은 값은 하드코딩하지 않고, 오직 실제 응답에 담긴 값만 노출한다.
 
+#### ModelSelector (Claude 패널 헤더)
+
+`src/components/panels/claude/model-selector.tsx`는 Claude 채팅 패널 헤더에 모델 선택 드롭다운을 제공한다 (FR-512).
+
+- `useSettingsStore.selectedModel`에서 현재 선택된 모델을 읽고 `setSelectedModel`로 변경한다.
+- 모델 목록은 `src/lib/claude/model-specs.ts`의 `MODEL_SPECS` 상수에서 가져온다.
+- 선택된 모델은 `useSettingsStore`의 `persist` 미들웨어를 통해 `localStorage`에 저장된다.
+- 쿼리 전송 시 `claude-client.ts`의 `sendQuery`가 `selectedModel`을 읽어 `ClaudeQueryMessage.options.model`에 포함한다.
+- shadcn/ui `DropdownMenu` 컴포넌트를 사용한다.
+
+#### ChatFilterBar (Claude 패널)
+
+`src/components/panels/claude/chat-filter-bar.tsx`는 메시지 영역 상단에 `MessageKind`별 필터 토글 바를 제공한다 (FR-515).
+
+- Text, Tools, Auto, Errors 카테고리 각각 아이콘+레이블+개수 배지로 구성된 토글 버튼이다.
+- `useClaudeStore.messageFilter`(Set\<MessageKind\>)와 `toggleFilter` 액션으로 상태를 관리한다.
+- `claude-chat-panel.tsx`에서 `useMemo`로 `messages.filter(m => messageFilter.has(m.kind))`를 수행하여 필터링된 메시지만 렌더링한다.
+- **성능**: 전체 `messages` 배열 대신 `useShallow`를 사용해 kind별 카운트만 파생 구독하여 스트리밍 중 불필요한 리렌더를 방지한다.
+- 사용자 메시지(`role: 'user'`)는 필터와 무관하게 항상 표시된다.
+
+#### ChatMessageItem (Claude 패널)
+
+`src/components/panels/claude/chat-message-item.tsx`는 `ChatMessage`의 `kind`에 따라 특화된 렌더링을 제공한다.
+
+- `text`: ReactMarkdown + remarkGfm으로 마크다운 렌더링. 스트리밍 중 블링크 커서 표시.
+- `tool_use`: 접이식 도구명 헤더 + JSON args. 기본 접힌 상태.
+- `auto_decision`: 방패 아이콘 + allow/deny 색상 레이블.
+- `error`: 파괴적 배경 + 경고 아이콘.
+- `system`: 봇 아이콘 + muted 텍스트.
+- **성능**: `React.memo`로 래핑되어 `id`, `content`, `isStreaming` 변경 시에만 리렌더된다. 메시지 목록은 `@tanstack/react-virtual`로 가상화되어 뷰포트에 보이는 항목만 DOM에 마운트한다.
+
 #### SessionInfoBar (Claude 패널)
 
 `src/components/panels/claude/session-info-bar.tsx`는 `useClaudeStore`에서 활성 세션의
 `SessionStats`를 구독하여 Claude 채팅 패널 하단에 접이식 바 형태로 렌더링한다.
 
-- 접힘(기본): `{model} · {turns} turns · ctx {used}/{limit} ({pct}) · {tokens} tok · {updated}` 한 줄 (높이 h-6)
-- 펼침: 세션 ID, 모델, 턴 수, 소요 시간, 입력/출력/캐시 읽기 토큰, 마지막 업데이트 시각
+- 접힘(기본): `{model} · {turns} turns · ctx {percent} [progress bar] · {tokens} tok · {updated}` 한 줄 (높이 h-6). 컨텍스트 퍼센트 옆에 인라인 미니 프로그레스 바(40px, 3px)가 표시된다 (FR-514).
+- 펼침: 세션 ID, 모델, 턴 수, 소요 시간, 입력/출력/캐시 읽기 토큰, 마지막 업데이트 시각. 추가로:
+  - **컨텍스트 프로그레스 바**: 전체 너비 시각적 프로그레스 바와 수치 라벨 (FR-514)
+  - **모델 스펙**: 최대 출력 토큰, 입력/출력 가격, 기능 뱃지 (FR-513). `src/lib/claude/model-specs.ts`의 `findModelSpec`으로 모델 스펙을 조회한다.
 - 누적 비용(`total_cost_usd`)은 Agent SDK가 제공하는 추정치이므로 접힘/펼침 어디에도 표시하지 않는다. 값은 `SessionStats.costUsd`와 `ClaudeState.totalCost`에 계속 누적되어 `max-budget` 한도 체크 등 내부 로직용으로만 사용된다 (FR-504).
 - 편집 영역을 가리지 않도록 기본 상태는 접힘이며, chevron 토글 상태는 `localStorage`
   키 `claudegui-session-info-expanded`에 저장한다.
@@ -636,8 +706,17 @@ interface PreviewState {
 
 - **React 컴포넌트**: `use...Store()` 훅으로 상태 구독
 - **WebSocket 핸들러**: `use...Store.getState().setState(...)` 직접 호출 (훅 외부)
-- **Persist 적용 대상**: `useLayoutStore`(사용자 레이아웃)와 `useArtifactStore`(생성 콘텐츠 캐시)
+- **Persist 적용 대상**: `useLayoutStore`(사용자 레이아웃), `useArtifactStore`(생성 콘텐츠 캐시), `useSettingsStore`(터미널 폰트, 선택 모델 등 사용자 설정)
 - **Persist 비적용**: editor/terminal/claude/preview (세션 데이터는 서버 재조회)
+- **Persist 쓰로틀**: `useLayoutStore`는 1초 디바운스된 커스텀 스토리지 어댑터를 사용하여 패널 리사이즈 등 빈번한 상태 변경 시 `localStorage` 동기 I/O 부하를 최소화한다. `beforeunload` 시 즉시 플러시한다.
+
+### 테마 관리 — 시스템 테마, color-scheme, FOUC 방지
+
+`Theme` 타입은 `'dark' | 'light' | 'high-contrast' | 'retro-green' | 'system'`이다. `'system'`은 OS의 `prefers-color-scheme` 미디어 쿼리를 따른다.
+
+- **`useTheme` 훅** (`src/hooks/use-theme.ts`): `useLayoutStore.theme`을 구독하고, `'system'`이면 `window.matchMedia('(prefers-color-scheme: dark)')`의 `change` 이벤트를 리스닝하여 `'dark'`/`'light'`로 해석한다. 해석된 테마 클래스를 `<html>`에 적용하고, `color-scheme` CSS 프로퍼티를 `'light'` 또는 `'dark'`로 설정하여 스크롤바·폼 컨트롤 등 네이티브 UI 요소가 앱 테마를 따르게 한다.
+- **`resolveTheme()` 유틸리티** (`src/lib/terminal/terminal-themes.ts`): 서버 사이드 안전한 해석 함수. `'system'`을 `'dark'`/`'light'`로 변환한다. `TerminalManager`가 이를 사용해 테마 전환 시 올바른 xterm ITheme을 선택한다.
+- **FOUC 방지**: `src/app/layout.tsx`의 `<head>` 인라인 `<script>`가 `localStorage`에서 저장된 테마를 읽어 React 하이드레이션 전에 `<html>` 클래스와 `color-scheme`을 즉시 설정한다. 이로써 첫 페인트에서 기본 다크 → 실제 테마로의 깜빡임(FOUC)이 발생하지 않는다.
 
 ---
 

@@ -286,92 +286,92 @@ debounce(300ms)
   └── PDF → (편집 불가)
 ```
 
-### 라이브 HTML → 에디터 인수인계 흐름 (FR-610)
+### 범용 라이브 스트리밍 흐름 (FR-610, v0.6)
 
-Claude가 `Write`/`Edit` `tool_use`로 `.html` 파일을 생성한 뒤 사용자가 그 파일을 에디터로 열어 직접 수정할 때의 데이터 흐름:
+Claude의 어시스턴트 응답에서 모든 언어의 코드 펜스와 모든 파일 타입의 Write/Edit/MultiEdit를 감지하여 다중 페이지 라이브 프리뷰로 표시하는 흐름:
 
 ```
 Claude stream (assistant message)
   │
   ▼
-HtmlStreamExtractor.feedToolUse({name:'Write', input:{file_path, content}})
+UniversalStreamExtractor  (O(n) 스캔 — scanOffset 기반)
+  ├── feedText(chunk) — 모든 ```언어 펜스 감지 (html, python, typescript, etc.)
+  │   ├── 펜스 open → onPageStart(page)  → useLivePreviewStore.addPage(page)
+  │   ├── 청크 누적 → onPageChunk(id, content, renderable) → updatePageContent
+  │   └── 펜스 close → onPageComplete(id, content) → completePage
   │
-  ├── onChunk → useLivePreviewStore.appendChunk(html, renderable)
-  └── onWritePath → useLivePreviewStore.setGeneratedFilePath(filePath)
+  └── feedToolUse(tool) — 모든 파일 타입의 Write/Edit/MultiEdit
+      ├── Write → onPageStart + onPageChunk + onPageComplete
+      ├── Edit/MultiEdit → baseline 기준 applyEditOps → onPageChunk + onPageComplete
+      └── onWritePath → setGeneratedFilePath(filePath)
             │
             ▼
-     useLivePreviewStore { buffer, generatedFilePath }
+     useLivePreviewStore { pages: LivePage[], activePageIndex }
             │
             ▼
-     <LiveHtmlPreview>
-            │
-   ┌────────┴────────┐
-   │                 │
-   ▼                 ▼
-(editor tab         (editor tab
-  없음 →             있음(path===generatedFilePath) →
-  buffer 렌더)       tab.content 렌더)
-                          │
-                          ▼
-                   Monaco onChange
-                          │
-                          ▼
-                   useEditorStore.updateContent(id, content)
-                          │
-                          ▼
-                   debounce(150ms) → iframe srcdoc 갱신
+     <LiveStreamPreview>
+      ├── <PageNavBar>        (다중 페이지 탭 네비게이션)
+      └── <ActivePageRenderer>
+           ├── viewMode === 'source' → <SourcePreview> (highlight.js)
+           └── viewMode === 'rendered'
+                ├── html → iframe srcdoc (150ms debounce)
+                ├── svg → iframe srcdoc
+                ├── markdown → ReactMarkdown (200ms debounce)
+                ├── code → <SourcePreview> (구문 강조)
+                └── text → <pre> 블록
 ```
 
-- 스트리밍 종료(`result`) 이후에도 `useLivePreviewStore.mode`는 `live-html`을 유지할 수 있으나, `LiveHtmlPreview`는 에디터 탭이 열려 있으면 버퍼 대신 에디터 content를 소스로 사용한다.
-- 사용자가 에디터에서 수정한 내용은 `useEditorStore.tabs[*].content`에 즉시 반영되고, Zustand 구독을 통해 `LiveHtmlPreview`가 150ms 디바운스로 재렌더한다 (파일 저장·디스크 쓰기·`@parcel/watcher` 이벤트 불필요).
-- 코드 펜스만으로 생성된 HTML(파일 경로 없음)은 `generatedFilePath`가 `null`이므로 버퍼 기반 렌더링 경로를 그대로 사용한다.
+- 각 페이지는 독립적인 `viewMode`(source/rendered)를 가지며 토글 가능하다.
+- `renderable`이 false→true로 전환되면 자동으로 rendered 모드로 전환된다.
+- 에디터 탭이 해당 `filePath`로 열려 있으면 에디터 content를 소스로 사용한다.
 
 ### 부분 편집 보존 흐름 (FR-610)
 
-다중 페이지 HTML 중 일부 페이지만 수정하는 후속 쿼리에서 나머지 페이지 렌더링을 보존하기 위한 흐름:
+다중 페이지 문서 중 일부만 수정하는 후속 쿼리에서 나머지 렌더링을 보존하기 위한 흐름:
 
 ```
 1차 쿼리: Write /tmp/deck.html (5페이지 전체)
   │
   ▼
-HtmlStreamExtractor.feedToolUse(Write)
-  ├── lastFullHtml ← content (baseline 캐시)
-  ├── onChunk → appendChunk(html, true)  // buffer = 전체 HTML
-  └── onWritePath → generatedFilePath = '/tmp/deck.html'
+UniversalStreamExtractor.feedToolUse(Write)
+  ├── baselines.set('/tmp/deck.html', content)
+  ├── onPageStart → addPage({kind:'html', ...})
+  ├── onPageChunk → updatePageContent(pageId, content, true)
+  └── onPageComplete → completePage(pageId, content)
 
 (1차 쿼리 종료: finalizeExtractor → currentExtractor = null)
-(startStream은 buffer/generatedFilePath를 보존)
+(startStream은 pages를 보존)
 
 2차 쿼리: "3번 페이지 제목만 고쳐줘"
   │
   ▼
-ensureExtractor() — new HtmlStreamExtractor
-  └── seedBaseline(useLivePreviewStore.buffer)  // 이전 전체 HTML 주입
+ensureExtractor() — new UniversalStreamExtractor
+  └── seedBaseline(page.filePath, page.content)  // 기존 페이지에서 복원
   │
   ▼
-HtmlStreamExtractor.feedToolUse(Edit {old_string, new_string})
-  ├── lastFullHtml 존재 → applyEditOps(baseline, [op])
-  ├── lastFullHtml ← patched  (치환된 전체 HTML)
-  ├── onChunk → appendChunk(patched, true)  // 5페이지 전체 유지
-  └── onWritePath → generatedFilePath (동일 경로)
+UniversalStreamExtractor.feedToolUse(Edit {old_string, new_string})
+  ├── baselines에서 baseline 조회
+  ├── applyEditOps(baseline, [op]) → patched
+  ├── onPageChunk → updatePageContent(pageId, patched, true)  // 5페이지 전체 유지
+  └── onPageComplete → completePage(pageId, patched)
 ```
 
 **Baseline 디스크 폴백**: 새 세션의 첫 상호작용이 `Edit`/`MultiEdit`이어서 메모리에 baseline이 없는 경우:
 
 ```
-HtmlStreamExtractor.feedToolUse(Edit)
+UniversalStreamExtractor.feedToolUse(Edit)
   │
   ▼
-lastFullHtml 없음 → onNeedBaseline(filePath, apply)
+baselines에 없음 → onNeedBaseline(filePath, apply)
   │
   ▼
-useClaudeStore.fetchHtmlFile
+useClaudeStore.fetchFileContent
   │
   ▼
 GET /api/files/read?path=... → { content }
   │
   ▼
-apply(content) → applyEditOps → onChunk/onComplete
+apply(content) → applyEditOps → onPageChunk/onPageComplete
 ```
 
 `MultiEdit`의 `edits[]`는 배열 순서대로 순차 적용하며 `replace_all` 플래그를 존중한다. `old_string`이 baseline에 존재하지 않으면 해당 연산은 건너뛰어 프리뷰 상태를 안정적으로 유지한다.
@@ -448,11 +448,45 @@ apply(content) → applyEditOps → onChunk/onComplete
    └─────────┘  └─────────┘  └─────────┘  └────────┘
 ```
 
+### 레이아웃 상태 흐름 (패널 접힘)
+
+5개 패널 모두 접힘 상태를 `useLayoutStore`에서 관리하며, `ImperativePanelHandle` 명령형 API를 통해 DOM 패널과 동기화된다:
+
+```
+사용자 동작 (버튼, 단축키, 리사이즈 드래그)
+  │
+  ▼
+useLayoutStore.togglePanel(panelId) / setCollapsed(panelId, bool)
+  │
+  ▼
+스토어 상태 변경: {panelId}Collapsed = true | false
+  │
+  ▼
+useEffect 감지 (app-shell.tsx)
+  │
+  ├── collapsed → panelRef.current.collapse()
+  └── expanded  → panelRef.current.expand()
+        │
+        ▼
+react-resizable-panels 내부 레이아웃 재계산
+  │
+  ▼
+onCollapse / onExpand 콜백 → setCollapsed 재동기화
+```
+
+모바일 레이아웃(< 1280px)에서는 패널 접힘 대신 `mobileActivePanel` 상태로 단일 활성 패널을 전환한다:
+
+```
+탭 바 탭 → setMobileActivePanel(panelId) → MobileShell 재렌더링
+```
+
 ### 영속화 (Persist)
 
 ```
-useLayoutStore ─── persist 미들웨어 ──▶ localStorage
-                                        키: 'claudegui-layout'
+useLayoutStore ─── persist 미들웨어 (v3) ──▶ localStorage (1초 쓰로틀)
+                                             키: 'claudegui-layout'
+                                             포함: 패널 크기, 5개 접힘 상태,
+                                                   테마, mobileActivePanel
 
 (다른 스토어는 영속화하지 않음)
 ```
@@ -477,10 +511,14 @@ ws.onmessage = (event) => {
     case 'result':
       useClaudeStore.getState().updateCost(msg.data);
       break;
+    case 'completion_response':
+      // AI 인라인 자동완성 응답 → 등록된 콜백으로 전달 (FR-309)
+      claudeClient.handleCompletionResponse(msg);
+      break;
   }
 };
 ```
 
 이 방식으로 WebSocket 이벤트가 React 렌더링 사이클과 독립적으로 상태를 업데이트할 수 있다.
 
-**관련 FR**: FR-104, FR-308, FR-507
+**관련 FR**: FR-104, FR-308, FR-309, FR-507

@@ -18,8 +18,16 @@
 
 ### FR-103: 패널 접기/펼치기
 
-- 각 패널은 접기(collapse)/펼치기(expand)가 가능해야 한다.
+- **5개 패널 모두** 접기(collapse)/펼치기(expand)가 가능해야 한다.
+  - 파일 탐색기, 에디터, 터미널, Claude 채팅, 프리뷰
 - 접힌 상태에서는 아이콘만 표시하거나(`collapsedSize: 4px`) 완전히 숨김(`collapsedSize: 0`) 처리한다.
+- 에디터 패널 헤더에 `Code2` 아이콘 토글 버튼, Claude 채팅 패널 헤더에 `MessageSquare` 아이콘 토글 버튼을 제공하여 각 패널의 접기/펼치기를 제어한다.
+- 대응 키보드 단축키:
+  - `Ctrl+Cmd+B` / `Ctrl+Alt+B` — 파일 탐색기 토글
+  - `Ctrl+Cmd+E` / `Ctrl+Alt+E` — 에디터 토글
+  - `Ctrl+Cmd+J` / `Ctrl+Alt+J` — 터미널 토글
+  - `Ctrl+Cmd+K` / `Ctrl+Alt+K` — Claude 채팅 토글
+  - `Ctrl+Cmd+P` / `Ctrl+Alt+P` — 프리뷰 토글
 
 ### FR-104: 레이아웃 상태 영속화
 
@@ -31,6 +39,19 @@
 
 - 중앙 영역은 에디터(상단)와 터미널(하단)로 수직 분할되어야 한다.
 - 중첩된 `PanelGroup` 구조를 지원한다.
+
+### FR-106: 리사이즈 핸들 더블클릭 초기화
+
+- `PanelResizeHandle`을 더블클릭하면 인접 패널의 크기가 기본값으로 리셋되어야 한다.
+- 이를 통해 사용자가 수동으로 드래그하지 않아도 레이아웃을 빠르게 복구할 수 있다.
+
+### FR-107: 반응형 모바일 레이아웃
+
+- 뷰포트 너비가 **1280px 미만**인 경우 단일 패널 탭 모드로 전환해야 한다.
+- 하단에 탭 바를 제공하며, 다음 5개 탭으로 패널을 전환한다:
+  - Files, Editor, Terminal, Claude, Preview
+- 탭 전환 시 해당 패널만 전체 화면으로 표시하고 나머지는 숨긴다.
+- 뷰포트가 1280px 이상으로 복귀하면 기존 4분할(또는 마지막 저장된) 레이아웃으로 자동 복원한다.
 
 ---
 
@@ -181,6 +202,11 @@
 - 여러 파일을 동시에 탭으로 열 수 있어야 한다.
 - 각 탭은 독립적인 Monaco 모델을 유지한다.
 - 탭 닫기, 탭 순서 변경(드래그)을 지원한다.
+- 탭 우클릭 컨텍스트 메뉴를 지원해야 한다:
+  - **Close** — 해당 탭 닫기
+  - **Close Others** — 해당 탭 외 모든 탭 닫기
+  - **Close to the Right** — 해당 탭 우측의 모든 탭 닫기
+  - **Close All** — 모든 탭 닫기
 
 ### FR-303: 구문 강조
 
@@ -218,6 +244,45 @@
 - WebSocket `/ws/files` 채널로 변경 이벤트를 수신한다.
 - 사용자 커서 위치를 보존하면서 콘텐츠를 업데이트한다.
 - 에디터에 미저장 변경이 있을 경우 충돌 알림을 표시한다.
+
+### FR-309: AI 인라인 코드 자동완성
+
+- Claude를 활용한 인라인 코드 자동완성(ghost text)을 지원해야 한다.
+- 사용자가 타이핑을 멈추면 설정된 딜레이(기본 500ms) 후 자동완성 제안이 표시된다.
+- Tab 키로 제안을 수락하고, Esc 키로 무시할 수 있다.
+- WebSocket `/ws/claude` 채널의 `completion_request`/`completion_response` 메시지를 사용한다.
+- 커서 전후 코드 컨텍스트(전 100줄, 후 30줄)를 전송하여 정확한 완성을 제공한다.
+- 설정에서 자동완성을 활성화/비활성화할 수 있다.
+
+### FR-310: 에디터 패널 헤더 및 설정
+
+- 에디터 패널 상단에 "Editor" 헤더 바를 표시해야 한다 (다른 패널과 일관성 유지).
+- 헤더 우측에 다음 정보를 표시한다:
+  - 현재 파일의 언어 라벨
+  - 커서 위치 (Ln, Col)
+  - AI 자동완성 로딩 표시
+  - 설정 드롭다운 (기어 아이콘)
+- 설정 드롭다운에서 다음 옵션을 조절할 수 있다:
+  - 탭 크기 (2/4/8)
+  - 스페이스/탭 전환
+  - 워드 랩 on/off
+  - 미니맵 on/off
+  - 스티키 스크롤 on/off
+  - 브래킷 색상 on/off
+  - 공백 표시 (없음/경계/전체)
+  - AI 자동완성 on/off
+
+### FR-311: 고급 편집 기능
+
+- 다음 Monaco Editor 고급 기능을 기본 활성화해야 한다:
+  - 자동 괄호/따옴표 닫기
+  - 브래킷 쌍 색상화 및 가이드 라인
+  - 코드 폴딩 (인덴테이션 기반)
+  - 찾기/바꾸기 (Cmd+F / Cmd+H)
+  - 멀티커서 편집 (Alt+클릭)
+  - 부드러운 스크롤 및 커서 애니메이션
+  - 스티키 스크롤 (현재 스코프 표시)
+  - 연결 편집 (Linked editing)
 
 ---
 
@@ -439,6 +504,20 @@
   - `assistant`: `message.content[]` 블록 배열 순회 — `text` 블록은 어시스턴트 메시지로, `tool_use` 블록은 tool 메시지로 표시
   - `user`: 도구 실행 결과 피드백 — UI에는 표시하지 않음
   - `result`: 최종 결과 (`total_cost_usd`, `usage.input_tokens`/`output_tokens`, `session_id`, `subtype`)
+- **메시지 타입 시스템 (v0.6)**: 각 `ChatMessage`는 `kind: MessageKind` 필드로 세분화된다.
+  - `MessageKind = 'text' | 'tool_use' | 'tool_result' | 'system' | 'error' | 'auto_decision'`
+  - `tool_use` 메시지는 전체 `toolInput`을 저장하며, 300자 절단 없이 접이식 카드로 표시한다.
+  - `isStreaming?: boolean` 필드로 현재 청크 수신 중인 메시지를 식별한다.
+- **프로그레시브 텍스트 스트리밍 (v0.6)**: 동일 턴의 연속 `assistant` 이벤트는 새 메시지를 생성하지 않고 기존 메시지의 `content`에 append한다. `result` 도착 시 `isStreaming: false`로 전환한다.
+- **메시지 필터 (v0.6)**: `messageFilter: Set<MessageKind>`로 표시할 타입을 토글할 수 있다. 헤더 아래 필터 바에 각 종류별 칩(카운트 배지 포함)을 표시한다. 사용자 메시지는 필터 대상에서 제외(항상 표시).
+- **메시지 렌더러 (v0.6)**: `kind`별 전용 렌더러:
+  - `text`: react-markdown + 스트리밍 커서 애니메이션
+  - `tool_use`: 접이식 카드 (도구명 헤더 + 확장 가능한 JSON 본문)
+  - `auto_decision`: 인라인 pill/badge (allow=녹색, deny=빨강)
+  - `error`: 빨간 배경 + 에러 아이콘
+  - `system`: 중앙 정렬 디바이더
+- **타이핑 인디케이터 (v0.6)**: `isStreaming`이 true이고 스트리밍 중인 assistant 메시지가 아직 없을 때 "Claude is thinking..." 펄스 인디케이터를 표시한다.
+- 구현: `src/stores/use-claude-store.ts` (`MessageKind`, `ChatMessage` 확장, `messageFilter`, `toggleFilter`, 프로그레시브 append), `src/components/panels/claude/chat-message-item.tsx`, `src/components/panels/claude/chat-filter-bar.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
 ### FR-503: 세션 관리
 
@@ -540,6 +619,40 @@
 - 프롬프트 전송 시 `@` 참조는 원문 그대로 Claude Agent SDK(`sendQuery(prompt)`)에 전달된다. 참조 해석·파일 내용 첨부는 SDK/CLI의 표준 문법 처리에 위임하며, GUI에서는 별도의 preprocessing을 수행하지 않는다.
 - 구현: `src/lib/fs/list-project-files.ts`, `src/components/panels/claude/use-file-mentions.ts`, `src/components/panels/claude/mention-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
+### FR-512: 모델 선택
+
+- 사용자가 Claude 채팅 패널 헤더의 드롭다운을 통해 사용할 모델을 선택할 수 있어야 한다.
+- 선택지: `Auto`(기본, SDK 기본 모델) 및 지원 모델 목록(`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`).
+- 각 모델 항목은 모델명, 컨텍스트 윈도우 크기, 입력 가격 티어를 표시한다.
+- 선택된 모델은 `useSettingsStore.selectedModel`에 저장되며 `localStorage`를 통해 persist된다.
+- 쿼리 전송 시 `ClaudeQueryMessage.options.model`에 선택된 모델 ID를 포함하여 서버에 전달한다.
+- 구현: `src/lib/claude/model-specs.ts`, `src/components/panels/claude/model-selector.tsx`, `src/stores/use-settings-store.ts`, `src/lib/websocket/claude-client.ts`.
+
+### FR-513: 모델 스펙 표시
+
+- 세션 정보 바 펼침 상태에서 현재 활성 모델의 상세 스펙을 표시해야 한다.
+- 표시 항목: 최대 출력 토큰, 입력/출력 가격(per 1M tokens), 기능 뱃지(`vision`, `code`, `extended-thinking`).
+- 모델 스펙은 `src/lib/claude/model-specs.ts`의 정적 데이터에서 조회한다. SDK 응답의 `system.init.model` 또는 사용자 선택 모델 ID로 매칭하되, 정확 매치 실패 시 prefix 매치를 시도한다.
+- 구현: `src/components/panels/claude/session-info-bar.tsx`, `src/lib/claude/model-specs.ts`.
+
+### FR-514: 컨텍스트 사용률 시각적 프로그레스 바
+
+- FR-504의 컨텍스트 사용률 텍스트에 더해 시각적 프로그레스 바를 제공해야 한다.
+- 접힘 상태: 컨텍스트 퍼센트 옆에 인라인 미니 프로그레스 바(40px 너비, 3px 높이)를 표시한다.
+- 펼침 상태: 전체 너비 프로그레스 바(높이 6px, 라운드)와 수치 라벨을 표시한다.
+- 색상 기준은 FR-504와 동일: <50% 녹색(`bg-emerald-500`), 50-80% 노랑(`bg-amber-500`), ≥80% 빨강(`bg-red-500`).
+- 구현: `src/components/panels/claude/session-info-bar.tsx`.
+
+### FR-515: 활동 스트림 필터
+
+- Claude 채팅 패널의 메시지 영역 상단에 `MessageKind`별 필터 토글 바를 제공해야 한다.
+- 필터 카테고리: Text(`text`), Tools(`tool_use`, `tool_result`), Auto(`auto_decision`), Errors(`error`).
+- 각 필터 버튼은 아이콘 + 레이블 + 현재 해당 종류 메시지 개수 배지를 포함한다.
+- 활성화/비활성화 토글 동작으로 해당 카테고리 메시지를 즉시 숨기거나 표시한다.
+- 사용자 메시지(`role: 'user'`)는 필터와 무관하게 항상 표시된다.
+- 필터 상태는 `useClaudeStore.messageFilter`에 관리되며 세션 리셋 시 모든 필터가 활성화로 초기화된다.
+- 구현: `src/components/panels/claude/chat-filter-bar.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
 ### FR-520: 네이티브 앱 실행 모드 (v0.3)
 
 - Tauri v2 기반 네이티브 앱(`.dmg` / `.msi`)으로 ClaudeGUI를 실행할 수 있어야 한다.
@@ -597,18 +710,24 @@
 - 다중 페이지 콘텐츠(PDF, 프레젠테이션)에 대해 페이지 네비게이션을 제공해야 한다.
 - UI 요소: 이전/다음 버튼, 현재 페이지 / 전체 페이지 표시, 페이지 점프
 
-### FR-610: HTML 스트리밍 라이브 프리뷰 (v0.3)
+### FR-610: 범용 스트리밍 라이브 프리뷰 (v0.3 → v0.6 확장)
 
-- Claude의 어시스턴트 응답에서 ` ```html ` 코드 펜스 또는 `Write`/`Edit` `tool_use`(`.html` 대상)를 감지하여 프리뷰 패널을 **파일 선택과 무관하게** 실시간 업데이트해야 한다.
-- 부분 수신 시에도 렌더 가능한 단위(`<!doctype`, `<html`, `<body`, 또는 균형 잡힌 최상위 태그)가 감지되면 iframe `srcdoc`으로 렌더하고, 그렇지 않으면 소스 코드 뷰로 폴백해야 한다.
-- iframe은 `sandbox="allow-scripts"`로 격리되어야 하며 `allow-same-origin`을 사용해서는 안 된다.
-- 디바운스 150ms로 버퍼 업데이트를 처리한다.
-- 쿼리 종료 이벤트(`result`) 시 finalize하여 최종 HTML을 고정한다.
-- **에디터 인수인계 규칙**: `Write`/`Edit` `tool_use`로 감지된 HTML 파일 경로는 `useLivePreviewStore.generatedFilePath`에 저장된다. 사용자가 해당 파일을 에디터 탭으로 열면, 라이브 프리뷰는 스트리밍 종료 이후에도 에디터 탭의 `content`를 소스로 사용하여 키 입력마다(150ms 디바운스) `iframe srcdoc`을 갱신해야 한다. 이 상태에서는 상태 라벨이 `Live · Editor`로 표시된다. 코드 펜스 기반으로 생성된 경우(파일 경로 없음)는 기존대로 버퍼를 렌더한다.
-- **부분 편집 보존 규칙**: `Edit`/`MultiEdit` `tool_use`가 `.html` 파일을 대상으로 들어올 때는 `new_string` 스니펫을 문서 전체로 간주해서는 안 된다. 대신 `HtmlStreamExtractor`가 유지하는 최근 전체 HTML(직전 `Write`, 완료된 코드 펜스, 또는 `seedBaseline()`으로 주입된 값)을 기준으로 `old_string → new_string` 치환(`replace_all` 플래그 존중, `MultiEdit`는 `edits[]` 순서대로 적용)을 수행한 결과를 프리뷰에 반영해야 한다. 이렇게 해야 5페이지 HTML 중 한 페이지만 편집해도 나머지 페이지의 렌더링이 유지된다.
-- **라이브 프리뷰 버퍼 지속성**: 새로운 Claude 쿼리가 시작되어도 `useLivePreviewStore.buffer`와 `generatedFilePath`는 초기화되지 않는다. 후속 쿼리의 `Edit`/`MultiEdit`가 이전 렌더의 연장선에서 동작할 수 있도록 하기 위해서이며, 새 컨텐츠가 도착하면 `appendChunk`가 그 시점에 버퍼를 교체한다.
-- **Baseline 디스크 폴백**: 메모리 baseline이 없는 상태(예: 새 세션에서 첫 상호작용이 Edit인 경우)에서 `Edit`/`MultiEdit`가 도착하면 `HtmlStreamExtractor`는 `onNeedBaseline(filePath, apply)` 이벤트를 방출한다. `useClaudeStore`는 `/api/files/read`를 통해 해당 파일 내용을 비동기로 읽어 `apply(content)`를 호출하고, extractor는 그 결과를 기준으로 치환을 적용한다. 파일을 읽지 못하면 프리뷰는 변경 없이 유지된다.
-- 구현: `src/lib/claude/html-stream-extractor.ts` (`onWritePath`, `onNeedBaseline`, `seedBaseline`), `src/stores/use-live-preview-store.ts` (버퍼 지속 `startStream`), `src/stores/use-claude-store.ts` (`onNeedBaseline` → `/api/files/read` 폴백, extractor seed), `src/components/panels/preview/live-html-preview.tsx` (에디터 스토어 구독).
+- Claude의 어시스턴트 응답에서 **모든 언어의 코드 펜스**(` ```html `, ` ```python `, ` ```typescript ` 등) 또는 **모든 파일 타입**에 대한 `Write`/`Edit`/`MultiEdit` `tool_use`를 감지하여 프리뷰 패널을 **파일 선택과 무관하게** 실시간 업데이트해야 한다.
+- **다중 페이지 모델 (v0.6)**: 하나의 스트림에서 발생하는 각 코드 펜스 또는 `tool_use`는 독립적인 "페이지(`LivePage`)"로 관리된다. 각 페이지는 `id`, `kind`(html/svg/markdown/code/text), `language`, `title`, `content`, `renderable`, `complete`, `viewMode`(source/rendered) 속성을 갖는다.
+- **페이지 종류별 렌더링**:
+  - `html`: 렌더 가능한 단위(`<!doctype`, `<html`, `<body`, 균형 잡힌 최상위 태그) 감지 시 iframe `srcdoc`으로 렌더, 그렇지 않으면 소스 뷰 폴백. iframe은 `sandbox="allow-scripts"` (`allow-same-origin` 금지). 디바운스 150ms.
+  - `svg`: `</svg>` 닫힘 태그 감지 시 iframe 렌더, 그렇지 않으면 소스 뷰.
+  - `markdown`: 항상 점진적 렌더링 가능 (react-markdown). 디바운스 200ms.
+  - `code`: highlight.js 구문 강조 소스 뷰 (JavaScript, TypeScript, Python, CSS, JSON, Bash, YAML, SQL 등 지원).
+  - `text`: `<pre>` 블록 소스 뷰.
+- **페이지별 코드/프리뷰 듀얼 모드**: 모든 페이지는 소스 뷰와 렌더 뷰를 `viewMode` 토글로 전환할 수 있다. `renderable`이 false→true로 변할 때 자동으로 렌더 뷰로 전환된다.
+- **페이지 네비게이션**: 다중 페이지가 존재하면 상단에 탭 바가 표시되며, 각 탭은 종류(HTML/SVG/MD/Code/Text) + 제목 + 스트리밍 인디케이터를 보여준다. 좌우 화살표로 이동 가능.
+- 부분 편집 보존 규칙: `Edit`/`MultiEdit` `tool_use`는 `UniversalStreamExtractor`가 유지하는 파일별 baseline을 기준으로 `old_string → new_string` 치환을 수행한다. 이는 HTML뿐 아니라 모든 텍스트 파일 타입에 적용된다.
+- **라이브 프리뷰 페이지 지속성**: 새로운 Claude 쿼리가 시작되어도 `useLivePreviewStore.pages`는 초기화되지 않는다. 후속 쿼리의 `Edit`/`MultiEdit`가 이전 페이지의 연장선에서 동작할 수 있도록 하기 위해서이다.
+- **Baseline 디스크 폴백**: 메모리 baseline이 없는 상태에서 `Edit`/`MultiEdit`가 도착하면 `UniversalStreamExtractor`는 `onNeedBaseline(filePath, apply)` 이벤트를 방출한다. `useClaudeStore`는 `/api/files/read`를 통해 해당 파일 내용을 비동기로 읽어 `apply(content)`를 호출하고, extractor는 그 결과를 기준으로 치환을 적용한다.
+- **에디터 인수인계 규칙**: `Write`/`Edit` `tool_use`로 감지된 파일 경로는 `LivePage.filePath`에 저장된다. 사용자가 해당 파일을 에디터 탭으로 열면, 라이브 프리뷰는 에디터 탭의 `content`를 소스로 사용한다.
+- 쿼리 종료 이벤트(`result`) 시 finalize하여 모드를 `'complete'`로 전환한다.
+- 구현: `src/lib/claude/universal-stream-extractor.ts` (범용 추출기), `src/lib/claude/html-stream-extractor.ts` (레거시, deprecated), `src/stores/use-live-preview-store.ts` (다중 페이지 `LivePage[]` 모델), `src/stores/use-claude-store.ts` (추출기 연결, baseline 폴백), `src/components/panels/preview/live-stream-preview.tsx` (범용 라이브 프리뷰), `src/components/panels/preview/page-nav-bar.tsx` (페이지 네비게이션), `src/components/panels/preview/source-preview.tsx` (확장된 구문 강조).
 
 ### FR-611: 프리뷰 전체화면 모드 (v0.3)
 
@@ -737,6 +856,18 @@
 ### FR-804: 터미널 토글
 
 - `Cmd+J` / `Ctrl+J`로 터미널 패널을 토글할 수 있어야 한다.
+
+### FR-804-1: 에디터 토글
+
+- `Ctrl+Cmd+E` / `Ctrl+Alt+E`로 에디터 패널을 토글할 수 있어야 한다.
+
+### FR-804-2: Claude 채팅 토글
+
+- `Ctrl+Cmd+K` / `Ctrl+Alt+K`로 Claude 채팅 패널을 토글할 수 있어야 한다.
+
+### FR-804-3: 프리뷰 토글
+
+- `Ctrl+Cmd+P` / `Ctrl+Alt+P`로 프리뷰 패널을 토글할 수 있어야 한다.
 
 ### FR-805: 키보드 단축키 커스터마이징
 
@@ -1012,5 +1143,6 @@
 - 단일 SVG 소스(`public/branding/claudegui.svg`)가 모든 아이콘 래스터의 source of truth이다.
 - 빌드 스크립트(`scripts/build-icons.mjs`, macOS 전용)는 `qlmanage` + `sips`로 16/32/48/64/128/180/256/512 PNG를 생성하고, Vista+ 호환 PNG-in-ICO 형식으로 6개 사이즈를 묶은 `claudegui.ico`를 생성한다.
 - `src/app/icon.svg`와 `src/app/apple-icon.png`(180×180)은 Next.js App Router 파일 기반 메타데이터로 자동 노출되며, 별도 `<link rel="icon">` 선언 없이 `localhost:3000` 접속 시 favicon으로 표시된다.
-- 데스크톱 바로가기와 브라우저 favicon이 **동일한 마스코트**를 사용해 시각적 일관성을 유지한다.
-- 구현: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `scripts/install/install.sh`, `scripts/install/install.ps1`.
+- Tauri 데스크톱 앱 아이콘도 동일한 SVG 소스에서 생성된다: `installer/tauri/src-tauri/icons/`에 `32x32.png`, `128x128.png`, `128x128@2x.png`(256×256), `icon.ico`, `icon.icns`(`iconutil`로 생성)를 출력한다.
+- 데스크톱 바로가기, Tauri 네이티브 앱, 브라우저 favicon이 모두 **동일한 마스코트**를 사용해 시각적 일관성을 유지한다.
+- 구현: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `installer/tauri/src-tauri/icons/`, `scripts/install/install.sh`, `scripts/install/install.ps1`.

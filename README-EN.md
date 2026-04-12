@@ -18,8 +18,8 @@ A web-based IDE that wraps Anthropic's Claude CLI. A four-panel layout (file exp
 
 ## Key Features
 
-- **Four-panel layout** — `react-resizable-panels`, collapsible, resizable, auto-persisted to `localStorage`
-- **Monaco code editor** — VS Code engine, 100+ language grammars, multi-tab, AI diff accept/reject UI
+- **Four-panel layout** — `react-resizable-panels`, all 5 panels collapsible, resizable, double-click handle to reset sizes, auto-persisted to `localStorage`. Below 1280px, switches to tab-based single-panel mode
+- **Monaco code editor** — VS Code engine, 100+ language grammars, multi-tab, AI diff accept/reject UI, **Claude AI inline completion** (ghost text, Tab to accept), bracket colorization, code folding, sticky scroll, editor settings dropdown (tab size/word wrap/minimap, etc.)
 - **xterm.js terminal** — WebGL-accelerated, ANSI 256 colors, multi-session, backpressure control
 - **Claude CLI integration** — Streaming queries via `@anthropic-ai/claude-agent-sdk`, session management (resume/fork), cost/token tracking
 - **Permission request GUI** — Intercepts Claude tool invocations and shows an approve/deny modal, warns on dangerous commands, integrates with the `.claude/settings.json` allow/deny list
@@ -218,7 +218,7 @@ The built-in terminal spawns a real **login + interactive** shell (`['-l','-i']`
 - **Editor → terminal**: select text in the editor and press `Cmd/Ctrl+Shift+Enter` to run the selection (or the current line) in the active terminal. Focus stays in the editor.
 - **Background tab indicator**: inactive tabs show a blue dot next to the label when they receive new output.
 - **Context menu**: right-click for Copy / Paste / Select All / Clear / Find…. Pastes larger than 10 MB prompt for confirmation and are sent in 4 KB chunks.
-- **Theme and font**: the terminal palette follows the app theme (`dark` / `light` / `high-contrast` / `retro-green`). Font family, ligatures, and copy-on-select live under the Command Palette (`Terminal: …`).
+- **Theme and font**: the terminal palette follows the app theme (`dark` / `light` / `high-contrast` / `retro-green` / `system`). The `system` theme auto-follows OS dark/light preference in real time. Font family, ligatures, and copy-on-select live under the Command Palette (`Terminal: …`).
 - **File explorer integration**: right-click any file or folder to access **Open terminal here** (spawns a new tab in that directory) and **Reveal in Finder / File Explorer** (opens the native file manager with the entry selected).
 
 **PATH troubleshooting**: if `which claude` or `which node` fails in a new tab, first verify that your dotfiles export the expected directories to `PATH`. `echo $SHELL` shows which shell was actually spawned.
@@ -389,6 +389,14 @@ The full threat model and mitigations are in [docs/en/architecture/05-security-a
 | `claude` command not found | `npm install -g @anthropic-ai/claude-code` |
 | Git status not displayed | Confirm the project root is a Git repo (`git init`) |
 | Agent SDK events ignored | Compare the event type mapping in `server-handlers/claude-handler.mjs` with the actual SDK version |
+
+## What's new in v0.5
+
+- **Panel usability overhaul** — all 5 panels (File Explorer, Editor, Terminal, Claude Chat, Preview) now support collapse/expand. Migrated to `react-resizable-panels` imperative API. Double-click a resize handle to reset adjacent panels to default sizes. (FR-103, FR-106)
+- **Responsive mobile layout** — below 1280px viewport width, the app switches to a bottom tab-bar single-panel mode. (NFR-403, FR-107)
+- **System theme (auto)** — new `system` theme option auto-follows OS `prefers-color-scheme` in real time. (NFR-302)
+- **Theme independence** — `color-scheme` CSS property set on all themes ensures native scrollbars and form controls follow the app theme regardless of OS mode. FOUC prevention inline script added.
+- **New keyboard shortcuts** — `⌃⌘E` (toggle editor), `⌃⌘K` (toggle Claude chat), `⌃⌘P` (toggle preview)
 
 ## What's new in v0.3
 

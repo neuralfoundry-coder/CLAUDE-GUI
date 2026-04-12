@@ -288,92 +288,91 @@ debounce(300 ms)
   └── PDF → (not editable)
 ```
 
-### Live HTML → editor handoff flow (FR-610)
+### Universal live streaming flow (FR-610, v0.6)
 
-When Claude writes a `.html` file via a `Write`/`Edit` `tool_use` and the user then opens that file in the editor to make direct edits, the data flow is:
+All language code fences and all file type Write/Edit/MultiEdit tool uses from Claude's assistant response are detected and displayed as a multi-page live preview:
 
 ```
 Claude stream (assistant message)
   │
   ▼
-HtmlStreamExtractor.feedToolUse({name:'Write', input:{file_path, content}})
+UniversalStreamExtractor  (O(n) scan — scanOffset-based)
+  ├── feedText(chunk) — detects all ```language fences (html, python, typescript, etc.)
+  │   ├── fence open → onPageStart(page)  → useLivePreviewStore.addPage(page)
+  │   ├── chunk accum → onPageChunk(id, content, renderable) → updatePageContent
+  │   └── fence close → onPageComplete(id, content) → completePage
   │
-  ├── onChunk       → useLivePreviewStore.appendChunk(html, renderable)
-  └── onWritePath   → useLivePreviewStore.setGeneratedFilePath(filePath)
+  └── feedToolUse(tool) — all file types Write/Edit/MultiEdit
+      ├── Write → onPageStart + onPageChunk + onPageComplete
+      ├── Edit/MultiEdit → baseline applyEditOps → onPageChunk + onPageComplete
+      └── onWritePath → setGeneratedFilePath(filePath)
             │
             ▼
-     useLivePreviewStore { buffer, generatedFilePath }
+     useLivePreviewStore { pages: LivePage[], activePageIndex }
             │
             ▼
-     <LiveHtmlPreview>
-            │
-   ┌────────┴────────┐
-   │                 │
-   ▼                 ▼
-(no matching        (editor tab present
- editor tab →        with path === generatedFilePath →
- render buffer)      render tab.content)
-                          │
-                          ▼
-                   Monaco onChange
-                          │
-                          ▼
-                   useEditorStore.updateContent(id, content)
-                          │
-                          ▼
-                   debounce(150 ms) → update iframe srcdoc
+     <LiveStreamPreview>
+      ├── <PageNavBar>        (multi-page tab navigation)
+      └── <ActivePageRenderer>
+           ├── viewMode === 'source' → <SourcePreview> (highlight.js)
+           └── viewMode === 'rendered'
+                ├── html → iframe srcdoc (150ms debounce)
+                ├── svg → iframe srcdoc
+                ├── markdown → ReactMarkdown (200ms debounce)
+                ├── code → <SourcePreview> (syntax highlighted)
+                └── text → <pre> block
 ```
 
-- After the stream ends (`result`), `useLivePreviewStore.mode` may remain `live-html`, but `LiveHtmlPreview` switches its source from the buffer to the editor tab's `content` whenever a matching tab is open.
-- Edits made in Monaco flow into `useEditorStore.tabs[*].content` immediately, and `LiveHtmlPreview` re-renders (150 ms debounce) via Zustand subscription — no file save, disk write, or `@parcel/watcher` event is required.
-- HTML generated via bare ` ```html ` code fences (no file path) leaves `generatedFilePath` as `null` and continues to use the buffer-based render path.
+- Each page has an independent `viewMode` (source/rendered) that can be toggled.
+- When `renderable` transitions from false to true, the view automatically switches to rendered mode.
+- When an editor tab is open for the page's `filePath`, editor content is used as the source.
 
 ### Partial-edit preservation flow (FR-610)
 
-How the rendering of untouched pages is preserved when a follow-up query edits only a few sections of a multi-page HTML document:
+How the rendering of untouched pages is preserved when a follow-up query edits only a few sections of a multi-page document:
 
 ```
 First query: Write /tmp/deck.html (all 5 pages)
   │
   ▼
-HtmlStreamExtractor.feedToolUse(Write)
-  ├── lastFullHtml ← content           (baseline cached)
-  ├── onChunk     → appendChunk(html, true)   // buffer = full HTML
-  └── onWritePath → generatedFilePath = '/tmp/deck.html'
+UniversalStreamExtractor.feedToolUse(Write)
+  ├── baselines.set('/tmp/deck.html', content)
+  ├── onPageStart → addPage({kind:'html', ...})
+  ├── onPageChunk → updatePageContent(pageId, content, true)
+  └── onPageComplete → completePage(pageId, content)
 
 (query end: finalizeExtractor → currentExtractor = null)
-(startStream preserves buffer / generatedFilePath)
+(startStream preserves pages)
 
 Second query: "just fix the title on page 3"
   │
   ▼
-ensureExtractor() — new HtmlStreamExtractor
-  └── seedBaseline(useLivePreviewStore.buffer)   // seed with prior render
+ensureExtractor() — new UniversalStreamExtractor
+  └── seedBaseline(page.filePath, page.content)   // restore from existing pages
   │
   ▼
-HtmlStreamExtractor.feedToolUse(Edit {old_string, new_string})
-  ├── lastFullHtml present → applyEditOps(baseline, [op])
-  ├── lastFullHtml ← patched     (patched full HTML)
-  ├── onChunk     → appendChunk(patched, true)   // all 5 pages preserved
-  └── onWritePath → generatedFilePath (same path)
+UniversalStreamExtractor.feedToolUse(Edit {old_string, new_string})
+  ├── baselines lookup → applyEditOps(baseline, [op])
+  ├── onPageChunk → updatePageContent(pageId, patched, true)  // all 5 pages preserved
+  └── onPageComplete → completePage(pageId, patched)
 ```
 
 **Baseline disk fallback**: when the first interaction of a fresh session is an `Edit`/`MultiEdit` and no in-memory baseline exists:
 
 ```
-HtmlStreamExtractor.feedToolUse(Edit)
+UniversalStreamExtractor.feedToolUse(Edit)
   │
   ▼
-lastFullHtml missing → onNeedBaseline(filePath, apply)
+baselines empty → onNeedBaseline(filePath, apply)
   │
   ▼
-useClaudeStore.fetchHtmlFile
+useClaudeStore.fetchFileContent
   │
   ▼
 GET /api/files/read?path=... → { content }
   │
   ▼
-apply(content) → applyEditOps → onChunk/onComplete
+apply(content) → applyEditOps → onPageChunk/onPageComplete
 ```
 
 `MultiEdit`'s `edits[]` are applied in array order and the `replace_all` flag is honored. If an `old_string` is not present in the baseline, that operation is skipped so the preview state stays stable.
@@ -451,11 +450,45 @@ User                Claude            Server          Browser (React)       ifra
    └─────────┘  └─────────┘  └─────────┘  └────────┘
 ```
 
+### Layout state flow (panel collapse)
+
+All 5 panels have their collapsed state managed in `useLayoutStore` and synced to the DOM panels via `ImperativePanelHandle` imperative API:
+
+```
+user action (button, shortcut, resize drag)
+  │
+  ▼
+useLayoutStore.togglePanel(panelId) / setCollapsed(panelId, bool)
+  │
+  ▼
+store state change: {panelId}Collapsed = true | false
+  │
+  ▼
+useEffect detection (app-shell.tsx)
+  │
+  ├── collapsed → panelRef.current.collapse()
+  └── expanded  → panelRef.current.expand()
+        │
+        ▼
+react-resizable-panels internal layout recalculation
+  │
+  ▼
+onCollapse / onExpand callback → setCollapsed re-sync
+```
+
+In the mobile layout (< 1280px), panel collapsing is replaced by `mobileActivePanel` state that switches a single active panel:
+
+```
+tab bar tap → setMobileActivePanel(panelId) → MobileShell re-render
+```
+
 ### Persistence
 
 ```
-useLayoutStore ─── persist middleware ──▶ localStorage
-                                          key: 'claudegui-layout'
+useLayoutStore ─── persist middleware (v3) ──▶ localStorage (1s throttle)
+                                                key: 'claudegui-layout'
+                                                includes: panel sizes, 5 collapsed states,
+                                                          theme, mobileActivePanel
 
 (other stores are not persisted)
 ```
@@ -480,10 +513,14 @@ ws.onmessage = (event) => {
     case 'result':
       useClaudeStore.getState().updateCost(msg.data);
       break;
+    case 'completion_response':
+      // AI inline completion response → dispatched to registered callback (FR-309)
+      claudeClient.handleCompletionResponse(msg);
+      break;
   }
 };
 ```
 
 This lets WebSocket events update state independently of the React render cycle.
 
-**Related FR**: FR-104, FR-308, FR-507
+**Related FR**: FR-104, FR-308, FR-309, FR-507
