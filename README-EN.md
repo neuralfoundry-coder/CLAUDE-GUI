@@ -65,7 +65,7 @@ Custom Node.js server (server.js)
 | Editor | @monaco-editor/react |
 | Terminal | @xterm/xterm v5 + node-pty |
 | File tree | react-arborist v3.4 |
-| Panels | react-resizable-panels v4 |
+| Panels | react-resizable-panels v2 |
 | Preview | react-pdf, react-markdown, reveal.js |
 | WebSocket | ws v8 (not socket.io) |
 | CLI integration | @anthropic-ai/claude-agent-sdk |
@@ -250,7 +250,7 @@ ClaudeGUI/
 │   │   ├── websocket/        # WS client
 │   │   ├── fs/               # Filesystem sandbox (server)
 │   │   ├── claude/           # Agent SDK wrapper (server)
-│   │   └── pty/              # PTY bridge (server)
+│   │   └── terminal/         # Terminal manager, socket, themes (server)
 │   └── types/
 └── tests/
     ├── unit/
