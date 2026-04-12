@@ -63,7 +63,7 @@ Custom Node.js Server (server.js)
 | Editor | @monaco-editor/react |
 | Terminal | @xterm/xterm v5 + node-pty |
 | File Tree | react-arborist v3.4 |
-| Panels | react-resizable-panels v4 |
+| Panels | react-resizable-panels v2 |
 | Preview | react-pdf, react-markdown, reveal.js |
 | WebSocket | ws v8 (socket.io 아님) |
 | CLI Integration | @anthropic-ai/claude-agent-sdk |
@@ -226,12 +226,17 @@ ClaudeGUI의 내장 터미널은 실제 터미널 앱과 동일한 **로그인 +
 ```
 ClaudeGUI/
 ├── CLAUDE.md                 # Claude Code 컨벤션 및 변경 워크플로
+├── CLAUDE-EN.md              # CLAUDE.md 영문 미러
 ├── README.md                 # 본 문서
+├── README-EN.md              # README.md 영문 미러
 ├── server.js                 # 커스텀 Node.js 서버 (WS + Next.js)
 ├── docs/
 │   ├── research/             # 초기 기획 문서
 │   ├── srs/                  # 소프트웨어 요구사항 명세 (FR/NFR/UC)
-│   └── architecture/         # 아키텍처 설계 (ADR, 컴포넌트, 데이터흐름, API, 보안)
+│   ├── architecture/         # 아키텍처 설계 (ADR, 컴포넌트, 데이터흐름, API, 보안)
+│   └── en/                   # 영문 미러
+│       ├── srs/
+│       └── architecture/
 ├── src/
 │   ├── app/                  # Next.js App Router (pages, api routes)
 │   ├── components/
@@ -243,7 +248,7 @@ ClaudeGUI/
 │   │   ├── websocket/        # WS 클라이언트
 │   │   ├── fs/               # 파일시스템 샌드박스 (서버)
 │   │   ├── claude/           # Agent SDK 래퍼 (서버)
-│   │   └── pty/              # PTY 브릿지 (서버)
+│   │   └── terminal/         # 터미널 매니저·소켓·테마 (서버)
 │   └── types/
 └── tests/
     ├── unit/

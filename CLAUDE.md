@@ -82,11 +82,11 @@ ClaudeGUI is a web-based IDE that wraps Anthropic's Claude CLI, providing a prof
 - **Framework**: Next.js 14+ (App Router) with custom `server.js`
 - **Language**: TypeScript (strict mode)
 - **Styling**: Tailwind CSS + shadcn/ui (Radix primitives)
-- **State**: Zustand v5 (global) + Jotai (fine-grained)
+- **State**: Zustand v5
 - **Editor**: Monaco Editor (`@monaco-editor/react`)
 - **Terminal**: xterm.js v5 (`@xterm/xterm`) + node-pty
 - **File Tree**: react-arborist v3.4
-- **Panels**: react-resizable-panels v4
+- **Panels**: react-resizable-panels v2
 - **Preview**: react-pdf, react-markdown, reveal.js, iframe srcdoc
 - **WebSocket**: ws library (NOT socket.io)
 - **CLI Integration**: @anthropic-ai/claude-agent-sdk
@@ -101,16 +101,23 @@ src/
 │   ├── layout.tsx
 │   ├── page.tsx
 │   └── api/                # REST API route handlers
+│       ├── artifacts/
 │       ├── auth/
 │       ├── files/
+│       ├── git/
+│       ├── health/
 │       ├── project/
-│       └── sessions/
+│       ├── server/
+│       ├── sessions/
+│       ├── settings/
+│       └── terminal/
 ├── components/
 │   ├── ui/                 # shadcn/ui primitives (do not modify)
 │   ├── panels/             # Panel container components
 │   │   ├── file-explorer/
 │   │   ├── editor/
 │   │   ├── terminal/
+│   │   ├── claude/
 │   │   └── preview/
 │   ├── layout/             # App shell, panel group, header, auth badge
 │   ├── modals/             # Permission, project picker, login prompt
@@ -121,10 +128,20 @@ src/
 │   ├── websocket/          # WS client manager
 │   ├── fs/                 # File system utilities (server-side)
 │   ├── project/            # Runtime ProjectContext singleton (ADR-016)
-│   └── claude/             # Agent SDK wrapper + html-stream-extractor
+│   ├── claude/             # Agent SDK wrapper + html-stream-extractor
+│   ├── diff/               # LCS-based line diff for AI diff view
+│   ├── editor/             # Language map and editor helpers
+│   ├── export/             # PDF/PPTX export utilities
+│   ├── preview/            # Preview text extraction and downloads
+│   └── terminal/           # Terminal manager, socket, themes
 ├── types/                  # Shared TypeScript type definitions
 └── styles/                 # Global CSS (Tailwind base)
 server.js                   # Custom Node.js server (WS + Next.js)
+server-handlers/            # WebSocket + CLI handlers (server-side)
+├── claude-handler.mjs
+├── files-handler.mjs
+├── terminal-handler.mjs
+└── terminal/               # Session registry, shell resolver
 scripts/
 ├── install/                # One-line install scripts (macOS/Linux/Windows)
 └── installer-runtime/      # Tauri in-app helpers (ensure-claude-cli, …)
@@ -134,6 +151,7 @@ docs/
 ├── research/               # Planning & research documents
 ├── srs/                    # Software Requirements Specification (Korean)
 ├── architecture/           # Architecture design documents (Korean)
+├── qa/                     # QA checklists (terminal smoke test, etc.)
 └── en/                     # English mirrors
     ├── srs/
     └── architecture/
@@ -180,11 +198,20 @@ docs/
 - `persist` middleware: layout preferences and user settings only
 - Terminal buffers: never store in Zustand — use xterm.js internal buffer
 - Stores:
-  - `useLayoutStore`: panel sizes, collapsed states
-  - `useEditorStore`: open files, active tab, dirty states
-  - `useTerminalStore`: session list, active session ID
+  - `useLayoutStore`: panel sizes, collapsed states, responsive mode
+  - `useEditorStore`: open files, active tab, dirty states, AI diff hunks
+  - `useTerminalStore`: session list, active session ID, split state
   - `useClaudeStore`: sessions, messages, cost, permission requests
   - `usePreviewStore`: current preview type, page number, zoom
+  - `useLivePreviewStore`: streaming HTML/Markdown preview state
+  - `useProjectStore`: current project root, recent projects
+  - `useAuthStore`: Claude CLI authentication status
+  - `useArtifactStore`: generated content gallery entries
+  - `useSettingsStore`: user preferences (theme, font, editor config)
+  - `useConnectionStore`: WebSocket endpoint connection states
+  - `useFileClipboardStore`: cut/copy file operations
+  - `useFileContextMenuStore`: context menu position and target node
+  - `useRemoteAccessStore`: remote access state
 
 ## WebSocket Protocol
 
@@ -273,6 +300,6 @@ npm run build && NODE_ENV=production node server.js
 - `node-pty` needs native build tools (`python3`, `make`, `g++`)
 - Never combine `allow-scripts` + `allow-same-origin` in iframe sandbox
 - xterm.js has 50MB write buffer limit — implement watermark backpressure
-- Do not re-introduce `chokidar` — on macOS it falls back to `fs.watch` (1 FD/dir) and hits the 256 per-process soft limit, crashing with `EMFILE` (ADR-024). Use `@parcel/watcher` which holds one OS handle per root via FSEvents/inotify/RDCW.
+- Do not re-introduce `chokidar` — on macOS it falls back to `fs.watch` (one FD per directory) and hits the 256 per-process soft limit, crashing with `EMFILE` (ADR-024). Use `@parcel/watcher` which holds a single OS handle per root via FSEvents/inotify/RDCW.
 - Custom server disables Next.js Automatic Static Optimization
 - `server.js` must handle WebSocket upgrade for both HMR and app endpoints
