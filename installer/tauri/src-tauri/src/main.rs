@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::env;
+use std::fs;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -9,15 +10,36 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 struct Sidecar {
     child: Arc<Mutex<Option<Child>>>,
     port: u16,
+    app_handle: AppHandle,
 }
 
-fn pick_port() -> std::io::Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ServerConfig {
+    #[serde(default)]
+    remote_access: bool,
+    #[serde(default)]
+    remote_access_token: Option<String>,
+}
+
+fn load_server_config() -> ServerConfig {
+    let home = dirs::home_dir().unwrap_or_default();
+    let config_path = home.join(".claudegui").join("server-config.json");
+    match fs::read_to_string(&config_path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => ServerConfig::default(),
+    }
+}
+
+fn pick_port(bind_all: bool) -> std::io::Result<u16> {
+    let addr = if bind_all { "0.0.0.0:0" } else { "127.0.0.1:0" };
+    let listener = TcpListener::bind(addr)?;
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
@@ -55,7 +77,7 @@ fn compose_path_env(app: &AppHandle) -> String {
     format!("{}{}{}", bin.to_string_lossy(), sep, current)
 }
 
-fn spawn_server(app: &AppHandle, port: u16) -> std::io::Result<Child> {
+fn spawn_server(app: &AppHandle, port: u16, config: &ServerConfig) -> std::io::Result<Child> {
     let node = bundled_node_path(app);
     let server_js = resource_path(app, "server.js");
 
@@ -65,10 +87,12 @@ fn spawn_server(app: &AppHandle, port: u16) -> std::io::Result<Child> {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    let host = if config.remote_access { "0.0.0.0" } else { "127.0.0.1" };
+
     let mut cmd = Command::new(node);
     cmd.arg(server_js)
         .env("NODE_ENV", "production")
-        .env("HOST", "127.0.0.1")
+        .env("HOST", host)
         .env("PORT", port.to_string())
         .env("HOME", home)
         .env("PATH", compose_path_env(app))
@@ -79,6 +103,10 @@ fn spawn_server(app: &AppHandle, port: u16) -> std::io::Result<Child> {
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+
+    if let Some(ref token) = config.remote_access_token {
+        cmd.env("CLAUDEGUI_TOKEN", token);
+    }
 
     cmd.spawn()
 }
@@ -101,15 +129,55 @@ fn stop_sidecar(sidecar: &Sidecar) {
     let mut guard = sidecar.child.lock().unwrap();
     if let Some(mut child) = guard.take() {
         #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            let _ = Command::new("kill")
-                .arg("-TERM")
-                .arg(child.id().to_string())
-                .exec();
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGTERM);
         }
-        let _ = child.wait_with_output();
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
     }
+}
+
+#[tauri::command]
+fn restart_server(state: tauri::State<'_, Sidecar>) -> Result<String, String> {
+    // Stop existing sidecar
+    {
+        let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+        if let Some(mut child) = guard.take() {
+            #[cfg(unix)]
+            {
+                // Send SIGTERM
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGTERM);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+    }
+
+    // Reload config and respawn
+    let config = load_server_config();
+    let port = state.port;
+
+    let child = spawn_server(&state.app_handle, port, &config)
+        .map_err(|e| format!("Failed to restart server: {}", e))?;
+
+    {
+        let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+        *guard = Some(child);
+    }
+
+    if !wait_for_health(port, Duration::from_secs(15)) {
+        return Err("Server health check timed out after restart".to_string());
+    }
+
+    Ok("Server restarted successfully".to_string())
 }
 
 fn main() {
@@ -117,17 +185,20 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![restart_server])
         .setup(|app| {
             let handle = app.handle().clone();
-            let port = pick_port().expect("failed to pick free port");
+            let config = load_server_config();
+            let port = pick_port(config.remote_access).expect("failed to pick free port");
 
             let sidecar = Sidecar {
                 child: Arc::new(Mutex::new(None)),
                 port,
+                app_handle: handle.clone(),
             };
             app.manage(sidecar);
 
-            let started = spawn_server(&handle, port)?;
+            let started = spawn_server(&handle, port, &config)?;
             if let Some(sc) = handle.try_state::<Sidecar>() {
                 *sc.child.lock().unwrap() = Some(started);
             }
