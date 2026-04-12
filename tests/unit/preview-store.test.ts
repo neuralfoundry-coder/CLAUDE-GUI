@@ -87,3 +87,30 @@ describe('usePreviewStore viewMode', () => {
     expect(usePreviewStore.getState().currentFile).toBe('/tmp/x.md');
   });
 });
+
+describe('usePreviewStore renderedHtml', () => {
+  beforeEach(() => {
+    usePreviewStore.setState({ renderedHtml: null });
+  });
+
+  it('defaults to null', () => {
+    expect(usePreviewStore.getState().renderedHtml).toBeNull();
+  });
+
+  it('setRenderedHtml stores HTML', () => {
+    usePreviewStore.getState().setRenderedHtml('<html>test</html>');
+    expect(usePreviewStore.getState().renderedHtml).toBe('<html>test</html>');
+  });
+
+  it('setRenderedHtml(null) clears it', () => {
+    usePreviewStore.getState().setRenderedHtml('<html>test</html>');
+    usePreviewStore.getState().setRenderedHtml(null);
+    expect(usePreviewStore.getState().renderedHtml).toBeNull();
+  });
+
+  it('setFile resets renderedHtml to null', () => {
+    usePreviewStore.getState().setRenderedHtml('<html>test</html>');
+    usePreviewStore.getState().setFile('/tmp/other.md');
+    expect(usePreviewStore.getState().renderedHtml).toBeNull();
+  });
+});

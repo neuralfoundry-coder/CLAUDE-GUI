@@ -500,6 +500,9 @@ export function ClaudeChatPanel() {
       <DropOverlay visible={isDragOver} />
       <div className="flex h-7 items-center justify-between border-b bg-muted px-2">
         <div className="flex items-center gap-1.5">
+          {isStreaming && (
+            <span className="claude-status-dot h-1.5 w-1.5 rounded-full bg-primary" />
+          )}
           <span className="text-xs font-semibold uppercase text-muted-foreground">Claude</span>
           <ModelSelector />
         </div>
@@ -618,6 +621,8 @@ export function ClaudeChatPanel() {
         </div>
       )}
 
+      {isStreaming && <div className="claude-streaming-bar" />}
+
       <div className="border-t p-2">
         <div className="flex items-start gap-2">
           <div className="relative flex-1">
@@ -650,7 +655,7 @@ export function ClaudeChatPanel() {
               aria-autocomplete="list"
               aria-expanded={mentionOpen || slashOpen}
               rows={2}
-              className="w-full resize-none rounded-md border bg-background p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              className={`w-full resize-none rounded-md border bg-background p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring${isStreaming ? ' claude-streaming-input' : ''}`}
             />
           </div>
           {isStreaming ? (

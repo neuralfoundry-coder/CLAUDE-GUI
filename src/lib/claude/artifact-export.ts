@@ -17,14 +17,27 @@ export interface ExportOption {
   label: string;
 }
 
-export function availableExports(artifact: ExtractedArtifact): ExportOption[] {
-  // File-backed binary artifacts (docx/xlsx/pptx/pdf/image from /api/files/raw)
-  // expose a single "Original file" download — everything else would require
-  // a round-trip decode + re-encode we don't support.
+export function availableExports(
+  artifact: ExtractedArtifact,
+  /** When true, rendered HTML is available for cross-format export of file-backed types. */
+  hasRenderedHtml?: boolean,
+): ExportOption[] {
+  // File-backed binary artifacts (docx/xlsx/pptx/pdf/image from /api/files/raw).
   if (artifact.source === 'file' && artifact.filePath) {
-    return [
+    const options: ExportOption[] = [
       { format: 'file', label: `Original (.${extensionFor(artifact.language, artifact.kind)})` },
     ];
+    // When the preview component has rendered HTML, offer cross-format exports.
+    if (hasRenderedHtml) {
+      options.push({ format: 'pdf', label: 'PDF (인쇄 대화상자)' });
+      options.push({ format: 'html', label: 'HTML (.html)' });
+      options.push({ format: 'doc', label: 'Word (.doc)' });
+    }
+    // PDF files: always allow print even without renderedHtml (direct iframe print).
+    if (!hasRenderedHtml && artifact.kind === 'pdf') {
+      options.push({ format: 'pdf', label: 'PDF (인쇄 대화상자)' });
+    }
+    return options;
   }
 
   const options: ExportOption[] = [
@@ -33,22 +46,22 @@ export function availableExports(artifact: ExtractedArtifact): ExportOption[] {
   if (artifact.kind === 'markdown') {
     options.push(
       { format: 'html', label: 'HTML (.html)' },
-      { format: 'pdf', label: 'PDF (print dialog)' },
+      { format: 'pdf', label: 'PDF (인쇄 대화상자)' },
       { format: 'doc', label: 'Word (.doc)' },
     );
   } else if (artifact.kind === 'html') {
     options.push(
-      { format: 'pdf', label: 'PDF (print dialog)' },
+      { format: 'pdf', label: 'PDF (인쇄 대화상자)' },
       { format: 'doc', label: 'Word (.doc)' },
     );
   } else if (artifact.kind === 'svg') {
     options.push(
       { format: 'png', label: 'PNG (.png)' },
-      { format: 'pdf', label: 'PDF (print dialog)' },
+      { format: 'pdf', label: 'PDF (인쇄 대화상자)' },
     );
   } else {
     options.push(
-      { format: 'pdf', label: 'PDF (print dialog)' },
+      { format: 'pdf', label: 'PDF (인쇄 대화상자)' },
       { format: 'txt', label: 'Plain text (.txt)' },
     );
   }
@@ -77,6 +90,91 @@ async function downloadBinaryFile(artifact: ExtractedArtifact): Promise<void> {
   if (!blob) throw new Error('Download failed');
   const ext = extensionFor(artifact.language, artifact.kind);
   triggerDownload(blob, `${safeName(artifact.title)}.${ext}`);
+}
+
+/**
+ * Export a file-backed artifact using pre-rendered HTML from the preview component.
+ * This enables PDF/HTML/Doc export for docx, xlsx, pptx, and raster images.
+ */
+export function exportWithRenderedHtml(
+  artifact: ExtractedArtifact,
+  format: ExportFormat,
+  renderedHtml: string,
+  pdfOptions?: PdfExportOptions,
+): void {
+  const inlineArtifact: ExtractedArtifact = {
+    ...artifact,
+    kind: 'html',
+    language: 'html',
+    content: renderedHtml,
+    source: 'inline',
+  };
+  switch (format) {
+    case 'pdf':
+      printViaIframe(inlineArtifact, pdfOptions);
+      return;
+    case 'html': {
+      const html = toStandaloneHtml(inlineArtifact, pdfOptions);
+      downloadBlob(html, `${safeName(artifact.title)}.html`, 'text/html');
+      return;
+    }
+    case 'doc': {
+      const html = toStandaloneHtml(inlineArtifact);
+      const wordHtml =
+        '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+        'xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">' +
+        html +
+        '</html>';
+      downloadBlob(wordHtml, `${safeName(artifact.title)}.doc`, 'application/msword');
+      return;
+    }
+    default:
+      // Fall back to standard export for other formats (e.g. 'file').
+      exportArtifact(artifact, format, pdfOptions);
+  }
+}
+
+/**
+ * Print a PDF file directly by loading it into a hidden iframe.
+ */
+export function printPdfDirect(filePath: string): void {
+  const url = `/api/files/raw?path=${encodeURIComponent(filePath)}`;
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.cssText =
+    'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;';
+
+  let cleaned = false;
+  let safetyTimer: number | null = null;
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (safetyTimer !== null) {
+      window.clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
+    if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+  };
+
+  iframe.addEventListener('load', () => {
+    const win = iframe.contentWindow;
+    if (!win) { cleanup(); return; }
+    // Give the PDF renderer a moment to paint.
+    setTimeout(() => {
+      try {
+        win.addEventListener('afterprint', cleanup, { once: true });
+        win.focus();
+        win.print();
+        safetyTimer = window.setTimeout(cleanup, 60_000);
+      } catch {
+        cleanup();
+      }
+    }, 500);
+  }, { once: true });
+
+  iframe.src = url;
+  document.body.appendChild(iframe);
 }
 
 export function exportArtifact(

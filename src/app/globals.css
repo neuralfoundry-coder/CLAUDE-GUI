@@ -188,77 +188,77 @@
 }
 
 /* Claude panel streaming border animation */
-@property --border-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-
-@keyframes border-rotate {
-  to {
-    --border-angle: 360deg;
-  }
-}
-
-@keyframes border-pulse {
+@keyframes streaming-border {
   0%, 100% {
-    opacity: 0.6;
+    border-color: hsl(var(--primary) / 0.3);
+    box-shadow: inset 1px 0 0 0 hsl(var(--primary) / 0.15);
   }
   50% {
-    opacity: 1;
+    border-color: hsl(var(--primary) / 0.7);
+    box-shadow: inset 1px 0 0 0 hsl(var(--primary) / 0.35);
   }
 }
 
 .claude-streaming {
-  position: relative;
-  border-left-color: transparent !important;
+  animation: streaming-border 2s ease-in-out infinite;
 }
 
-.claude-streaming::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  z-index: 1;
-  border-radius: inherit;
-  padding: 1px;
-  background: conic-gradient(
-    from var(--border-angle),
-    transparent 40%,
-    hsl(var(--primary) / 0.5) 50%,
-    hsl(var(--ring) / 0.8) 55%,
-    hsl(var(--primary) / 0.5) 60%,
-    transparent 70%
-  );
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  mask-composite: exclude;
-  animation:
-    border-rotate 3s linear infinite,
-    border-pulse 2s ease-in-out infinite;
-  pointer-events: none;
+/* Animated gradient bar shown above the input when Claude is working */
+@keyframes streaming-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
 }
 
-/* Subtle outer glow when streaming */
-.claude-streaming::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  z-index: 0;
-  border-radius: inherit;
-  background: conic-gradient(
-    from var(--border-angle),
-    transparent 35%,
-    hsl(var(--primary) / 0.08) 50%,
-    transparent 65%
+.claude-streaming-bar {
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(var(--primary) / 0.15) 15%,
+    hsl(var(--primary) / 0.6) 30%,
+    hsl(var(--primary)) 50%,
+    hsl(var(--primary) / 0.6) 70%,
+    hsl(var(--primary) / 0.15) 85%,
+    transparent 100%
   );
-  animation: border-rotate 3s linear infinite;
-  filter: blur(4px);
-  pointer-events: none;
+  background-size: 200% 100%;
+  animation: streaming-gradient 1.8s linear infinite;
+}
+
+/* Pulsing glow ring on the textarea when streaming */
+@keyframes streaming-ring {
+  0%, 100% {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.15),
+                0 0 4px 0 hsl(var(--primary) / 0.08);
+  }
+  50% {
+    box-shadow: 0 0 0 1.5px hsl(var(--primary) / 0.4),
+                0 0 8px 0 hsl(var(--primary) / 0.15);
+  }
+}
+
+.claude-streaming-input {
+  animation: streaming-ring 2s ease-in-out infinite;
+}
+
+/* Header status dot animation */
+@keyframes status-pulse {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.claude-status-dot {
+  animation: status-pulse 1.5s ease-in-out infinite;
 }
 
 @layer utilities {

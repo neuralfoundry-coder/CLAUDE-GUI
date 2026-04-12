@@ -804,13 +804,19 @@
   | `markdown` | Source(`.md`), HTML(`.html`), PDF(인쇄 대화상자), Word(`.doc`) |
   | `slides` | Source(`.md`), HTML(`.html`), PDF(인쇄 대화상자) |
   | `image` (SVG) | Source(`.svg`), PNG(`.png`), PDF(인쇄 대화상자) |
-  | `image` (PNG/JPEG/GIF/WebP 등) | Original file (원본 바이트 그대로) |
-  | `pdf` | Original file |
-  | `docx` | Original file |
-  | `xlsx` | Original file |
-  | `pptx` | Original file |
+  | `image` (PNG/JPEG/GIF/WebP 등) | Original file, PDF(인쇄 대화상자), HTML(`.html`), Word(`.doc`) |
+  | `pdf` | Original file, PDF(인쇄 대화상자—직접 인쇄) |
+  | `docx` | Original file, PDF(인쇄 대화상자), HTML(`.html`), Word(`.doc`) |
+  | `xlsx` | Original file, PDF(인쇄 대화상자), HTML(`.html`), Word(`.doc`) |
+  | `pptx` | Original file, PDF(인쇄 대화상자), HTML(`.html`), Word(`.doc`) |
 
 - 텍스트 기반 타입(`html`/`markdown`/`slides`, 그리고 `.svg` 이미지)은 에디터 탭의 in-memory 내용이 있으면 이를 사용하고, 없으면 `filesApi.read()`로 디스크에서 읽어 변환/다운로드한다. 파일 기반 바이너리 타입(`pdf`/`image`(SVG 제외)/`docx`/`xlsx`/`pptx`)은 `/api/files/raw?path=...`에서 원본 바이트를 스트리밍하여 다운로드한다.
+- **렌더링된 HTML 캐싱을 통한 크로스 포맷 내보내기**: 파일 기반 바이너리 타입(docx/xlsx/pptx/래스터 이미지)의 프리뷰 컴포넌트는 렌더링된 HTML을 `usePreviewStore.renderedHtml`에 캐싱한다. 이 캐시가 존재하면 PDF(인쇄 대화상자), HTML(`.html`), Word(`.doc`) 내보내기가 추가로 활성화된다. 내보내기 시 `exportWithRenderedHtml()`이 캐시된 HTML을 인라인 HTML 아티팩트로 변환하여 기존 `printViaIframe()`/다운로드 파이프라인을 재사용한다.
+  - **DOCX**: mammoth.js가 변환한 HTML 전체를 캐싱.
+  - **XLSX**: SheetJS가 생성한 모든 시트의 HTML 테이블을 페이지 구분자(`page-break-before`)로 연결하여 캐싱. 인쇄 시 전체 시트가 출력된다.
+  - **PPTX**: 추출된 텍스트/이미지를 슬라이드별 HTML로 재구성하여 가로(landscape) 레이아웃으로 캐싱.
+  - **래스터 이미지**: `<img>` 태그를 감싸는 단순 HTML을 캐싱. SVG는 기존 인라인 파이프라인을 사용하므로 제외.
+- **PDF 직접 인쇄**: PDF 파일은 `printPdfDirect()`를 통해 원본 PDF를 숨겨진 iframe에 로드하고 브라우저 인쇄 대화상자를 직접 호출한다. 이를 통해 페이지 선택, 양면 인쇄 등 OS 인쇄 옵션을 그대로 사용할 수 있다. PDF 내보내기 설정 다이얼로그는 표시하지 않는다(이미 PDF이므로).
 - **PDF 내보내기 설정 다이얼로그**: PDF 내보내기를 선택하면 브라우저 인쇄 대화상자를 띄우기 전에 `PdfExportDialog`를 표시하여 다음 옵션을 선택할 수 있다.
   - **페이지 방향**: 자동 감지(기본, HTML 자체 `@page` 규칙 존중) / 세로(Portrait) / 가로(Landscape).
   - **페이지 크기**: A4(기본) / Letter / Legal.
@@ -818,8 +824,7 @@
 - PDF 인쇄 CSS는 `buildPrintCss(options)`로 동적 생성되며, 선택된 방향·크기를 `@page { size: … }` 규칙에 반영한다. 자동 모드에서는 `@page` 규칙을 주입하지 않아 HTML 문서의 기존 레이아웃을 온전히 보존한다.
 - 페이지 구분 규칙 강화: `<hr>`은 `page-break-after: always`로 페이지 구분자 역할을 하고, `<section>`, `.slide`, `[data-page-break]`은 `page-break-before: always`를 적용한다. 제목(`h1`–`h6`)은 `page-break-after: avoid`로 본문과 분리되지 않도록 보호한다.
 - PDF 내보내기는 `window.print()`로 브라우저 인쇄 대화상자를 띄워 운영체제의 "PDF로 저장"으로 내보낸다(FR-1004의 아티팩트 내보내기와 동일 정책). 서버 측 PDF 렌더러(Puppeteer 등)는 요구하지 않는다.
-- DOCX/XLSX/PPTX 바이너리 타입은 프리뷰 뷰어가 이미 `/api/files/raw`로 원본을 읽으므로 "Original file" 한 가지만 노출한다. 트랜스코드(예: DOCX → PDF)는 v1.0 범위 외로 지원하지 않는다.
-- 구현: `src/lib/preview/preview-download.ts`(프리뷰 상태를 `ExtractedArtifact` 모양으로 어댑터해 `src/lib/claude/artifact-export.ts`의 기존 다운로드/인쇄 파이프라인을 재사용), `src/components/panels/preview/preview-download-menu.tsx`(헤더 드롭다운 + PDF 다이얼로그 연동), `src/components/panels/preview/pdf-export-dialog.tsx`(PDF 내보내기 설정 다이얼로그), `src/components/panels/preview/preview-panel.tsx`(헤더 배치).
+- 구현: `src/lib/preview/preview-download.ts`(프리뷰 상태를 `ExtractedArtifact` 모양으로 어댑터, `renderedHtml` 기반 크로스 포맷 라우팅 포함), `src/lib/claude/artifact-export.ts`(`availableExports()` 확장 + `exportWithRenderedHtml()` + `printPdfDirect()` 추가), `src/components/panels/preview/preview-download-menu.tsx`(헤더 드롭다운 + PDF 다이얼로그 연동 + `renderedHtml` 소비), `src/components/panels/preview/pdf-export-dialog.tsx`(PDF 내보내기 설정 다이얼로그), `src/stores/use-preview-store.ts`(`renderedHtml` 캐시 상태 추가), `src/components/panels/preview/{docx,xlsx,pptx,image}-preview.tsx`(렌더링된 HTML을 스토어에 게시).
 
 ### FR-614: 프리뷰 소스/렌더 뷰 토글 (v0.5)
 

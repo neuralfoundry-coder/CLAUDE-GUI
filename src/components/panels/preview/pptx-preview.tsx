@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { fetchArtifactBytes } from '@/lib/claude/artifact-url';
+import { usePreviewStore } from '@/stores/use-preview-store';
 
 interface PptxPreviewProps {
   path: string;
@@ -122,6 +123,37 @@ export function PptxPreview({ path }: PptxPreviewProps) {
       for (const url of objectUrls) URL.revokeObjectURL(url);
     };
   }, [path]);
+
+  // Publish rendered HTML for cross-format export (PDF via print, etc.)
+  // Each slide becomes a landscape page for printing.
+  const setRenderedHtml = usePreviewStore((s) => s.setRenderedHtml);
+  const allSlidesHtml = useMemo(() => {
+    if (slides.length === 0) return null;
+    const slideBodies = slides.map((s, i) => {
+      const bullets = s.bullets.length > 0
+        ? `<ul style="list-style:disc;padding-left:20px;font-size:18px;color:#374151">${s.bullets.map((b) => `<li>${b}</li>`).join('')}</ul>`
+        : '';
+      // Note: object-URL images won't work in print iframe, skip them for print.
+      return `<div class="slide-page"${i > 0 ? ' style="page-break-before:always"' : ''}>
+        <h2 style="font-size:28px;font-weight:600;color:#111;margin:0 0 16px">${s.title}</h2>
+        ${bullets}
+      </div>`;
+    }).join('\n');
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
+    @page { size: A4 landscape; margin: 20mm; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 40px; color: #111; }
+    .slide-page { display: flex; flex-direction: column; justify-content: center; min-height: calc(100vh - 80px); }
+    @media print {
+      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .slide-page { min-height: auto; padding: 20px 0; }
+    }
+  </style></head><body>${slideBodies}</body></html>`;
+  }, [slides]);
+
+  useEffect(() => {
+    setRenderedHtml(allSlidesHtml);
+    return () => setRenderedHtml(null);
+  }, [allSlidesHtml, setRenderedHtml]);
 
   if (loading) return <div className="p-4 text-xs text-muted-foreground">Loading PowerPoint deck…</div>;
   if (error) return <div className="p-4 text-xs text-red-500">{error}</div>;

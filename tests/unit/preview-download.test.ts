@@ -39,7 +39,7 @@ describe('previewDownloadOptions', () => {
     expect(opts.map((o) => o.format)).toEqual(['source', 'png', 'pdf']);
   });
 
-  it('only exposes "file" for raster image previews', () => {
+  it('only exposes "file" for raster image previews without renderedHtml', () => {
     const opts = previewDownloadOptions({
       filePath: '/tmp/photo.png',
       type: 'image',
@@ -48,16 +48,26 @@ describe('previewDownloadOptions', () => {
     expect(opts.map((o) => o.format)).toEqual(['file']);
   });
 
-  it('only exposes "file" for pdf previews', () => {
+  it('exposes file + pdf + html + doc for raster images with renderedHtml', () => {
+    const opts = previewDownloadOptions({
+      filePath: '/tmp/photo.png',
+      type: 'image',
+      content: '',
+      renderedHtml: '<html><body><img src="/api/files/raw?path=photo.png"></body></html>',
+    });
+    expect(opts.map((o) => o.format)).toEqual(['file', 'pdf', 'html', 'doc']);
+  });
+
+  it('exposes "file" + "pdf" for pdf previews (direct print)', () => {
     const opts = previewDownloadOptions({
       filePath: '/tmp/report.pdf',
       type: 'pdf',
       content: '',
     });
-    expect(opts.map((o) => o.format)).toEqual(['file']);
+    expect(opts.map((o) => o.format)).toEqual(['file', 'pdf']);
   });
 
-  it('only exposes "file" for docx/xlsx/pptx previews', () => {
+  it('only exposes "file" for docx/xlsx/pptx previews without renderedHtml', () => {
     for (const [ext, type] of [
       ['docx', 'docx'],
       ['xlsx', 'xlsx'],
@@ -69,6 +79,22 @@ describe('previewDownloadOptions', () => {
         content: '',
       });
       expect(opts.map((o) => o.format)).toEqual(['file']);
+    }
+  });
+
+  it('exposes file + pdf + html + doc for docx/xlsx/pptx with renderedHtml', () => {
+    for (const [ext, type] of [
+      ['docx', 'docx'],
+      ['xlsx', 'xlsx'],
+      ['pptx', 'pptx'],
+    ] as const) {
+      const opts = previewDownloadOptions({
+        filePath: `/tmp/sheet.${ext}`,
+        type,
+        content: '',
+        renderedHtml: '<html><body>rendered content</body></html>',
+      });
+      expect(opts.map((o) => o.format)).toEqual(['file', 'pdf', 'html', 'doc']);
     }
   });
 });

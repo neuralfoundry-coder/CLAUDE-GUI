@@ -25,6 +25,11 @@ interface PreviewState {
   slideEditMode: boolean;
   /** Index of the currently selected slide (0-based) */
   selectedSlideIndex: number;
+  /**
+   * Rendered HTML cached by preview components (docx/xlsx/pptx/image).
+   * Enables PDF-via-print and other cross-format exports for file-backed types.
+   */
+  renderedHtml: string | null;
   setFile: (path: string | null) => void;
   setPage: (page: number) => void;
   setZoom: (zoom: number) => void;
@@ -35,6 +40,7 @@ interface PreviewState {
   setSlideEditMode: (enabled: boolean) => void;
   toggleSlideEditMode: () => void;
   setSelectedSlideIndex: (index: number) => void;
+  setRenderedHtml: (html: string | null) => void;
 }
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -45,7 +51,8 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   viewMode: 'rendered',
   slideEditMode: false,
   selectedSlideIndex: 0,
-  setFile: (currentFile) => set({ currentFile, pageNumber: 1, viewMode: 'rendered', slideEditMode: false, selectedSlideIndex: 0 }),
+  renderedHtml: null,
+  setFile: (currentFile) => set({ currentFile, pageNumber: 1, viewMode: 'rendered', slideEditMode: false, selectedSlideIndex: 0, renderedHtml: null }),
   setPage: (pageNumber) => set({ pageNumber }),
   setZoom: (zoom) => set({ zoom }),
   toggleFullscreen: () => set((s) => ({ fullscreen: !s.fullscreen })),
@@ -55,6 +62,7 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   setSlideEditMode: (slideEditMode) => set({ slideEditMode }),
   toggleSlideEditMode: () => set((s) => ({ slideEditMode: !s.slideEditMode })),
   setSelectedSlideIndex: (selectedSlideIndex) => set({ selectedSlideIndex }),
+  setRenderedHtml: (renderedHtml) => set({ renderedHtml }),
 }));
 
 export function isSourceToggleable(type: PreviewType): boolean {

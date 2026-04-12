@@ -29,12 +29,16 @@ interface ResolvedInput {
   needsFetch: boolean;
   /** True while a live stream is backing this download (prevents disk fetch). */
   fromLive: boolean;
+  /** Rendered HTML from the preview component (for file-backed cross-format export). */
+  renderedHtml: string | null;
 }
 
 export function PreviewDownloadMenu() {
   const currentFile = usePreviewStore((s) => s.currentFile);
   const activeTabId = useEditorStore((s) => s.activeTabId);
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
+
+  const renderedHtml = usePreviewStore((s) => s.renderedHtml);
 
   const liveMode = useLivePreviewStore((s) => s.mode);
   const liveBuffer = useLivePreviewStore((s) => s.buffer);
@@ -79,6 +83,7 @@ export function PreviewDownloadMenu() {
         inMemoryContent: content,
         needsFetch: false,
         fromLive: true,
+        renderedHtml: null,
       };
     }
     const filePath = currentFile ?? activeTab?.path ?? null;
@@ -97,8 +102,9 @@ export function PreviewDownloadMenu() {
       inMemoryContent: inMemory,
       needsFetch: inlineNeeded && !inMemory,
       fromLive: false,
+      renderedHtml: renderedHtml,
     };
-  }, [showingLive, generatedFilePath, liveBuffer, currentFile, activeTab]);
+  }, [showingLive, generatedFilePath, liveBuffer, currentFile, activeTab, renderedHtml]);
 
   const options = useMemo(() => {
     if (!resolved) return [];
@@ -106,6 +112,7 @@ export function PreviewDownloadMenu() {
       filePath: resolved.filePath,
       type: resolved.type,
       content: resolved.inMemoryContent,
+      renderedHtml: resolved.renderedHtml,
     });
   }, [resolved]);
 
@@ -114,7 +121,12 @@ export function PreviewDownloadMenu() {
       if (!resolved) return;
       setPdfDialogOpen(false);
       downloadPreview(
-        { filePath: resolved.filePath, type: resolved.type, content: pendingPdfContentRef.current },
+        {
+          filePath: resolved.filePath,
+          type: resolved.type,
+          content: pendingPdfContentRef.current,
+          renderedHtml: resolved.renderedHtml,
+        },
         'pdf',
         opts,
       );
@@ -146,14 +158,32 @@ export function PreviewDownloadMenu() {
     setOpen(false);
 
     if (format === 'pdf') {
-      // For PDF, show options dialog first.
+      // PDF files: print directly via iframe, no options dialog needed.
+      if (resolved.type === 'pdf') {
+        downloadPreview(
+          {
+            filePath: resolved.filePath,
+            type: resolved.type,
+            content: '',
+            renderedHtml: null,
+          },
+          'pdf',
+        );
+        return;
+      }
+
+      // For other types, show PDF options dialog first.
       setBusy(true);
       try {
         const content = await resolveContent(resolved);
         pendingPdfContentRef.current = content;
-        // Auto-detect landscape hint from HTML content.
-        const isHtml = resolved.type === 'html' || resolved.type === 'slides';
-        setPdfLandscapeHint(isHtml && detectLandscapeHint(content));
+        // Auto-detect landscape hint from HTML content or rendered HTML.
+        const htmlSource = content || resolved.renderedHtml || '';
+        const isHtmlContent =
+          resolved.type === 'html' ||
+          resolved.type === 'slides' ||
+          !!resolved.renderedHtml;
+        setPdfLandscapeHint(isHtmlContent && detectLandscapeHint(htmlSource));
         setPdfDialogOpen(true);
       } finally {
         setBusy(false);
@@ -165,7 +195,12 @@ export function PreviewDownloadMenu() {
     try {
       const content = await resolveContent(resolved);
       downloadPreview(
-        { filePath: resolved.filePath, type: resolved.type, content },
+        {
+          filePath: resolved.filePath,
+          type: resolved.type,
+          content,
+          renderedHtml: resolved.renderedHtml,
+        },
         format,
       );
     } finally {

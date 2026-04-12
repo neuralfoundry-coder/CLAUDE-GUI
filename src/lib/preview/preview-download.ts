@@ -4,6 +4,8 @@ import type { ExtractedArtifact, ArtifactKind } from '@/lib/claude/artifact-extr
 import {
   availableExports,
   exportArtifact,
+  exportWithRenderedHtml,
+  printPdfDirect,
   type ExportOption,
   type ExportFormat,
   type PdfExportOptions,
@@ -16,6 +18,11 @@ export interface PreviewDownloadInput {
   filePath: string;
   type: Exclude<PreviewType, 'none'>;
   content: string;
+  /**
+   * Rendered HTML from the preview component. When present for file-backed
+   * types (docx/xlsx/pptx/image), enables cross-format exports (PDF, HTML, Doc).
+   */
+  renderedHtml?: string | null;
 }
 
 function basename(p: string): string {
@@ -137,7 +144,8 @@ function toArtifact(input: PreviewDownloadInput): ExtractedArtifact {
 }
 
 export function previewDownloadOptions(input: PreviewDownloadInput): ExportOption[] {
-  return availableExports(toArtifact(input));
+  const hasRenderedHtml = !!input.renderedHtml;
+  return availableExports(toArtifact(input), hasRenderedHtml);
 }
 
 export function downloadPreview(
@@ -145,5 +153,24 @@ export function downloadPreview(
   format: ExportFormat,
   pdfOptions?: PdfExportOptions,
 ): void {
-  exportArtifact(toArtifact(input), format, pdfOptions);
+  const artifact = toArtifact(input);
+
+  // PDF files: use direct iframe print (loads the actual PDF, not HTML).
+  if (artifact.kind === 'pdf' && format === 'pdf' && artifact.filePath) {
+    printPdfDirect(artifact.filePath);
+    return;
+  }
+
+  // File-backed types with rendered HTML: route through the rendered-HTML exporter
+  // for cross-format exports (pdf, html, doc).
+  if (
+    artifact.source === 'file' &&
+    input.renderedHtml &&
+    (format === 'pdf' || format === 'html' || format === 'doc')
+  ) {
+    exportWithRenderedHtml(artifact, format, input.renderedHtml, pdfOptions);
+    return;
+  }
+
+  exportArtifact(artifact, format, pdfOptions);
 }

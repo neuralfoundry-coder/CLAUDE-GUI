@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchArtifactBytes } from '@/lib/claude/artifact-url';
+import { usePreviewStore } from '@/stores/use-preview-store';
 
 interface DocxPreviewProps {
   path: string;
@@ -17,6 +18,7 @@ export function DocxPreview({ path }: DocxPreviewProps) {
   const [html, setHtml] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const setRenderedHtml = usePreviewStore((s) => s.setRenderedHtml);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,10 +46,9 @@ export function DocxPreview({ path }: DocxPreviewProps) {
     };
   }, [path]);
 
-  if (loading) return <div className="p-4 text-xs text-muted-foreground">Loading Word document…</div>;
-  if (error) return <div className="p-4 text-xs text-red-500">{error}</div>;
-
-  const wrapped = `<!doctype html><html><head><meta charset="utf-8"><style>
+  const wrapped = useMemo(() => {
+    if (!html) return null;
+    return `<!doctype html><html><head><meta charset="utf-8"><style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
            max-width: 780px; margin: 2rem auto; padding: 0 1.5rem;
            line-height: 1.6; color: #111; background: #fff; }
@@ -56,6 +57,17 @@ export function DocxPreview({ path }: DocxPreviewProps) {
     td, th { border: 1px solid #ddd; padding: 0.4rem 0.6rem; }
     img { max-width: 100%; height: auto; }
   </style></head><body>${html}</body></html>`;
+  }, [html]);
+
+  // Publish rendered HTML for cross-format export (PDF via print, etc.)
+  useEffect(() => {
+    setRenderedHtml(wrapped);
+    return () => setRenderedHtml(null);
+  }, [wrapped, setRenderedHtml]);
+
+  if (loading) return <div className="p-4 text-xs text-muted-foreground">Loading Word document...</div>;
+  if (error) return <div className="p-4 text-xs text-red-500">{error}</div>;
+  if (!wrapped) return <div className="p-4 text-xs text-muted-foreground">Empty document.</div>;
 
   return (
     <iframe

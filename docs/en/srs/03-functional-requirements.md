@@ -815,13 +815,19 @@
   | `markdown` | Source (`.md`), HTML (`.html`), PDF (print dialog), Word (`.doc`) |
   | `slides` | Source (`.md`), HTML (`.html`), PDF (print dialog) |
   | `image` (SVG) | Source (`.svg`), PNG (`.png`), PDF (print dialog) |
-  | `image` (PNG/JPEG/GIF/WebP …) | Original file (raw bytes) |
-  | `pdf` | Original file |
-  | `docx` | Original file |
-  | `xlsx` | Original file |
-  | `pptx` | Original file |
+  | `image` (PNG/JPEG/GIF/WebP …) | Original file, PDF (print dialog), HTML (`.html`), Word (`.doc`) |
+  | `pdf` | Original file, PDF (print dialog — direct print) |
+  | `docx` | Original file, PDF (print dialog), HTML (`.html`), Word (`.doc`) |
+  | `xlsx` | Original file, PDF (print dialog), HTML (`.html`), Word (`.doc`) |
+  | `pptx` | Original file, PDF (print dialog), HTML (`.html`), Word (`.doc`) |
 
 - Text-backed types (`html`/`markdown`/`slides`, plus `.svg` images) reuse the in-memory content from the editor tab when available; otherwise they fetch from disk via `filesApi.read()` before converting and downloading. File-backed binary types (`pdf`/`image` except SVG/`docx`/`xlsx`/`pptx`) stream the original bytes from `/api/files/raw?path=...`.
+- **Cross-format export via rendered HTML caching**: Preview components for file-backed binary types (docx/xlsx/pptx/raster images) cache their rendered HTML in `usePreviewStore.renderedHtml`. When this cache is present, PDF (print dialog), HTML (`.html`), and Word (`.doc`) exports are additionally enabled. On export, `exportWithRenderedHtml()` converts the cached HTML into an inline HTML artifact and reuses the existing `printViaIframe()`/download pipeline.
+  - **DOCX**: Caches the full HTML produced by mammoth.js.
+  - **XLSX**: Caches all sheets' HTML tables joined with page-break separators (`page-break-before`). Printing outputs all sheets.
+  - **PPTX**: Reconstructs extracted text/images into per-slide HTML with landscape layout.
+  - **Raster images**: Caches a simple HTML wrapper with an `<img>` tag. SVG is excluded (uses the existing inline pipeline).
+- **PDF direct print**: PDF files use `printPdfDirect()` to load the original PDF into a hidden iframe and invoke the browser print dialog directly. This gives full access to OS print options (page selection, duplex, etc.). The PDF export options dialog is not shown (the file is already PDF).
 - **PDF export options dialog**: When the user selects PDF export, a `PdfExportDialog` is shown before the browser print dialog, offering the following options:
   - **Page orientation**: Auto-detect (default, respects the HTML document's own `@page` rules) / Portrait / Landscape.
   - **Page size**: A4 (default) / Letter / Legal.
@@ -829,8 +835,7 @@
 - Print CSS is dynamically generated via `buildPrintCss(options)`, reflecting the selected orientation and size in the `@page { size: … }` rule. In auto mode no `@page` rule is injected, fully preserving the HTML document's existing layout.
 - Enhanced page-break rules: `<hr>` acts as a page separator via `page-break-after: always`; `<section>`, `.slide`, and `[data-page-break]` elements trigger `page-break-before: always`. Headings (`h1`–`h6`) are protected with `page-break-after: avoid` to prevent orphaned titles.
 - PDF export opens `window.print()` to trigger the browser print dialog and lets the user save via the OS "Save as PDF" flow — the same policy as the artifact export pipeline (FR-1004). No server-side PDF renderer (Puppeteer, etc.) is required.
-- DOCX/XLSX/PPTX binary types expose only "Original file" because the viewer already reads the file via `/api/files/raw`. Transcoding (e.g. DOCX → PDF) is out of scope for v1.0.
-- Implementation: `src/lib/preview/preview-download.ts` (adapts the live preview state into an `ExtractedArtifact` shape and reuses the download/print pipeline in `src/lib/claude/artifact-export.ts`), `src/components/panels/preview/preview-download-menu.tsx` (header dropdown + PDF dialog integration), `src/components/panels/preview/pdf-export-dialog.tsx` (PDF export options dialog), `src/components/panels/preview/preview-panel.tsx` (header placement).
+- Implementation: `src/lib/preview/preview-download.ts` (adapts preview state into `ExtractedArtifact` shape, includes `renderedHtml`-based cross-format routing), `src/lib/claude/artifact-export.ts` (extended `availableExports()` + `exportWithRenderedHtml()` + `printPdfDirect()`), `src/components/panels/preview/preview-download-menu.tsx` (header dropdown + PDF dialog integration + `renderedHtml` consumption), `src/components/panels/preview/pdf-export-dialog.tsx` (PDF export options dialog), `src/stores/use-preview-store.ts` (`renderedHtml` cache state), `src/components/panels/preview/{docx,xlsx,pptx,image}-preview.tsx` (publish rendered HTML to store).
 
 ### FR-614: Preview source/rendered view toggle (v0.5)
 

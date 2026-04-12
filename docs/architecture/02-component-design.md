@@ -349,7 +349,7 @@ src/components/panels/preview/
 └── preview-download-menu.tsx       # 즉시 다운로드 드롭다운
 ```
 
-`usePreviewStore`는 `currentFile`/`pageNumber`/`zoom`/`fullscreen` 외에 `viewMode: 'rendered' | 'source'` 필드를 유지한다(FR-614). 기본값은 `'rendered'`이며 `setFile` 호출 시 자동으로 `'rendered'`로 리셋되어 파일 전환 시 소스 뷰가 고착되지 않는다. `isSourceToggleable(type)` 헬퍼가 `html`/`markdown`/`slides`에만 토글을 허용한다.
+`usePreviewStore`는 `currentFile`/`pageNumber`/`zoom`/`fullscreen` 외에 `viewMode: 'rendered' | 'source'` 필드를 유지한다(FR-614). 기본값은 `'rendered'`이며 `setFile` 호출 시 자동으로 `'rendered'`로 리셋되어 파일 전환 시 소스 뷰가 고착되지 않는다. `isSourceToggleable(type)` 헬퍼가 `html`/`markdown`/`slides`에만 토글을 허용한다. `renderedHtml: string | null` 필드(FR-613)는 파일 기반 프리뷰 컴포넌트(docx/xlsx/pptx/image)가 렌더링한 HTML을 캐싱하여 크로스 포맷 내보내기(PDF/HTML/Doc)를 가능하게 한다. `setFile` 호출 시 `null`로 초기화된다.
 
 슬라이드 편집을 위해 `slideEditMode: boolean`과 `selectedSlideIndex: number`(0-based) 필드가 추가되었다(FR-702, FR-703). `setFile` 호출 시 두 값 모두 초기화(`false`, `0`)된다. Edit 토글 버튼은 `type === 'slides' && viewMode !== 'source'`일 때만 헤더에 표시된다.
 
@@ -458,14 +458,16 @@ window.addEventListener('message', (e) => {
 
 프리뷰 패널 헤더에는 현재 렌더 중인 콘텐츠를 포맷별로 즉시 다운로드하는 드롭다운이 포함된다. 라이브 프리뷰가 활성화된 동안에도 메뉴는 유지되며, 스트리밍된 버퍼(혹은 동기화 중인 에디터 탭 내용)를 인라인 HTML 아티팩트로 취급하여 즉시 다운로드한다.
 
-- **어댑터** (`src/lib/preview/preview-download.ts`): `(filePath, type, content)` 입력을 `src/lib/claude/artifact-extractor.ts`의 `ExtractedArtifact` 모양으로 변환한다. 텍스트 프리뷰(`html`/`markdown`/`slides`, 그리고 `.svg` 이미지)는 `source: 'inline'`로, 나머지 바이너리(`pdf`/`image`(SVG 제외)/`docx`/`xlsx`/`pptx`)는 `source: 'file'` + `filePath`로 빌드된다. 이후 `availableExports()` / `exportArtifact()` (`src/lib/claude/artifact-export.ts`)에 위임하여 기존 다운로드·인쇄 파이프라인을 그대로 재사용한다.
+- **어댑터** (`src/lib/preview/preview-download.ts`): `(filePath, type, content, renderedHtml?)` 입력을 `src/lib/claude/artifact-extractor.ts`의 `ExtractedArtifact` 모양으로 변환한다. 텍스트 프리뷰(`html`/`markdown`/`slides`, 그리고 `.svg` 이미지)는 `source: 'inline'`로, 나머지 바이너리(`pdf`/`image`(SVG 제외)/`docx`/`xlsx`/`pptx`)는 `source: 'file'` + `filePath`로 빌드된다. 이후 `availableExports()` / `exportArtifact()` (`src/lib/claude/artifact-export.ts`)에 위임하여 기존 다운로드·인쇄 파이프라인을 그대로 재사용한다. `renderedHtml`이 존재하면 `exportWithRenderedHtml()`로 라우팅하여 파일 기반 타입의 크로스 포맷 내보내기(PDF/HTML/Doc)를 처리한다.
+- **렌더링된 HTML 캐시** (`usePreviewStore.renderedHtml`): 프리뷰 컴포넌트(docx/xlsx/pptx/image)는 렌더링 시 생성한 HTML을 스토어에 게시한다. 파일이 전환되면(`setFile`) 자동으로 `null`로 초기화된다. 이 캐시가 존재하면 `availableExports(artifact, true)`가 "Original file" 외에 PDF/HTML/Doc 옵션을 추가로 반환한다.
+- **PDF 직접 인쇄** (`printPdfDirect()`): PDF 파일은 원본 바이트를 숨겨진 iframe에 로드하고 `contentWindow.print()`를 호출하여 브라우저 인쇄 대화상자를 직접 띄운다. PDF 내보내기 설정 다이얼로그(`PdfExportDialog`)는 건너뛴다.
 - **헤더 컴포넌트** (`src/components/panels/preview/preview-download-menu.tsx`): 다음 우선순위로 다운로드 소스를 해석한다.
   1. **라이브 모드 우선 (`showingLive`)**: `useLivePreviewStore.autoSwitch && mode !== 'idle'`일 때, 필드를 이 순서로 확정한다. filePath = `generatedFilePath ?? 'live-preview.html'`, `type = 'html'`, `content = (editorTab[generatedFilePath]?.content) ?? buffer`. 버퍼가 빈 문자열이면 메뉴를 렌더링하지 않는다.
-  2. **일반 파일 프리뷰**: `usePreviewStore.currentFile` 또는 활성 에디터 탭 경로에서 `PreviewType`을 도출하고, 텍스트 기반 타입(`html`/`markdown`/`slides` + `.svg`)은 편집기 탭 in-memory 내용을 먼저 시도하고 없으면 `filesApi.read()`로 지연 로드한다. 파일 기반 바이너리 타입은 content를 요구하지 않는다.
+  2. **일반 파일 프리뷰**: `usePreviewStore.currentFile` 또는 활성 에디터 탭 경로에서 `PreviewType`을 도출하고, 텍스트 기반 타입(`html`/`markdown`/`slides` + `.svg`)은 편집기 탭 in-memory 내용을 먼저 시도하고 없으면 `filesApi.read()`로 지연 로드한다. 파일 기반 바이너리 타입은 content를 요구하지 않지만, `usePreviewStore.renderedHtml`을 함께 전달하여 크로스 포맷 내보내기를 활성화한다.
   3. 확정된 입력을 `previewDownloadOptions(input)` → `downloadPreview(input, format)`으로 넘긴다.
 - **라이브 스트리밍 표기**: `mode === 'live-code'`(아직 렌더 가능한 단위가 감지되지 않은 부분 청크)일 때는 드롭다운 헤더 캡션이 `Download (streaming…)`, `mode === 'live-html'`(렌더 가능)일 때는 `Download live buffer`, 비(非)라이브 상태에서는 `Download as`로 표시되어 사용자가 어느 상태에서 캡처한 스냅샷인지 인지할 수 있다. 라이브 HTML 버퍼는 `html-stream-extractor.ts`가 누적한 전체 문서(이전 페이지까지 생성 완료 + 현재 스트리밍 중인 꼬리)를 담으므로, 5페이지 문서 중 3페이지가 완성된 시점에서 다운로드하면 해당 시점의 전체 버퍼가 저장된다.
 - **패널 배치** (`src/components/panels/preview/preview-panel.tsx`): 헤더 우측의 `Fullscreen` 토글 왼쪽에 `PreviewDownloadMenu`를 배치한다. `showLive` 여부와 무관하게 항상 렌더링된다.
-- **포맷 매트릭스**는 FR-613에 정의된 표를 따른다. DOCX/XLSX/PPTX는 "Original file" 한 가지만 노출하며 트랜스코드는 v1.0 범위 밖이다. PDF 내보내기는 브라우저 인쇄 대화상자를 통해 OS "PDF로 저장"으로 라우팅되므로 서버 측 PDF 렌더러(Puppeteer 등)는 필요하지 않다.
+- **포맷 매트릭스**는 FR-613에 정의된 표를 따른다. PDF 내보내기는 브라우저 인쇄 대화상자를 통해 OS "PDF로 저장"으로 라우팅되므로 서버 측 PDF 렌더러(Puppeteer 등)는 필요하지 않다.
 
 ## 2.7 ClaudeIntegration 모듈
 
@@ -746,7 +748,7 @@ Claude가 스트리밍으로 전달한 코드·HTML·Markdown·SVG는 물론, Wr
 | `src/lib/claude/artifact-extractor.ts` | 정규식 기반 텍스트 추출기. 펜스 코드 블록, 독립 `<!doctype html>` 문서, 독립 `<svg>` 요소를 추출하며 `classifyByPath`/`isBinaryKind`/`titleFromPath` 헬퍼로 확장자→kind 매핑과 바이너리 판별을 제공한다. 텍스트 기반 아티팩트는 `{messageId}:{index}` 안정 ID를 사용한다. |
 | `src/lib/claude/artifact-from-tool.ts` | `Write`/`Edit`/`MultiEdit` tool_use 블록을 아티팩트 레코드로 변환. Write는 `file_path` 확장자로 kind를 결정해 텍스트 본문을 인라인 스냅샷으로 저장하거나(`source: "inline"`) 바이너리는 `source: "file"`로 경로만 보관한다. Edit/MultiEdit은 기존 인라인 아티팩트에 `old_string → new_string` 패치를 적용한다. 모든 tool_use 아티팩트 ID는 `file:{absolutePath}` 형식이라 같은 파일에 대한 반복 호출이 한 항목으로 합쳐진다(FR-1008). |
 | `src/stores/use-artifact-store.ts` | zustand 스토어. `artifacts`, `isOpen`, `autoOpen`, `highlightedId`, `pendingTurn`, `modalSize` 상태와 `extractFromMessage`/`ingestToolUse`/`findByFilePath`/`flushPendingOpen`/`open`/`close`/`setAutoOpen`/`setModalSize`/`remove`/`clear` 액션 제공. `persist` v3 미들웨어가 `claudegui-artifacts` 키에 최대 200개의 아티팩트와 함께 `autoOpen`·`modalSize`를 영속화하며, `onRehydrateStorage` 훅이 복원된 `filePath`들을 서버 레지스트리에 재등록한다(FR-1009). |
-| `src/lib/claude/artifact-export.ts` | `copyArtifact`, `availableExports`, `exportArtifact`를 노출. 인라인 텍스트는 소스/HTML/Word(`.doc`)/PDF/PNG(SVG→`canvas.toBlob`) 내보내기를 제공한다. PDF는 `printViaIframe()`이 비가시 `<iframe>`에 `srcdoc`(또는 1.5MB 초과 시 blob URL)로 독립 HTML을 로드하고, 이미지 `decode()` 대기 + 2프레임 RAF 후 `contentWindow.print()`를 호출한 뒤 `afterprint`와 60초 안전 타이머로 정리한다. 생성 HTML은 `@page`/`@media print` 규칙을 포함한다. 파일 기반 바이너리 아티팩트는 `downloadBinaryFile`이 `/api/artifacts/raw` → `/api/files/raw` 폴백으로 원본 파일을 다운로드한다. |
+| `src/lib/claude/artifact-export.ts` | `copyArtifact`, `availableExports`, `exportArtifact`, `exportWithRenderedHtml`, `printPdfDirect`를 노출. 인라인 텍스트는 소스/HTML/Word(`.doc`)/PDF/PNG(SVG→`canvas.toBlob`) 내보내기를 제공한다. PDF는 `printViaIframe()`이 비가시 `<iframe>`에 `srcdoc`(또는 1.5MB 초과 시 blob URL)로 독립 HTML을 로드하고, 이미지 `decode()` 대기 + 2프레임 RAF 후 `contentWindow.print()`를 호출한 뒤 `afterprint`와 60초 안전 타이머로 정리한다. 생성 HTML은 `@page`/`@media print` 규칙을 포함한다. 파일 기반 바이너리 아티팩트는 `downloadBinaryFile`이 `/api/artifacts/raw` → `/api/files/raw` 폴백으로 원본 파일을 다운로드한다. `exportWithRenderedHtml()`은 프리뷰 컴포넌트가 캐싱한 렌더링 HTML을 인라인 HTML 아티팩트로 변환하여 PDF/HTML/Doc 내보내기를 처리한다. `printPdfDirect()`는 PDF 파일 원본을 숨겨진 iframe에 로드하여 직접 인쇄한다. `availableExports(artifact, hasRenderedHtml?)`는 두 번째 인수로 렌더링 HTML 존재 여부를 받아 파일 기반 타입에 추가 포맷 옵션을 동적으로 노출한다. |
 | `src/lib/claude/artifact-registry.ts` | 서버 측 인-프로세스 아티팩트 경로 레지스트리(최대 1024). `registerArtifactPath`, `isArtifactPathRegistered` 등을 제공한다. |
 | `src/lib/claude/artifact-url.ts` | 클라이언트 전용 URL/바이트 헬퍼. `/api/artifacts/raw`를 먼저 시도하고 실패 시 `/api/files/raw`로 폴백한다. |
 | `src/app/api/artifacts/register/route.ts` | `POST /api/artifacts/register`. `{ paths: [] }`를 받아 `fs.stat()` 검증 후 레지스트리에 등록. 레이트 리밋과 50MB 상한을 적용한다. |
