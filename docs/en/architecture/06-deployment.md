@@ -575,7 +575,7 @@ This path **complements rather than replaces** the Tauri `.dmg`/`.msi` native in
 |------|---------------|---------|
 | Icon directory | `~/.claudegui/icons/` | `%LOCALAPPDATA%\ClaudeGUI\icons\` |
 | Launcher script | `~/.claudegui/bin/claudegui-launcher.sh` | `%LOCALAPPDATA%\ClaudeGUI\bin\claudegui-launcher.ps1` |
-| Desktop shortcut | `~/Desktop/ClaudeGUI.command` (mac) / `.desktop` (linux) | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` |
+| Desktop shortcut | `~/Desktop/ClaudeGUI.app` (mac) / `.desktop` (linux) | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` |
 | Launcher log | `~/.claudegui/logs/launcher.log` (append) | `%USERPROFILE%\.claudegui\logs\launcher.log` (append) |
 
 ### Launcher flow
@@ -587,7 +587,7 @@ This path **complements rather than replaces** the Tauri `.dmg`/`.msi` native in
 [ console window opens ] ──┐
         │                  │
         ▼                  │
-[ banner printed ]         │ macOS:   .command → Terminal.app
+[ banner printed ]         │ macOS:   .app bundle → open -a Terminal → bash
 [ env exported ]           │ Linux:   .desktop → x-terminal-emulator → bash
         │                  │ Windows: .lnk     → powershell.exe
         ▼
@@ -611,7 +611,7 @@ This path **complements rather than replaces** the Tauri `.dmg`/`.msi` native in
 
 ### Trade-offs
 
-- **macOS uses the default Terminal icon.** Attaching a custom icon to a `.command` file requires resource forks (`Rez`/`SetFile`) or an external tool such as `fileicon`, or moving to a full `.app` bundle and dealing with Gatekeeper signing. We chose to avoid both. The mascot icon is still surfaced in the browser favicon and on Linux/Windows desktop shortcuts.
+- **macOS uses a lightweight `.app` bundle to display the mascot icon.** The bundle consists of a minimal `Info.plist`, a shell-script executable, and `AppIcon.icns`. Since it is created locally by the installer (not downloaded), it does not carry a Gatekeeper quarantine attribute and runs without code signing. The same mascot character shown as the favicon appears in Finder and the Dock.
 - **Closing the window stops the server.** No background daemonization, no system-tray icon. This keeps lifecycle management explicit and prevents zombie processes when users forget to stop the server. If you need long-running execution use ADR-018 (Tauri native app) or `scripts/dev.sh --background`.
 - **30-second polling timeout.** Cold-start `next start` is well under 30 seconds in practice; if it isn't, the launcher prints a manual-open hint and lets the user finish the session themselves.
 - **Tee real-time behaviour.** Both bash `tee` and PowerShell `Tee-Object` are line-buffered, so the user sees logs as they happen. We did not force `node`'s stdout to line-buffered (no measurable issue today).

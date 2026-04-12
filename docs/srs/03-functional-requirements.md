@@ -989,19 +989,21 @@
 
 ### FR-1002: 자동 팝업 표시
 
-- Claude 한 턴(응답)에서 하나 이상의 아티팩트가 새로 추출되면, 턴 종료(`result` 이벤트) 시점에 생성 콘텐츠 갤러리 모달이 자동으로 열려야 한다.
+- Claude 한 턴(응답)에서 하나 이상의 아티팩트가 새로 추출되면, 턴 종료(`result` 이벤트) **또는 에러(`error` 이벤트)** 시점에 생성 콘텐츠 갤러리 모달이 자동으로 열려야 한다. 에러 발생 시에도 이전에 수집된 아티팩트가 유실되지 않도록 `flushPendingOpen`을 호출한다.
 - 사용자가 갤러리 설정에서 "Auto-open on new content"를 비활성화한 경우에는 열리지 않는다.
+- 수동으로 갤러리를 열 때(`open()` 호출) 특정 `highlightedId`가 지정되지 않으면 가장 최근 아티팩트가 자동 선택되어 프리뷰 영역이 빈 상태로 표시되지 않는다.
 - 세션 히스토리를 불러올 때 발생하는 아티팩트 추출은 "사일런트 추출"로 처리되며 자동 팝업을 발생시키지 않는다.
 
 ### FR-1003: 영속 저장 (localStorage)
 
 - 추출된 아티팩트는 브라우저 `localStorage`에 보존되어야 하며, 새로고침 이후에도 동일 갤러리가 복원되어야 한다.
-- 저장 키: `claudegui-artifacts` (zustand `persist` 미들웨어, `version: 3`). v2까지는 `artifacts`/`autoOpen`만 영속화했으며 v3부터는 FR-1005의 모달 크기(`modalSize`)도 함께 저장한다.
-- 저장 상한은 200개로 제한하며, 상한 초과 시 오래된 항목부터 삭제한다.
+- 저장 키: `claudegui-artifacts` (zustand `persist` 미들웨어, `version: 4`). v2까지는 `artifacts`/`autoOpen`만 영속화했으며 v3부터는 FR-1005의 모달 크기(`modalSize`)도 함께 저장한다.
+- **인메모리 상한은 200개**, **localStorage 영속 상한은 30개**로 제한한다. `partialize`에서 `artifacts.slice(-30)`으로 가장 최근 30건만 저장하여 localStorage 할당량을 보호한다. 인메모리에서는 세션 동안 최대 200개를 유지한다.
 - `autoOpen` 설정 역시 동일 키에 영속화한다.
 - 바이너리 아티팩트(`source: "file"`)는 콘텐츠를 base64로 인코딩하지 않고 절대 경로(`filePath`)와 메타데이터만 저장한다. localStorage 할당량을 보호하기 위함이다.
 - 하이드레이션 후 `onRehydrateStorage` 훅이 `filePath`가 있는 아티팩트를 모아 `POST /api/artifacts/register`로 서버 측 레지스트리에 재등록하여 FR-1009의 교차 프로젝트 접근 경로를 복원한다.
 - v1 → v2 마이그레이션: 기존 v1 레코드에 `source: "inline"`, `updatedAt: createdAt` 기본값을 채워 호환을 유지한다.
+- v3 → v4 마이그레이션: 기존 200개 상한 데이터를 30개로 트림한다.
 
 ### FR-1004: 복사 및 내보내기
 
@@ -1020,7 +1022,8 @@
 ### FR-1005: 갤러리 UI
 
 - 갤러리 모달은 좌측 목록 + 우측 상세 프리뷰 레이아웃으로 구성된다.
-- 각 목록 항목은 종류 배지(HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), 제목(파일 기반이면 파일명), 언어/확장자, 상대 시각을 표시한다.
+- **검색 및 필터**: 사이드바 상단에 검색 입력창과 종류별(All/HTML/SVG/Code/…) 필터 칩을 제공한다. 검색은 제목, 언어, 파일 경로를 대상으로 대소문자 무시 부분 일치를 수행한다. 필터 칩은 현재 아티팩트에 존재하는 종류만 동적으로 표시된다.
+- 각 목록 항목은 종류 배지(HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), 제목(파일 기반이면 파일명), 언어/확장자, 상대 시각을 표시한다. 파일 기반 아티팩트는 추가로 파일 경로 마지막 2세그먼트를 표시한다.
 - 각 목록 항목은 호버 시 드러나는 개별 삭제(Trash) 버튼을 포함한다. 버튼 클릭 시 해당 아티팩트만 `useArtifactStore.remove(id)`로 제거되며, 현재 선택된 항목이 삭제되면 기존 자동 재선택 이펙트가 다음 항목을 선택한다. 행의 기본 클릭 동작(선택)과 분리되도록 삭제 버튼은 클릭 이벤트 전파를 중단한다. 접근성을 위해 행은 `role="button"` + `tabIndex=0` + Enter/Space 키보드 선택을 지원하고, 내부 삭제 버튼은 `aria-label="Delete {title}"`을 노출한다.
 - 상세 영역은 **Preview / Source** 토글을 제공한다. 기본값은 Preview이며, 아티팩트 종류별 렌더링은 다음과 같다.
   - **HTML**: `<iframe sandbox="allow-scripts">` + `srcDoc` (allow-same-origin은 금지; 프리뷰 패널과 동일한 정책).
@@ -1113,11 +1116,11 @@
 
 | OS | 파일 | 더블클릭 동작 | 아이콘 처리 |
 |----|------|-------------|----------|
-| macOS | `~/Desktop/ClaudeGUI.command` (chmod +x) | Terminal.app이 자동 실행되어 launcher 스크립트를 실행 | 단순성을 위해 기본 Terminal 아이콘을 그대로 사용 (`.app` 번들 미사용 — Gatekeeper 서명 불요) |
+| macOS | `~/Desktop/ClaudeGUI.app` (경량 `.app` 번들) | `open -a Terminal`로 launcher 스크립트를 실행하는 Terminal 창을 열어줌 | `Contents/Resources/AppIcon.icns`에 마스코트 아이콘 — favicon과 동일한 캐릭터 |
 | Linux | `~/Desktop/ClaudeGUI.desktop` | `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xterm` 폴백 체인에서 launcher 실행 | `Icon=` 필드에 절대경로 SVG 지정. GNOME 환경에서는 `gio set ... metadata::trusted true` 설정 |
 | Windows | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` | `WScript.Shell.CreateShortcut`로 생성된 PowerShell 콘솔 창 | `IconLocation`에 `claudegui.ico,0` 지정 |
 
-- macOS는 첫 실행 시 Gatekeeper로 인해 우클릭 → 열기가 필요할 수 있으며, 인스톨러는 이 점을 사용자에게 경고로 출력해야 한다.
+- macOS `.app` 번들은 로컬에서 인스톨러가 직접 생성하므로 Gatekeeper 격리(quarantine) 속성이 붙지 않아 서명 없이도 즉시 실행 가능하다. 기존 `.command` 방식 대비 마스코트 아이콘이 Finder/Dock에 표시된다.
 
 ### FR-1102: 런처 스크립트 동작
 

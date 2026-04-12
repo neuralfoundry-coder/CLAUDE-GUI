@@ -566,7 +566,7 @@ jobs:
 |------|---------------|---------|
 | 아이콘 디렉토리 | `~/.claudegui/icons/` | `%LOCALAPPDATA%\ClaudeGUI\icons\` |
 | 런처 스크립트 | `~/.claudegui/bin/claudegui-launcher.sh` | `%LOCALAPPDATA%\ClaudeGUI\bin\claudegui-launcher.ps1` |
-| 데스크톱 바로가기 | `~/Desktop/ClaudeGUI.command` (mac) / `.desktop` (linux) | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` |
+| 데스크톱 바로가기 | `~/Desktop/ClaudeGUI.app` (mac) / `.desktop` (linux) | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` |
 | 런처 로그 | `~/.claudegui/logs/launcher.log` (append) | `%USERPROFILE%\.claudegui\logs\launcher.log` (append) |
 
 ### 런처 동작 흐름
@@ -578,7 +578,7 @@ jobs:
 [ 콘솔 창 오픈 ] ──┐
         │          │
         ▼          │
-[ 배너 출력 ]      │ macOS:   .command → Terminal.app
+[ 배너 출력 ]      │ macOS:   .app 번들 → open -a Terminal → bash
 [ env 설정 ]       │ Linux:   .desktop → x-terminal-emulator → bash
         │          │ Windows: .lnk     → powershell.exe
         ▼
@@ -602,7 +602,7 @@ jobs:
 
 ### 트레이드오프
 
-- **macOS는 기본 Terminal 아이콘을 사용한다.** `.command` 파일에 커스텀 아이콘을 붙이려면 resource fork(`Rez`/`SetFile`) 또는 별도 도구(`fileicon`)가 필요하고, 또는 `.app` 번들로 전환해 Gatekeeper 서명까지 처리해야 한다. 단순성을 위해 두 가지 모두 회피했다. 마스코트 아이콘은 favicon, Linux/Windows 데스크톱 아이콘에서만 시각적으로 노출된다.
+- **macOS는 경량 `.app` 번들로 마스코트 아이콘을 표시한다.** `Info.plist` + 셸 스크립트 실행 파일 + `AppIcon.icns`로 구성된 최소 번들이며, 실질적 코드 서명 없이 로컬 생성으로 Gatekeeper quarantine을 우회한다. Finder와 Dock에서 favicon과 동일한 마스코트가 표시된다.
 - **창 종료 = 서버 종료.** 백그라운드 데몬화나 시스템 트레이를 도입하지 않는다. 사용자가 명시적으로 시작·중지할 수 있고, 종료를 잊어서 좀비 프로세스가 남는 일이 없다. 장기 실행이 필요하면 ADR-018(Tauri 네이티브 앱) 또는 `scripts/dev.sh --background`를 사용한다.
 - **30초 폴링 타임아웃.** 콜드 부트 시 `next start`가 30초 안에 응답하지 않을 가능성은 낮지만, 초과 시 사용자에게 수동 접속 안내 메시지를 출력한다.
 - **Tee의 실시간성.** PowerShell `Tee-Object`와 bash `tee`는 line-buffered여서 사용자 콘솔에 실시간으로 표시된다. node의 stdout이 fully-buffered가 되지 않도록 환경 변수는 추가하지 않았다(현재 동작상 문제 없음).

@@ -988,19 +988,21 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 
 ### FR-1002: Auto-popup behaviour
 
-- If one or more new artifacts are extracted during a single Claude turn, the Generated Content gallery modal shall open automatically when the turn ends (the `result` event).
+- If one or more new artifacts are extracted during a single Claude turn, the Generated Content gallery modal shall open automatically when the turn ends (the `result` event) **or on error** (the `error` event). Calling `flushPendingOpen` on error ensures artifacts collected before the failure are not silently discarded.
 - If the user disables "Auto-open on new content" in the gallery toolbar, the modal shall not open on its own.
+- When the gallery is opened manually (`open()` with no explicit `highlightedId`), the most recent artifact is auto-selected so the preview pane is never blank.
 - Artifact extraction performed while loading session history is a "silent extract" that must not trigger the auto-popup.
 
 ### FR-1003: Persistent storage (localStorage)
 
 - Extracted artifacts shall be persisted in the browser's `localStorage` and the gallery shall be restored intact across page reloads.
-- Storage key: `claudegui-artifacts` (zustand `persist` middleware, `version: 3`). Up to v2 only `artifacts`/`autoOpen` were persisted; starting at v3 the gallery's `modalSize` (see FR-1005) is persisted alongside them.
-- The store is capped at 200 artifacts; when the cap is exceeded, the oldest entries are evicted first.
+- Storage key: `claudegui-artifacts` (zustand `persist` middleware, `version: 4`). Up to v2 only `artifacts`/`autoOpen` were persisted; starting at v3 the gallery's `modalSize` (see FR-1005) is persisted alongside them.
+- **In-memory cap: 200 artifacts; localStorage persistence cap: 30 artifacts.** `partialize` uses `artifacts.slice(-30)` to store only the 30 most recent entries, protecting the localStorage quota. In memory, up to 200 artifacts are retained for the duration of the session.
 - The `autoOpen` preference is persisted under the same key.
 - Binary artifacts (`source: "file"`) are not base64-encoded into localStorage; only their absolute `filePath` and metadata are stored, keeping the persisted payload small.
 - After rehydration the `onRehydrateStorage` hook collects every artifact with a `filePath` and re-registers them via `POST /api/artifacts/register` so FR-1009's cross-project access path is restored.
 - v1 → v2 migration: legacy v1 records are patched to `source: "inline"`, `updatedAt: createdAt` so old galleries keep rendering.
+- v3 → v4 migration: trims legacy 200-item data to 30 entries.
 
 ### FR-1004: Copy and export
 
@@ -1019,7 +1021,8 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 ### FR-1005: Gallery UI
 
 - The gallery is a modal dialog laid out as a left-hand list and a right-hand detail preview.
-- Each list row shows a kind badge (HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), the artifact title (the file's basename for file-backed entries), its language or extension, and a relative timestamp.
+- **Search and filter**: the sidebar header provides a text search input and kind-filter chips (All/HTML/SVG/Code/…). Search matches case-insensitively against title, language, and file path. Kind chips are rendered dynamically based on the kinds present among current artifacts.
+- Each list row shows a kind badge (HTML/SVG/Markdown/Code/Text/Image/PDF/DOCX/XLSX/PPTX), the artifact title (the file's basename for file-backed entries), its language or extension, and a relative timestamp. File-backed artifacts additionally show the last two path segments.
 - Every list row exposes a hover-revealed per-row Delete (Trash) button that calls `useArtifactStore.remove(id)` on click and stops click propagation so the row's default select behaviour is not triggered. If the currently selected artifact is the one being deleted, the existing auto-reselect effect promotes the next entry. For accessibility the row itself is `role="button"` + `tabIndex=0` with Enter/Space handlers, and the inner delete button exposes `aria-label="Delete {title}"`.
 - The detail area exposes a **Preview / Source** toggle. Preview is the default, and per-kind rendering is as follows:
   - **HTML**: `<iframe sandbox="allow-scripts">` with `srcDoc` (no `allow-same-origin`, matching the main preview-panel policy).
@@ -1113,11 +1116,11 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 
 | OS | File | Double-click action | Icon handling |
 |----|------|--------------------|---------------|
-| macOS | `~/Desktop/ClaudeGUI.command` (chmod +x) | Terminal.app launches and runs the launcher script | Uses the default Terminal icon for simplicity (no `.app` bundle, no Gatekeeper signing) |
+| macOS | `~/Desktop/ClaudeGUI.app` (lightweight `.app` bundle) | Opens a Terminal window via `open -a Terminal` to run the launcher script | `Contents/Resources/AppIcon.icns` carries the mascot icon — same character as the favicon |
 | Linux | `~/Desktop/ClaudeGUI.desktop` | Runs the launcher through the `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xterm` fallback chain | `Icon=` field references the absolute SVG path; on GNOME the installer also runs `gio set ... metadata::trusted true` |
 | Windows | `%USERPROFILE%\Desktop\ClaudeGUI.lnk` | A PowerShell console window created via `WScript.Shell.CreateShortcut` | `IconLocation` set to `claudegui.ico,0` |
 
-- On macOS the first launch may require Right-click → Open due to Gatekeeper; the installer must surface this as a warning.
+- The macOS `.app` bundle is created locally by the installer, so it does not carry a Gatekeeper quarantine attribute and runs without code signing. Unlike the legacy `.command` approach, the mascot icon is displayed in Finder and the Dock.
 
 ### FR-1102: Launcher script behaviour
 
