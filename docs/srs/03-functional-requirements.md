@@ -245,6 +245,7 @@
 - WebSocket `/ws/files` 채널로 변경 이벤트를 수신한다.
 - 사용자 커서 위치를 보존하면서 콘텐츠를 업데이트한다.
 - 에디터에 미저장 변경이 있을 경우 충돌 알림을 표시한다.
+- Claude diff가 표시 중인 탭(`tab.diff` 설정됨)은 외부 변경 동기화를 건너뛴다 — tool_use 결과가 이미 diff 뷰를 설정했기 때문이다.
 
 ### FR-309: AI 인라인 코드 자동완성
 
@@ -284,6 +285,24 @@
   - 부드러운 스크롤 및 커서 애니메이션
   - 스티키 스크롤 (현재 스코프 표시)
   - 연결 편집 (Linked editing)
+
+### FR-312: Claude 도구 실행 실시간 에디터 Diff 스트리밍
+
+- Claude가 `Write`/`Edit`/`MultiEdit` 도구를 실행하면 **에디터에서 실시간 diff 뷰를 표시**해야 한다.
+- **`input_json_delta` 스트리밍**: SDK가 도구 입력을 토큰 단위로 스트리밍할 때(`content_block_delta` + `input_json_delta`), 500ms 간격으로 부분 JSON을 파싱하여 에디터에 `streaming` 상태의 diff를 표시한다. `content_block_stop` 수신 시 최종 diff(`pending`)로 전환한다.
+- **diff 상태 확장**: `diff.status`는 `'pending' | 'streaming'` 타입을 갖는다. `streaming` 상태에서는 DiffAcceptBar의 Accept/Reject 버튼이 비활성화되며, 프로그레스 바와 "Claude is editing..." 인디케이터가 표시된다.
+- **자동 탭 열기**: 대상 파일이 에디터에 열려있지 않으면 자동으로 `openFile(filePath)`을 호출한다.
+- **자동 패널 확장**: 에디터 패널이 접혀있으면 자동으로 펼친다. HTML/SVG/MD 파일의 경우 프리뷰 패널도 자동으로 펼친다.
+- **레이스 컨디션 방지**: `tab.diff`가 설정된 상태에서 `/ws/files` 알림이 도착하면 `syncExternalChange`를 건너뛰어 diff 뷰가 유지된다.
+- 구현: `src/stores/use-claude-store.ts` (도구 입력 추적 + 에디터 연결), `src/stores/use-editor-store.ts` (`updateStreamingEdit` + `syncExternalChange` 가드), `src/components/panels/editor/diff-accept-bar.tsx` (스트리밍 UI).
+
+### FR-313: 채팅 패널 스트리밍 UX 고도화
+
+- **Thinking 인디케이터**: Claude가 응답을 시작하면(`system` 메시지 수신 + `isStreaming` 활성) 첫 번째 토큰이 도착하기 전에 빈 content의 스트리밍 메시지를 삽입하여 블링킹 커서를 표시한다.
+- **tool_use 파일 경로 표시**: `Write`/`Edit`/`MultiEdit` 도구의 `toolInput.file_path`를 채팅 메시지에 파일 아이콘과 함께 표시한다. 클릭 시 에디터에서 해당 파일을 연다.
+- **ReactMarkdown 성능 최적화**: `useDeferredValue`로 스트리밍 중 Markdown 렌더링 배치를 최적화한다.
+- **스트리밍 활동 상태 바**: 파일 편집 도구 실행 중 "Writing file.tsx..." 또는 "Editing file.tsx..." 상태를 입력 영역 위에 표시한다.
+- 구현: `src/stores/use-claude-store.ts` (thinking placeholder), `src/components/panels/claude/chat-message-item.tsx` (파일 경로 + useDeferredValue), `src/components/panels/claude/claude-chat-panel.tsx` (StreamingActivityBar).
 
 ---
 
@@ -412,7 +431,7 @@
 - **Rename**: 탭 라벨을 더블클릭하면 인라인 `<input>`으로 전환되어 이름을 편집할 수 있다. Enter 저장, Esc 취소, blur 저장. 한 번 이상 rename된 세션은 `customName: true`로 기록된다.
 - **CWD 라벨**: 탭 라벨에 현재 PTY의 cwd basename을 `·` 구분자와 함께 표시한다(`Terminal 1 · src`). basename이 20자 초과이면 생략부호(`…`)로 자른다. 전체 경로는 탭 `title` 속성에 노출된다.
 - **OSC 7**: `TerminalManager`는 `term.parser.registerOscHandler(7, …)`로 쉘의 OSC 7 (`\e]7;file://host/path\e\\`) 이벤트를 수신해 세션의 `cwd` 필드를 갱신하고 store에 전파한다. `URL` 파싱이 실패하면 무시한다.
-- **쉘 헬퍼 자동 주입**: 소켓이 open된 후 250 ms 뒤에 매니저가 한 번 입력 프레임으로 OSC 7 emitter 스니펫을 전송한다. 이 스니펫은 `ZSH_VERSION`/`BASH_VERSION`을 감지해 zsh의 `precmd_functions` 또는 bash의 `PROMPT_COMMAND`에 설치된다. 선행 공백이 붙어 있어 `HISTCONTROL=ignorespace` 사용자의 히스토리에는 남지 않는다. 주입은 세션 생명주기 동안 1회만 수행되며, Restart 시에도 재주입되지 않는다.
+- **쉘 헬퍼 자동 주입**: 서버(`terminal-handler.mjs`)가 PTY spawn 직후 OSC 7 emitter 스니펫을 PTY stdin에 직접 기록한다. 이 스니펫은 `ZSH_VERSION`/`BASH_VERSION`을 감지해 zsh의 `precmd_functions` 또는 bash의 `PROMPT_COMMAND`에 설치된다. 선행 공백이 붙어 있어 `HISTCONTROL=ignorespace` 사용자의 히스토리에는 남지 않는다. 스니펫 기록 직후 `clear` 명령과 링 버퍼 리셋을 수행하여 주입 내용이 사용자에게 노출되지 않는다. 주입은 PTY 생성 시 1회만 수행되며, Restart 시 새 PTY가 spawn되므로 자동으로 재주입된다.
 - **프로젝트 전환 배너**: `useProjectStore.activeRoot`가 변경되었고 기존 탭 중 하나의 `cwd`가 새 활성 루트와 불일치하면, 터미널 패널 상단에 비침습 배너가 표시된다. 배너는 "Open new tab here" / "Dismiss" 액션을 제공한다. 자동 `cd` 주입은 수행하지 않는다(실행 중 프로세스 훼손 방지). Dismiss는 현재 활성 루트에 대해서만 유효하며, 활성 루트가 다시 변경되면 재등장한다.
 
 ### FR-414: 서버측 터미널 세션 레지스트리 및 재연결 재생 (ADR-019/020)
@@ -606,8 +625,13 @@
 - 시스템은 Claude CLI 인증 상태를 헤더 배지로 실시간 표시해야 한다.
 - 인증 소스는 `credentials-file` (`~/.claude/.credentials.json`), `env` (`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`), `none` 중 하나이다.
 - CLI 미설치 상태도 구분하여 표시 (`cliInstalled: false`) 한다.
-- 미인증 시 배지 클릭으로 `claude login` 안내 모달을 표시한다.
-- 구현: `src/lib/claude/auth-status.ts`, `GET /api/auth/status`, `src/components/layout/auth-badge.tsx`.
+- 인증 성공 시 배지에 계정명 대신 **"Verified"** 를 표시한다.
+- 미인증 시 배지에 **"Sign In"** 을 표시하고, 클릭 시 로그인 안내 모달을 연다.
+- 로그인 모달은 두 가지 인증 방법을 탭으로 제공한다:
+  - **CLI Login 탭**: `claude login` 명령어 안내 및 터미널 열기 버튼.
+  - **API Key 탭**: `ANTHROPIC_API_KEY` 직접 입력·저장·삭제 UI. 키는 서버 측 `~/.claudegui/server-config.json`에 저장되며, 프론트엔드에 키 값은 노출되지 않는다 (`hasApiKeySaved: boolean`만 전달).
+- API Key 관리 엔드포인트: `POST /api/auth/api-key` (저장), `DELETE /api/auth/api-key` (삭제). localhost 전용.
+- 구현: `src/lib/claude/auth-status.ts`, `GET /api/auth/status`, `src/app/api/auth/api-key/route.ts`, `src/components/layout/auth-badge.tsx`, `src/components/modals/login-prompt-modal.tsx`.
 
 ### FR-511: 프롬프트 @ 파일/디렉토리 참조
 
@@ -658,17 +682,35 @@
 
 - Claude 채팅 입력창에서 `/`로 시작하는 텍스트를 입력하면 사용 가능한 슬래시 명령어 목록을 팝오버로 표시해야 한다.
 - 슬래시 명령어는 두 유형으로 분류된다:
-  - **클라이언트 명령어**: GUI 내에서 직접 처리 (`/clear`, `/new`, `/usage`, `/context`, `/cost`, `/model`, `/help`)
-  - **패스스루 명령어**: 입력 전체를 Claude CLI에 전달 (`/compact`, `/plan`, `/review`)
+  - **클라이언트 명령어**: GUI 내에서 직접 처리
+  - **패스스루 명령어**: 입력 전체를 Claude CLI에 전달
+- 패스스루 명령어는 `requiresSession` 플래그에 따라 세션 필수 여부가 결정된다:
+  - `requiresSession: true` (기본): 활성 세션이 없으면 실행 차단 (`/compact`, `/context`)
+  - `requiresSession: false`: 세션 없이도 실행 가능하며 새 세션 자동 생성 (`/init`, `/plan`, `/review`, `/pr-comments`)
 - 팝오버는 입력이 `/`로 시작하고 공백이 없는 동안 표시되며, 타이핑에 따라 prefix 매칭으로 필터링된다.
 - 키보드 조작: `ArrowUp`/`ArrowDown`으로 후보 이동, `Enter`로 즉시 실행, `Tab`으로 입력창에 명령어 이름을 채움, `Escape`로 닫기.
-- 명령어 카테고리별 그룹핑: Session (`/clear`, `/new`, `/compact`), Info (`/usage`, `/context`, `/cost`, `/model`, `/help`), Mode (`/plan`, `/review`).
+- 명령어 카테고리별 그룹핑 (6개):
+  - **Session**: `/clear`, `/new`, `/compact`
+  - **Info**: `/usage`, `/context`, `/cost`, `/model`, `/help`
+  - **Mode**: `/plan`, `/review`
+  - **System**: `/bug`, `/config`, `/doctor`, `/login`, `/logout`, `/status`, `/vim`, `/terminal-setup`
+  - **Tools**: `/permissions`, `/approved-tools`, `/mcp`
+  - **Project**: `/init`, `/memory`, `/pr-comments`, `/add-dir`
+- 총 25개 슬래시 명령어를 지원하여 Claude Code CLI와 동일한 명령어 경험을 제공한다.
 - 클라이언트 명령어는 채팅 영역에 시스템 메시지(`role: 'system'`, `kind: 'system'`)로 결과를 표시한다.
-- `/help`는 사용 가능한 모든 슬래시 명령어의 마크다운 테이블을 표시한다.
+- `/help`는 `SLASH_COMMANDS` 레지스트리에서 동적으로 생성된 전체 명령어 마크다운 테이블을 표시한다.
 - `/usage`, `/context`, `/cost`는 `useClaudeStore.sessionStats`의 현재 활성 세션 데이터를 조회하여 표시한다.
 - `/model`은 현재 모델 정보와 `src/lib/claude/model-specs.ts` 스펙을 조회하여 표시한다.
+- `/doctor`는 서버 상태, CLI 설치 여부, 인증 상태, WebSocket 연결, MCP 서버를 종합 진단한다.
+- `/config`, `/permissions`, `/approved-tools`는 `/api/settings`에서 설정을 조회하여 표시한다.
+- `/mcp`는 MCP 서버 상태를 조회하고 MCP 서버 관리 모달을 연다.
+- `/memory`는 프로젝트 루트의 `CLAUDE.md`를 에디터에서 연다.
+- `/vim`은 Monaco 에디터의 vim 키바인딩 모드를 토글한다 (`useSettingsStore.editorVimMode`).
+- `/login`, `/logout`는 인증 상태를 확인/변경한다 (`/api/auth/status`, `/api/auth/logout`).
+- `/bug`는 GitHub Issues 페이지를 새 탭에서 연다.
+- `/add-dir <path>`는 프로젝트 컨텍스트에 디렉토리를 추가한다 (`POST /api/project`).
 - 별칭(alias) 지원: `/reset`은 `/new`의 별칭이다.
-- 구현: `src/lib/claude/slash-commands.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+- 구현: `src/lib/claude/slash-commands.ts`, `src/lib/claude/slash-command-handlers.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
 ### FR-517: 파일/이미지 드래그 앤 드롭 입력
 
@@ -757,9 +799,9 @@
 - Claude의 어시스턴트 응답에서 **모든 언어의 코드 펜스**(` ```html `, ` ```python `, ` ```typescript ` 등) 또는 **모든 파일 타입**에 대한 `Write`/`Edit`/`MultiEdit` `tool_use`를 감지하여 프리뷰 패널을 **파일 선택과 무관하게** 실시간 업데이트해야 한다.
 - **다중 페이지 모델 (v0.6)**: 하나의 스트림에서 발생하는 각 코드 펜스 또는 `tool_use`는 독립적인 "페이지(`LivePage`)"로 관리된다. 각 페이지는 `id`, `kind`(html/svg/markdown/code/text), `language`, `title`, `content`, `renderable`, `complete`, `viewMode`(source/rendered) 속성을 갖는다.
 - **페이지 종류별 렌더링**:
-  - `html`: 렌더 가능한 단위(`<!doctype`, `<html`, `<body`, 균형 잡힌 최상위 태그) 감지 시 iframe `srcdoc`으로 렌더, 그렇지 않으면 소스 뷰 폴백. iframe은 `sandbox="allow-scripts"` (`allow-same-origin` 금지). 디바운스 150ms.
-  - `svg`: `</svg>` 닫힘 태그 감지 시 iframe 렌더, 그렇지 않으면 소스 뷰.
-  - `markdown`: 항상 점진적 렌더링 가능 (react-markdown). 디바운스 200ms.
+  - `html`: 렌더 가능한 단위(`<!doctype`, `<html`, `<body`, 균형 잡힌 최상위 태그) 감지 시 iframe `srcdoc`으로 렌더, 그렇지 않으면 소스 뷰 폴백. iframe은 `sandbox="allow-scripts"` (`allow-same-origin` 금지). 디바운스 80ms.
+  - `svg`: `</svg>` 닫힘 태그 감지 시 iframe 렌더, 그렇지 않으면 소스 뷰. 디바운스 150ms.
+  - `markdown`: 항상 점진적 렌더링 가능 (react-markdown). 디바운스 100ms.
   - `code`: highlight.js 구문 강조 소스 뷰 (JavaScript, TypeScript, Python, CSS, JSON, Bash, YAML, SQL 등 지원).
   - `text`: `<pre>` 블록 소스 뷰.
 - **페이지별 코드/프리뷰 듀얼 모드**: 모든 페이지는 소스 뷰와 렌더 뷰를 `viewMode` 토글로 전환할 수 있다. `renderable`이 false→true로 변할 때 자동으로 렌더 뷰로 전환된다.
@@ -976,6 +1018,27 @@
 - `TerminalManager`는 부팅 시 `attachCustomKeyEventHandler`로 위 조합을 veto하여 xterm이 PTY에 해당 키를 기록하지 않게 한다.
 - 글로벌 단축키 핸들러(`src/hooks/use-global-shortcuts.ts`)가 동일한 조합을 감지해 `useTerminalStore` 액션을 디스패치한다.
 - `Cmd+K` 충돌 중재: 터미널 포커스 시 Command Palette(`FR-801`)의 `Cmd+K` 핸들러는 no-op 처리되며, 터미널 버퍼 clear가 동작한다. 그 외 포커스에서는 기존대로 커맨드 팔레트가 열린다.
+
+### FR-807: 패널별 확대/축소
+
+각 패널(파일 탐색기, 에디터, 터미널, Claude 채팅, 프리뷰)은 **독립적으로** 확대/축소할 수 있어야 한다.
+
+- **상태**: `useLayoutStore.panelZoom` — 패널별 줌 배율 (`Record<PanelId, number>`), 기본값 `1.0`, 범위 `0.5 – 2.0`, 단계 `0.1`.
+- **포커스 추적**: `useLayoutStore.focusedPanel`로 현재 포커스된 패널을 추적한다. 패널 영역 클릭 또는 포커스 시 자동 설정된다.
+- **UI 컨트롤**: 각 패널 헤더에 `+` / `−` 버튼 및 현재 줌 퍼센트(예: `100%`)를 표시한다. 퍼센트 클릭 시 `100%`로 리셋한��.
+- **키보드 단축키**:
+
+| Key (macOS / 기타) | 동작 |
+|---|---|
+| `Cmd+Shift+=` / `Ctrl+Shift+=` | 포커스된 패널 확대 (+10%) |
+| `Cmd+Shift+-` / `Ctrl+Shift+-` | 포커스된 패널 축소 (-10%) |
+| `Cmd+Shift+0` / `Ctrl+Shift+0` | 포커스된 패널 줌 리셋 (100%) |
+
+- **적용 방식**:
+  - 에디터: `fontSize × zoom` 배율로 Monaco Editor `fontSize` 옵션에 적용
+  - 터미널: `fontSize × zoom` 배율로 xterm `fontSize` 옵션에 적용
+  - 파일 탐색기 / Claude 채팅 / 프리뷰: CSS `zoom` 속성을 콘텐츠 영역에 적용
+- **영속성**: `panelZoom`은 `localStorage`에 저장된다. `focusedPanel`은 세션 간 영속화하지 않는다.
 
 ---
 
@@ -1319,3 +1382,36 @@
 - Tauri IPC `restart_server` 커맨드로 sidecar 프로세스 재시작을 지원한다.
 - 웹 UI에서 `isTauri()` 감지를 통해 적절한 재시작 경로를 선택한다.
 - 구현: `installer/tauri/src-tauri/src/main.rs`, `src/lib/runtime.ts`.
+
+---
+
+## MCP 서버 통합 (FR-1400)
+
+### FR-1400: MCP 서버 설정 관리
+
+- 사용자는 프로젝트별로 MCP(Model Context Protocol) 서버를 추가·편집·삭제할 수 있다.
+- 지원하는 MCP 서버 타입: stdio (로컬 명령), SSE (Server-Sent Events), HTTP (Streamable HTTP).
+- 설정은 `.claude/settings.json`의 `mcpServers` 필드에 프로젝트 단위로 저장된다.
+- 각 서버는 이름(고유 키), 활성/비활성 토글, 설명, 타입별 설정(command/args/env 또는 url/headers)을 가진다.
+
+### FR-1401: MCP 서버 설정 UI
+
+- 헤더에 Blocks 아이콘 버튼으로 MCP 서버 관리 모달을 열 수 있다. 활성 서버가 있을 때 아이콘이 파란색으로 표시된다.
+- 커맨드 팔레트(Cmd+K)에 "MCP: Manage Servers", "MCP: Refresh Status" 항목이 제공된다.
+- 관리 모달에서 서버 목록을 표시하며, 각 항목에 상태 도트(green/yellow/red), 타입 배지, 활성화 토글, 편집·삭제 버튼이 있다.
+- "Quick Add" 드롭다운으로 자주 사용되는 MCP 서버(Filesystem, GitHub, Brave Search, Slack, PostgreSQL)를 프리셋으로 빠르게 추가할 수 있다.
+- 구현: `src/components/modals/mcp-servers-modal.tsx`, `src/stores/use-mcp-store.ts`.
+
+### FR-1402: MCP 서버 백엔드 연동
+
+- `claude-handler.mjs`의 `runQuery()`는 쿼리 시작 시 `.claude/settings.json`에서 활성화된 MCP 서버를 로드하여 Agent SDK의 `queryOptions.mcpServers`에 전달한다.
+- MCP 서버의 도구 호출은 기존 `canUseTool` 권한 게이트를 통해 처리되므로, 별도의 권한 로직 없이 기존 허용/거부 모달이 동작한다.
+- `GET /api/mcp` — 현재 프로젝트의 MCP 서버 설정 반환.
+- `PUT /api/mcp` — MCP 서버 설정 업데이트 (기존 settings와 merge).
+- `GET /api/mcp/status` — 활성 SDK 세션의 MCP 서버 연결 상태 반환.
+
+### FR-1403: MCP 서버 상태 표시
+
+- 상태바에 활성 MCP 서버 수와 집계 상태(green: 전체 connected, yellow: 일부 pending, red: 실패 있음)가 표시된다. 클릭 시 관리 모달이 열린다.
+- 관리 모달 내 서버 목록에서 각 서버의 실시간 연결 상태가 색상 도트로 표시된다 (connected/pending/failed/needs-auth/unknown).
+- 구현: `src/components/layout/status-bar.tsx`, `src/components/layout/header.tsx`.

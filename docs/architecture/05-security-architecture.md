@@ -240,7 +240,7 @@ export function middleware(req: NextRequest) {
     "worker-src 'self' blob:",                                    // Monaco web workers
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
     "img-src 'self' data: blob:",
-    "font-src 'self' data: https://fonts.gstatic.com",
+    "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net",
     "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",       // Monaco 소스맵
     "frame-src 'self' data: blob:",                                // iframe srcdoc + blob
   ].join('; '));
@@ -364,6 +364,7 @@ query({
 - 환경 변수(`ANTHROPIC_API_KEY`)로 서버에만 주입한다.
 - Next.js `.env.local` 파일은 `.gitignore`에 포함한다.
 - 클라이언트 측 `process.env.NEXT_PUBLIC_*` 접두사 **사용 금지**.
+- **GUI API Key 입력**: 사용자가 로그인 모달에서 API Key를 직접 입력하면 `POST /api/auth/api-key` (localhost 전용)를 통해 `~/.claudegui/server-config.json`의 `anthropicApiKey` 필드에 서버 측 저장된다. 프론트엔드에는 `hasApiKeySaved: boolean`만 전달되며 키 값 자체는 응답에 포함되지 않는다. 서버 시작 시 저장된 키는 `process.env.ANTHROPIC_API_KEY`로 주입된다 (기존 환경 변수가 설정되어 있으면 환경 변수 우선).
 
 ### 5.6.2 세션 데이터
 
@@ -444,3 +445,24 @@ const BLOCKED_FILES = [
 - 로컬 모드: 기존 `ALLOWED_ORIGINS` 검증 유지.
 - 원격 모드 + 토큰: 토큰 인증이 Origin 검증을 대체. 유효한 토큰을 가진 모든 Origin 허용.
 - 원격 모드 + 토큰 없음: 경고 로그 출력, 모든 Origin 허용 (개발/테스트 용도로만 권장).
+
+## 5.9 MCP 서버 보안 (FR-1400)
+
+### 5.9.1 권한 관리
+
+- MCP 서버의 도구 호출은 Agent SDK 내부에서 기존 `canUseTool` 콜백(§5.5)을 통과한다.
+- MCP 도구는 SDK 내장 도구(`Read`, `Write`, `Bash` 등)와 동일한 허용/거부 흐름을 따른다.
+- `.claude/settings.json`의 `permissions.allow`/`permissions.deny` 규칙이 MCP 도구에도 적용된다.
+
+### 5.9.2 자격 증명 보호
+
+- MCP 서버 설정의 환경변수(`env` 필드)와 헤더(`headers` 필드)에 API 키, 토큰 등이 포함될 수 있다.
+- 이 값들은 `.claude/settings.json`에 평문으로 저장되므로, 파일 권한 600을 권장한다.
+- 관리 모달에서 환경변수 값과 헤더 값은 `type="password"` 입력으로 마스킹되어 표시된다.
+- MCP 설정 API(`/api/mcp`)는 서버 측에서만 접근 가능하며, 자격 증명이 클라이언트 브라우저에 직접 노출되지 않는다.
+
+### 5.9.3 프로세스 격리
+
+- stdio 타입 MCP 서버는 Agent SDK가 자식 프로세스로 spawn하며, 메인 server.js 프로세스와 분리된다.
+- SSE/HTTP 타입 MCP 서버는 외부 서비스에 대한 네트워크 연결로, 서버 프로세스 내부에 코드를 실행하지 않는다.
+- MCP 서버 설정은 프로젝트 단위로 격리되어, 한 프로젝트의 MCP 서버가 다른 프로젝트의 파일에 접근할 수 없다.

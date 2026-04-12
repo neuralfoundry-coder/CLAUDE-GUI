@@ -1,21 +1,32 @@
 'use client';
 
-import { memo, useState } from 'react';
-import { ChevronDown, ChevronRight, AlertCircle, Shield, Bot } from 'lucide-react';
+import { memo, useDeferredValue, useState } from 'react';
+import { ChevronDown, ChevronRight, AlertCircle, Shield, Bot, FileCode } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { cn } from '@/lib/utils';
 import type { ChatMessage } from '@/stores/use-claude-store';
+import { useEditorStore } from '@/stores/use-editor-store';
 
 interface ChatMessageItemProps {
   message: ChatMessage;
 }
 
+const FILE_EDIT_TOOL_NAMES = new Set(['Write', 'Edit', 'MultiEdit']);
+
 function ToolUseMessage({ message }: { message: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
+  const openFile = useEditorStore((s) => s.openFile);
   const inputStr = message.toolInput
     ? JSON.stringify(message.toolInput, null, 2)
     : message.content;
+
+  const isFileEdit = FILE_EDIT_TOOL_NAMES.has(message.toolName ?? '');
+  const filePath = isFileEdit && message.toolInput && typeof message.toolInput === 'object'
+    ? (message.toolInput as Record<string, unknown>).file_path as string | undefined
+    : undefined;
+  // Show just the filename for compact display
+  const fileName = filePath ? filePath.split('/').pop() : undefined;
 
   return (
     <div className="rounded-md border border-accent bg-accent/30">
@@ -34,7 +45,25 @@ function ToolUseMessage({ message }: { message: ChatMessage }) {
         <span className="font-mono text-[10px] font-semibold uppercase text-muted-foreground">
           {message.toolName ?? 'tool'}
         </span>
-        {message.isStreaming && (
+        {filePath && (
+          <span
+            role="button"
+            tabIndex={0}
+            className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-mono text-primary hover:bg-primary/10 hover:underline"
+            title={filePath}
+            onClick={(e) => { e.stopPropagation(); void openFile(filePath); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); void openFile(filePath); } }}
+          >
+            <FileCode className="h-2.5 w-2.5" aria-hidden="true" />
+            {fileName}
+          </span>
+        )}
+        {message.isStreaming && !filePath && (
+          <span className="text-[10px] text-muted-foreground/70">
+            {message.content}
+          </span>
+        )}
+        {message.isStreaming && filePath && (
           <span className="text-[10px] text-muted-foreground/70">
             {message.content}
           </span>
@@ -90,11 +119,14 @@ function ErrorMessage({ message }: { message: ChatMessage }) {
 }
 
 function AssistantTextMessage({ message }: { message: ChatMessage }) {
+  const deferredContent = useDeferredValue(message.content);
   return (
     <div className="rounded-md bg-muted px-3 py-2">
-      <div className="prose prose-xs dark:prose-invert max-w-none text-xs [&_pre]:text-[10px] [&_code]:text-[10px]">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-      </div>
+      {deferredContent ? (
+        <div className="prose prose-xs dark:prose-invert max-w-none text-xs [&_pre]:text-[10px] [&_code]:text-[10px]">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{deferredContent}</ReactMarkdown>
+        </div>
+      ) : null}
       {message.isStreaming && (
         <span className="inline-block h-3 w-1.5 animate-pulse bg-foreground/70 align-middle" />
       )}

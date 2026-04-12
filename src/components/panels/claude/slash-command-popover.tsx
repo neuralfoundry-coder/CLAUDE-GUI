@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Terminal, Info, Zap } from 'lucide-react';
+import { Terminal, Info, Zap, Settings, Wrench, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { SlashCommand } from '@/lib/claude/slash-commands';
 import { getCategoryLabel } from '@/lib/claude/slash-commands';
@@ -17,6 +17,9 @@ const CATEGORY_ICONS: Record<SlashCommand['category'], typeof Terminal> = {
   session: Terminal,
   info: Info,
   mode: Zap,
+  system: Settings,
+  tools: Wrench,
+  project: FolderOpen,
 };
 
 export function SlashCommandPopover({

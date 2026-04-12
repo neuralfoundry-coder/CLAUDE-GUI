@@ -23,18 +23,72 @@ import { detectIntent } from '@/lib/claude/intent-detector';
 import { SlidePreferencesDialog } from './slide-preferences-dialog';
 import type { SlidePreferences } from '@/types/intent';
 import {
+  SLASH_COMMANDS,
   detectSlashCommand,
   filterSlashCommands,
   resolveSlashCommand,
+  getCategoryLabel,
   type SlashCommand,
 } from '@/lib/claude/slash-commands';
 import { SlashCommandPopover } from './slash-command-popover';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { findModelSpec } from '@/lib/claude/model-specs';
+import {
+  handleBug,
+  handleConfig,
+  handleDoctor,
+  handleLogin,
+  handleLogout,
+  handleStatus,
+  handleVim,
+  handleTerminalSetup,
+  handlePermissions,
+  handleApprovedTools,
+  handleMcp,
+  handleMemory,
+  handleAddDir,
+} from '@/lib/claude/slash-command-handlers';
 import { useChatDrop } from './use-chat-drop';
 import { DropOverlay } from './drop-overlay';
 import { AttachedFilesBar } from './attached-files-bar';
+import { usePanelFocus } from '@/hooks/use-panel-focus';
+import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
+import { useLayoutStore } from '@/stores/use-layout-store';
+import type { ChatMessage } from '@/stores/use-claude-store';
+
+const STREAMING_ACTIVITY_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+
+function StreamingActivityBar({ messages }: { messages: ChatMessage[] }) {
+  // Find the last streaming tool_use message that's a file-edit tool
+  const lastEditTool = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.kind === 'tool_use' && m.isStreaming && STREAMING_ACTIVITY_TOOLS.has(m.toolName ?? '')) {
+        const input = m.toolInput as Record<string, unknown> | undefined;
+        const filePath = input?.file_path as string | undefined;
+        return { toolName: m.toolName!, filePath };
+      }
+    }
+    return null;
+  }, [messages]);
+
+  if (!lastEditTool) return null;
+
+  const fileName = lastEditTool.filePath?.split('/').pop();
+  const label = lastEditTool.toolName === 'Write'
+    ? `Writing ${fileName ?? 'file'}...`
+    : `Editing ${fileName ?? 'file'}...`;
+
+  return (
+    <div className="flex items-center gap-1.5 border-t px-2 py-0.5 text-[10px] text-muted-foreground">
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
+      <span className="truncate font-mono" title={lastEditTool.filePath ?? ''}>
+        {label}
+      </span>
+    </div>
+  );
+}
 
 export function ClaudeChatPanel() {
   const [input, setInput] = useState('');
@@ -74,6 +128,9 @@ export function ClaudeChatPanel() {
     });
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
+
+  const panelFocus = usePanelFocus('claude');
+  const claudeZoom = useLayoutStore((s) => s.panelZoom.claude);
 
   const {
     pendingFiles,
@@ -128,11 +185,11 @@ export function ClaudeChatPanel() {
   }, []);
 
   const executeSlashCommand = useCallback(
-    (cmd: SlashCommand, fullInput: string) => {
+    async (cmd: SlashCommand, fullInput: string) => {
       if (cmd.handler === 'passthrough') {
-        // Commands like /compact and /context require an existing session
+        // Only block when the command explicitly requires an existing session
         const sid = useClaudeStore.getState().activeSessionId;
-        if (!sid) {
+        if (!sid && cmd.requiresSession !== false) {
           pushSystemMessage(
             `\`${cmd.name}\` requires an active session. Send a message first to start a conversation.`,
           );
@@ -143,109 +200,157 @@ export function ClaudeChatPanel() {
       }
 
       // Client-side commands
-      switch (cmd.name) {
-        case '/clear':
-        case '/new': {
-          reset();
-          break;
-        }
-        case '/help': {
-          const lines = [
-            '**Available slash commands:**',
-            '',
-            '| Command | Description |',
-            '|---------|-------------|',
-            '| `/clear` | Clear chat and start fresh |',
-            '| `/new` | Start a new Claude session |',
-            '| `/compact` | Compact conversation context |',
-            '| `/usage` | Show token usage and cost |',
-            '| `/context` | Show context window usage |',
-            '| `/cost` | Show session cost breakdown |',
-            '| `/model` | Show current model info |',
-            '| `/plan` | Ask Claude to create a plan |',
-            '| `/review` | Ask Claude to review changes |',
-            '| `/help` | Show this help message |',
-            '',
-            'Type `@` to reference files. Use `Cmd+K` for the command palette.',
-          ];
-          pushSystemMessage(lines.join('\n'));
-          break;
-        }
-        case '/usage': {
-          const sid = useClaudeStore.getState().activeSessionId;
-          const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
-          const fmt = (n: number) =>
-            n >= 1_000_000
-              ? `${(n / 1_000_000).toFixed(1)}M`
-              : n >= 1_000
-                ? `${(n / 1_000).toFixed(1)}k`
-                : String(n);
-          if (!stats) {
+      try {
+        switch (cmd.name) {
+          case '/clear':
+          case '/new': {
+            reset();
+            break;
+          }
+          case '/help': {
+            // Dynamically generated from the registry
+            let currentCat: string | null = null;
+            const rows: string[] = [];
+            for (const c of SLASH_COMMANDS) {
+              const cat = getCategoryLabel(c.category);
+              if (cat !== currentCat) {
+                currentCat = cat;
+                rows.push(`| **${cat}** | |`);
+              }
+              rows.push(`| \`${c.name}\` | ${c.description} |`);
+            }
             const lines = [
-              '**Token Usage**',
+              '**Available slash commands:**',
               '',
-              '- **Input tokens:** 0',
-              '- **Output tokens:** 0',
-              '- **Cache read:** 0',
-              '- **Total tokens:** 0',
-              '- **Turns:** -',
+              '| Command | Description |',
+              '|---------|-------------|',
+              ...rows,
               '',
-              '_No conversation yet. Send a message to start tracking usage._',
+              'Type `@` to reference files. Use `Cmd+K` for the command palette.',
             ];
             pushSystemMessage(lines.join('\n'));
             break;
           }
-          const lines = [
-            `**Token Usage** (session \`${sid?.slice(0, 8)}…\`)`,
-            '',
-            `- **Input tokens:** ${fmt(stats.inputTokens)}`,
-            `- **Output tokens:** ${fmt(stats.outputTokens)}`,
-            `- **Cache read:** ${fmt(stats.cacheReadTokens)}`,
-            `- **Total tokens:** ${fmt(stats.inputTokens + stats.outputTokens)}`,
-            `- **Turns:** ${stats.numTurns ?? '-'}`,
-          ];
-          pushSystemMessage(lines.join('\n'));
-          break;
-        }
-        case '/cost': {
-          const sid = useClaudeStore.getState().activeSessionId;
-          const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
-          const totalCost = useClaudeStore.getState().totalCost;
-          const lines = [
-            '**Cost Summary**',
-            '',
-            `- **Session cost:** $${(stats?.costUsd ?? 0).toFixed(4)}`,
-            `- **Total cost (all sessions):** $${totalCost.toFixed(4)}`,
-          ];
-          pushSystemMessage(lines.join('\n'));
-          break;
-        }
-        case '/model': {
-          const sid = useClaudeStore.getState().activeSessionId;
-          const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
-          const selectedModel = useSettingsStore.getState().selectedModel;
-          const modelId = stats?.model ?? selectedModel ?? 'auto';
-          const spec = findModelSpec(modelId);
-          const lines = [
-            `**Current Model:** \`${modelId}\``,
-            '',
-          ];
-          if (spec) {
-            lines.push(
-              `- **Context window:** ${(spec.contextWindow / 1000)}k tokens`,
-              `- **Max output:** ${(spec.maxOutput / 1000)}k tokens`,
-              `- **Price:** $${spec.inputPricePer1M}/M input, $${spec.outputPricePer1M}/M output`,
-            );
-            if (spec.capabilities.length > 0) {
-              lines.push(`- **Capabilities:** ${spec.capabilities.join(', ')}`);
+          case '/usage': {
+            const sid = useClaudeStore.getState().activeSessionId;
+            const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
+            const fmt = (n: number) =>
+              n >= 1_000_000
+                ? `${(n / 1_000_000).toFixed(1)}M`
+                : n >= 1_000
+                  ? `${(n / 1_000).toFixed(1)}k`
+                  : String(n);
+            if (!stats) {
+              const lines = [
+                '**Token Usage**',
+                '',
+                '- **Input tokens:** 0',
+                '- **Output tokens:** 0',
+                '- **Cache read:** 0',
+                '- **Total tokens:** 0',
+                '- **Turns:** -',
+                '',
+                '_No conversation yet. Send a message to start tracking usage._',
+              ];
+              pushSystemMessage(lines.join('\n'));
+              break;
             }
+            const lines = [
+              `**Token Usage** (session \`${sid?.slice(0, 8)}…\`)`,
+              '',
+              `- **Input tokens:** ${fmt(stats.inputTokens)}`,
+              `- **Output tokens:** ${fmt(stats.outputTokens)}`,
+              `- **Cache read:** ${fmt(stats.cacheReadTokens)}`,
+              `- **Total tokens:** ${fmt(stats.inputTokens + stats.outputTokens)}`,
+              `- **Turns:** ${stats.numTurns ?? '-'}`,
+            ];
+            pushSystemMessage(lines.join('\n'));
+            break;
           }
-          lines.push('', 'Use the model selector in the header to change models.');
-          pushSystemMessage(lines.join('\n'));
-          break;
+          case '/cost': {
+            const sid = useClaudeStore.getState().activeSessionId;
+            const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
+            const totalCost = useClaudeStore.getState().totalCost;
+            const lines = [
+              '**Cost Summary**',
+              '',
+              `- **Session cost:** $${(stats?.costUsd ?? 0).toFixed(4)}`,
+              `- **Total cost (all sessions):** $${totalCost.toFixed(4)}`,
+            ];
+            pushSystemMessage(lines.join('\n'));
+            break;
+          }
+          case '/model': {
+            const sid = useClaudeStore.getState().activeSessionId;
+            const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
+            const selectedModel = useSettingsStore.getState().selectedModel;
+            const modelId = stats?.model ?? selectedModel ?? 'auto';
+            const spec = findModelSpec(modelId);
+            const lines = [
+              `**Current Model:** \`${modelId}\``,
+              '',
+            ];
+            if (spec) {
+              lines.push(
+                `- **Context window:** ${(spec.contextWindow / 1000)}k tokens`,
+                `- **Max output:** ${(spec.maxOutput / 1000)}k tokens`,
+                `- **Price:** $${spec.inputPricePer1M}/M input, $${spec.outputPricePer1M}/M output`,
+              );
+              if (spec.capabilities.length > 0) {
+                lines.push(`- **Capabilities:** ${spec.capabilities.join(', ')}`);
+              }
+            }
+            lines.push('', 'Use the model selector in the header to change models.');
+            pushSystemMessage(lines.join('\n'));
+            break;
+          }
+          // ── New CLI-parity commands ──
+          case '/bug':
+            handleBug(pushSystemMessage);
+            break;
+          case '/config':
+            await handleConfig(pushSystemMessage);
+            break;
+          case '/doctor':
+            await handleDoctor(pushSystemMessage);
+            break;
+          case '/login':
+            await handleLogin(pushSystemMessage);
+            break;
+          case '/logout':
+            await handleLogout(pushSystemMessage);
+            break;
+          case '/status':
+            await handleStatus(pushSystemMessage);
+            break;
+          case '/vim':
+            handleVim(pushSystemMessage);
+            break;
+          case '/terminal-setup':
+            handleTerminalSetup(pushSystemMessage);
+            break;
+          case '/permissions':
+            await handlePermissions(pushSystemMessage);
+            break;
+          case '/approved-tools':
+            await handleApprovedTools(pushSystemMessage);
+            break;
+          case '/mcp':
+            await handleMcp(pushSystemMessage);
+            break;
+          case '/memory':
+            await handleMemory(pushSystemMessage);
+            break;
+          case '/add-dir': {
+            const args = fullInput.slice(cmd.name.length).trim();
+            await handleAddDir(pushSystemMessage, args);
+            break;
+          }
+          default:
+            pushSystemMessage(`Unknown command: ${cmd.name}`);
         }
-        default:
-          pushSystemMessage(`Unknown command: ${cmd.name}`);
+      } catch (err) {
+        pushSystemMessage(`**Command error:** ${String(err)}`);
       }
     },
     [reset, pushSystemMessage],
@@ -492,6 +597,9 @@ export function ClaudeChatPanel() {
   return (
     <div
       className={`relative flex h-full flex-col border-l bg-background${isStreaming ? ' claude-streaming' : ''}`}
+      data-panel-id="claude"
+      onMouseDown={panelFocus.onMouseDown}
+      onFocus={panelFocus.onFocus}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -507,6 +615,7 @@ export function ClaudeChatPanel() {
           <ModelSelector />
         </div>
         <div className="flex items-center gap-0.5">
+          <PanelZoomControls panelId="claude" />
           <Button
             variant="ghost"
             size="icon"
@@ -554,6 +663,7 @@ export function ClaudeChatPanel() {
         ref={scrollRef}
         onScroll={onScroll}
         className="scrollbar-thin flex-1 overflow-y-auto text-sm"
+        style={claudeZoom !== 1 ? { zoom: claudeZoom } : undefined}
       >
         {filteredMessages.length === 0 ? (
           <div className="flex h-full items-center justify-center p-3 text-center text-xs text-muted-foreground">
@@ -619,6 +729,10 @@ export function ClaudeChatPanel() {
             {activeTabPath}
           </span>
         </div>
+      )}
+
+      {isStreaming && (
+        <StreamingActivityBar messages={messages} />
       )}
 
       {isStreaming && <div className="claude-streaming-bar" />}

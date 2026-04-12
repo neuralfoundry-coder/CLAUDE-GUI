@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type SyntheticEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react';
 import { Code, Eye } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Button } from '@/components/ui/button';
 import { useLivePreviewStore, type LivePage } from '@/stores/use-live-preview-store';
 import { useEditorStore } from '@/stores/use-editor-store';
+import { wrapSrcdoc } from '@/lib/preview/srcdoc-shim';
 import { PageNavBar } from './page-nav-bar';
 import { SourcePreview } from './source-preview';
 
@@ -17,14 +18,16 @@ function HtmlRenderer({ content }: { content: string }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
-    const id = window.setTimeout(() => setDebounced(content), 150);
+    const id = window.setTimeout(() => setDebounced(content), 80);
     return () => window.clearTimeout(id);
   }, [content]);
+
+  const shimmed = useMemo(() => wrapSrcdoc(debounced), [debounced]);
 
   return (
     <iframe
       ref={iframeRef}
-      srcDoc={debounced}
+      srcDoc={shimmed}
       sandbox="allow-scripts"
       referrerPolicy="no-referrer"
       title="Live HTML preview"
@@ -66,7 +69,7 @@ function MarkdownRenderer({ content }: { content: string }) {
   const [debounced, setDebounced] = useState(content);
 
   useEffect(() => {
-    const id = window.setTimeout(() => setDebounced(content), 200);
+    const id = window.setTimeout(() => setDebounced(content), 100);
     return () => window.clearTimeout(id);
   }, [content]);
 
@@ -157,13 +160,19 @@ export function LiveStreamPreview() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* Streaming progress bar */}
+      {mode === 'streaming' && (
+        <div className="h-0.5 w-full overflow-hidden bg-muted">
+          <div className="h-full w-1/3 animate-[shimmer_1.5s_ease-in-out_infinite] bg-blue-500/60" />
+        </div>
+      )}
       {/* Header bar */}
       <div className="flex h-7 items-center justify-between border-b bg-muted px-3">
         <div className="flex items-center gap-2">
           <span className="text-[10px] uppercase text-muted-foreground">
             Live · {statusLabel}
           </span>
-          {!activePage.complete && (
+          {mode === 'streaming' && (
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
           )}
         </div>

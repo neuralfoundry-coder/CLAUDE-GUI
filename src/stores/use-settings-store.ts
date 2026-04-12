@@ -24,6 +24,7 @@ interface SettingsState {
   editorBracketColors: boolean;
   editorCompletionEnabled: boolean;
   editorCompletionDelay: number;
+  editorVimMode: boolean;
 
   // Actions
   openRulesModal: () => void;
@@ -41,6 +42,7 @@ interface SettingsState {
   setEditorBracketColors: (enabled: boolean) => void;
   setEditorCompletionEnabled: (enabled: boolean) => void;
   setEditorCompletionDelay: (delay: number) => void;
+  setEditorVimMode: (enabled: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -62,6 +64,7 @@ export const useSettingsStore = create<SettingsState>()(
       editorBracketColors: true,
       editorCompletionEnabled: true,
       editorCompletionDelay: 500,
+      editorVimMode: false,
 
       openRulesModal: () => set({ rulesModalOpen: true }),
       closeRulesModal: () => set({ rulesModalOpen: false }),
@@ -79,10 +82,11 @@ export const useSettingsStore = create<SettingsState>()(
       setEditorBracketColors: (editorBracketColors) => set({ editorBracketColors }),
       setEditorCompletionEnabled: (editorCompletionEnabled) => set({ editorCompletionEnabled }),
       setEditorCompletionDelay: (editorCompletionDelay) => set({ editorCompletionDelay }),
+      setEditorVimMode: (editorVimMode) => set({ editorVimMode }),
     }),
     {
       name: 'claudegui-settings',
-      version: 2,
+      version: 3,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
         if (version < 2) {
@@ -98,6 +102,13 @@ export const useSettingsStore = create<SettingsState>()(
             editorBracketColors: true,
             editorCompletionEnabled: true,
             editorCompletionDelay: 500,
+            editorVimMode: false,
+          };
+        }
+        if (version < 3) {
+          return {
+            ...state,
+            editorVimMode: false,
           };
         }
         return state;
@@ -117,6 +128,7 @@ export const useSettingsStore = create<SettingsState>()(
         editorBracketColors: s.editorBracketColors,
         editorCompletionEnabled: s.editorCompletionEnabled,
         editorCompletionDelay: s.editorCompletionDelay,
+        editorVimMode: s.editorVimMode,
       }),
     },
   ),

@@ -11,7 +11,10 @@ import { FileContextMenu } from './file-context-menu';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
 import { filesApi } from '@/lib/api-client';
 import { useProjectStore } from '@/stores/use-project-store';
+import { useLayoutStore } from '@/stores/use-layout-store';
 import { useFileContextMenuStore } from '@/stores/use-file-context-menu-store';
+import { usePanelFocus } from '@/hooks/use-panel-focus';
+import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 import { cn } from '@/lib/utils';
 import { collectFilesFromDataTransfer, hasFilePayload } from '@/lib/fs/collect-files';
 
@@ -39,6 +42,8 @@ export function FileExplorerPanel() {
   const openParent = useProjectStore((s) => s.openParent);
   const openContextMenuAtEmpty = useFileContextMenuStore((s) => s.openAtEmpty);
   const actions = useFileActions(refreshRoot);
+  const panelFocus = usePanelFocus('fileExplorer');
+  const explorerZoom = useLayoutStore((s) => s.panelZoom.fileExplorer);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -272,6 +277,7 @@ export function FileExplorerPanel() {
     <div
       tabIndex={0}
       data-file-explorer-panel="true"
+      data-panel-id="fileExplorer"
       className={cn(
         'relative flex h-full flex-col border-r bg-background outline-none',
         isDragOver && 'ring-2 ring-inset ring-primary',
@@ -281,11 +287,14 @@ export function FileExplorerPanel() {
       onDragLeave={onDragLeave}
       onDrop={onDrop}
       onPaste={onPaste}
+      onMouseDown={panelFocus.onMouseDown}
+      onFocus={panelFocus.onFocus}
       aria-label="File explorer"
     >
       <div className="flex items-center justify-between border-b px-2 py-1">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold uppercase text-muted-foreground">Explorer</span>
+          <PanelZoomControls panelId="fileExplorer" />
           <span
             className={cn(
               'text-[10px] text-muted-foreground',
@@ -367,7 +376,11 @@ export function FileExplorerPanel() {
       ) : (
         <div className="border-b px-2 py-1 text-[11px] text-muted-foreground">(no project open)</div>
       )}
-      <div className="flex flex-1 flex-col" onContextMenu={onTreeContextMenu}>
+      <div
+        className="flex flex-1 flex-col"
+        onContextMenu={onTreeContextMenu}
+        style={explorerZoom !== 1 ? { zoom: explorerZoom } : undefined}
+      >
         <FileTree
           ref={treeRef}
           rootNodes={rootNodes}

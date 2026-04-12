@@ -13,6 +13,9 @@ import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { PreviewRouter } from './preview-router';
 import { LiveStreamPreview } from './live-stream-preview';
 import { PreviewDownloadMenu } from './preview-download-menu';
+import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
+import { usePanelFocus } from '@/hooks/use-panel-focus';
+import { useLayoutStore } from '@/stores/use-layout-store';
 import { cn } from '@/lib/utils';
 import { useSpeechSynthesis } from '@/hooks/use-speech-synthesis';
 import { extractPreviewText } from '@/lib/preview/extract-preview-text';
@@ -32,6 +35,8 @@ export function PreviewPanel() {
   const autoSwitch = useLivePreviewStore((s) => s.autoSwitch);
   const selectedSlideIndex = usePreviewStore((s) => s.selectedSlideIndex);
   const { supported: ttsSupported, speaking, speak, stop } = useSpeechSynthesis();
+  const panelFocus = usePanelFocus('preview');
+  const previewZoom = useLayoutStore((s) => s.panelZoom.preview);
 
   // Keep in sync with PreviewRouter: prefer the active editor tab when it
   // is previewable so toolbar buttons (source toggle, TTS, etc.) match the
@@ -84,10 +89,14 @@ export function PreviewPanel() {
         'flex h-full flex-col border-l bg-background',
         fullscreen && 'fixed inset-0 z-[9999] border-l-0',
       )}
+      data-panel-id="preview"
+      onMouseDown={panelFocus.onMouseDown}
+      onFocus={panelFocus.onFocus}
     >
       <div className="flex h-7 items-center justify-between border-b bg-muted px-3">
         <span className="text-xs font-semibold uppercase text-muted-foreground">Preview</span>
         <div className="flex items-center gap-2">
+          <PanelZoomControls panelId="preview" />
           <span className="text-[10px] uppercase text-muted-foreground">{headerLabel}</span>
           {showTts && (
             <Button
@@ -150,7 +159,12 @@ export function PreviewPanel() {
           </Button>
         </div>
       </div>
-      <div className="flex-1 overflow-hidden">{showLive ? <LiveStreamPreview /> : <PreviewRouter />}</div>
+      <div
+        className="flex-1 overflow-hidden"
+        style={previewZoom !== 1 ? { zoom: previewZoom } : undefined}
+      >
+        {showLive ? <LiveStreamPreview /> : <PreviewRouter />}
+      </div>
     </div>
   );
 }

@@ -12,7 +12,7 @@ export interface SlashCommand {
   /** One-line description shown in the popover. */
   description: string;
   /** Grouping label in the popover. */
-  category: 'session' | 'info' | 'mode';
+  category: 'session' | 'info' | 'mode' | 'system' | 'tools' | 'project';
   /**
    * - `client`      — handled by the GUI without sending to Claude CLI.
    * - `passthrough`  — the entire input line is sent to Claude CLI as a prompt.
@@ -20,6 +20,13 @@ export interface SlashCommand {
   handler: 'client' | 'passthrough';
   /** Optional aliases that also trigger this command. */
   aliases?: string[];
+  /**
+   * For passthrough commands: whether an active session is required.
+   * - `true` (default for passthrough): block execution if no session exists.
+   * - `false`: allow execution even without a session (a new session will be created).
+   * Ignored for client commands.
+   */
+  requiresSession?: boolean;
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -42,6 +49,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Compact conversation context',
     category: 'session',
     handler: 'passthrough',
+    requiresSession: true,
   },
 
   // ── Info ────────────────────────────────────────────────
@@ -56,6 +64,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Show context window usage',
     category: 'info',
     handler: 'passthrough',
+    requiresSession: true,
   },
   {
     name: '/cost',
@@ -82,12 +91,112 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Ask Claude to create a plan before coding',
     category: 'mode',
     handler: 'passthrough',
+    requiresSession: false,
   },
   {
     name: '/review',
     description: 'Ask Claude to review current changes',
     category: 'mode',
     handler: 'passthrough',
+    requiresSession: false,
+  },
+
+  // ── System ─────────────────────────────────────────────
+  {
+    name: '/bug',
+    description: 'Report a bug or submit feedback',
+    category: 'system',
+    handler: 'client',
+  },
+  {
+    name: '/config',
+    description: 'Show current configuration',
+    category: 'system',
+    handler: 'client',
+  },
+  {
+    name: '/doctor',
+    description: 'Run health diagnostics',
+    category: 'system',
+    handler: 'client',
+  },
+  {
+    name: '/login',
+    description: 'Sign in to Claude',
+    category: 'system',
+    handler: 'client',
+  },
+  {
+    name: '/logout',
+    description: 'Sign out of Claude',
+    category: 'system',
+    handler: 'client',
+  },
+  {
+    name: '/status',
+    description: 'Show comprehensive status',
+    category: 'system',
+    handler: 'client',
+  },
+  {
+    name: '/vim',
+    description: 'Toggle vim keybindings in editor',
+    category: 'system',
+    handler: 'client',
+  },
+  {
+    name: '/terminal-setup',
+    description: 'Terminal integration info',
+    category: 'system',
+    handler: 'client',
+  },
+
+  // ── Tools ──────────────────────────────────────────────
+  {
+    name: '/permissions',
+    description: 'View/manage tool permissions',
+    category: 'tools',
+    handler: 'client',
+  },
+  {
+    name: '/approved-tools',
+    description: 'Show approved tools list',
+    category: 'tools',
+    handler: 'client',
+  },
+  {
+    name: '/mcp',
+    description: 'View MCP server status',
+    category: 'tools',
+    handler: 'client',
+  },
+
+  // ── Project ────────────────────────────────────────────
+  {
+    name: '/init',
+    description: 'Initialize CLAUDE.md in project',
+    category: 'project',
+    handler: 'passthrough',
+    requiresSession: false,
+  },
+  {
+    name: '/memory',
+    description: 'Open CLAUDE.md in editor',
+    category: 'project',
+    handler: 'client',
+  },
+  {
+    name: '/pr-comments',
+    description: 'View pull request comments',
+    category: 'project',
+    handler: 'passthrough',
+    requiresSession: false,
+  },
+  {
+    name: '/add-dir',
+    description: 'Add directory to context',
+    category: 'project',
+    handler: 'client',
   },
 ];
 
@@ -95,6 +204,9 @@ const CATEGORY_LABELS: Record<SlashCommand['category'], string> = {
   session: 'Session',
   info: 'Info',
   mode: 'Mode',
+  system: 'System',
+  tools: 'Tools',
+  project: 'Project',
 };
 
 export function getCategoryLabel(category: SlashCommand['category']): string {

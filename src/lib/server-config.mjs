@@ -24,11 +24,12 @@ export function configPath() {
  * @typedef {Object} ServerConfig
  * @property {boolean} remoteAccess
  * @property {string|null} remoteAccessToken
+ * @property {string|null} [anthropicApiKey]
  */
 
 /** @returns {ServerConfig} */
 function defaults() {
-  return { remoteAccess: false, remoteAccessToken: null };
+  return { remoteAccess: false, remoteAccessToken: null, anthropicApiKey: null };
 }
 
 /**
@@ -42,6 +43,7 @@ export function loadServerConfigSync() {
     return {
       remoteAccess: typeof parsed.remoteAccess === 'boolean' ? parsed.remoteAccess : false,
       remoteAccessToken: typeof parsed.remoteAccessToken === 'string' ? parsed.remoteAccessToken : null,
+      anthropicApiKey: typeof parsed.anthropicApiKey === 'string' && parsed.anthropicApiKey.length > 0 ? parsed.anthropicApiKey : null,
     };
   } catch {
     return defaults();

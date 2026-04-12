@@ -6,6 +6,7 @@ import { useEditorStore } from '@/stores/use-editor-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
 import { useClaudeStore } from '@/stores/use-claude-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
+import { useMcpStore } from '@/stores/use-mcp-store';
 import { filesApi } from '@/lib/api-client';
 import { exportToPptx, parseHtmlToSlides } from '@/lib/export/pptx-exporter';
 import { openPrintPdf } from '@/lib/export/pdf-exporter';
@@ -44,6 +45,8 @@ export function CommandPalette() {
   const setTheme = useLayoutStore((s) => s.setTheme);
   const resetClaude = useClaudeStore((s) => s.reset);
   const openRulesModal = useSettingsStore((s) => s.openRulesModal);
+  const openMcpModal = useMcpStore((s) => s.openModal);
+  const fetchMcpStatus = useMcpStore((s) => s.fetchStatus);
   const setTerminalFontFamily = useSettingsStore((s) => s.setTerminalFontFamily);
   const setTerminalFontLigatures = useSettingsStore((s) => s.setTerminalFontLigatures);
   const terminalFontLigatures = useSettingsStore((s) => s.terminalFontLigatures);
@@ -174,6 +177,18 @@ export function CommandPalette() {
                 className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
               >
                 Edit Permission Rules
+              </Command.Item>
+              <Command.Item
+                onSelect={() => runCommand(() => openMcpModal())}
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                MCP: Manage Servers
+              </Command.Item>
+              <Command.Item
+                onSelect={() => runCommand(() => fetchMcpStatus())}
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                MCP: Refresh Status
               </Command.Item>
               <Command.Item
                 onSelect={() =>

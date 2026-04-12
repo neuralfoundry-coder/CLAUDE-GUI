@@ -2,12 +2,13 @@
 
 import {
   Moon, Sun, Contrast, Terminal, Sidebar, Eye, FolderOpen, MonitorSmartphone,
-  Monitor, Code2, MessageSquare, Globe,
+  Monitor, Code2, MessageSquare, Globe, Blocks,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLayoutStore, type Theme } from '@/stores/use-layout-store';
 import { useProjectStore } from '@/stores/use-project-store';
 import { useRemoteAccessStore } from '@/stores/use-remote-access-store';
+import { useMcpStore } from '@/stores/use-mcp-store';
 import { AuthBadge } from './auth-badge';
 
 const THEME_ICONS: Record<Theme, React.ComponentType<{ className?: string }>> = {
@@ -39,6 +40,9 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
   const remoteAccess = useRemoteAccessStore((s) => s.remoteAccess);
   const localIPs = useRemoteAccessStore((s) => s.localIPs);
   const openRemoteModal = useRemoteAccessStore((s) => s.openModal);
+  const mcpServers = useMcpStore((s) => s.servers);
+  const openMcpModal = useMcpStore((s) => s.openModal);
+  const enabledMcpCount = Object.values(mcpServers).filter((s) => s.enabled).length;
 
   const ThemeIcon = THEME_ICONS[theme];
 
@@ -109,6 +113,15 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
           title="Toggle preview (⌃⌘P)"
         >
           <Eye className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={openMcpModal}
+          aria-label="MCP servers"
+          title={enabledMcpCount > 0 ? `MCP: ${enabledMcpCount} server(s)` : 'MCP Servers'}
+        >
+          <Blocks className={`h-4 w-4 ${enabledMcpCount > 0 ? 'text-blue-500' : ''}`} />
         </Button>
         <Button
           variant="ghost"

@@ -50,14 +50,20 @@ function loadConfigSync() {
       return {
         remoteAccess: typeof parsed.remoteAccess === 'boolean' ? parsed.remoteAccess : false,
         remoteAccessToken: typeof parsed.remoteAccessToken === 'string' ? parsed.remoteAccessToken : null,
+        anthropicApiKey: typeof parsed.anthropicApiKey === 'string' && parsed.anthropicApiKey.length > 0 ? parsed.anthropicApiKey : null,
       };
     } catch {
-      return { remoteAccess: false, remoteAccessToken: null };
+      return { remoteAccess: false, remoteAccessToken: null, anthropicApiKey: null };
     }
   }
 }
 
 let serverConfig = loadConfigSync();
+
+// Inject saved API key into process.env (respects explicit env var if already set)
+if (serverConfig.anthropicApiKey && !process.env.ANTHROPIC_API_KEY) {
+  process.env.ANTHROPIC_API_KEY = serverConfig.anthropicApiKey;
+}
 
 function resolveHostname() {
   if (envHostname) return envHostname; // HOST env always wins

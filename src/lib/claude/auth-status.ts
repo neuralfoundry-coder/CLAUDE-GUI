@@ -16,6 +16,7 @@ export interface AuthStatus {
   email?: string;
   authMethod?: string;
   orgName?: string;
+  hasApiKeySaved?: boolean;
 }
 
 function credentialsPath(): string {
@@ -80,12 +81,15 @@ async function checkCliAuthStatus(): Promise<CliAuthResult | null> {
 }
 
 export async function checkAuth(): Promise<AuthStatus> {
-  const [credsOk, cliOk, cliAuth] = await Promise.all([
+  const { loadServerConfig } = await import('@/lib/server-config-wrapper');
+  const [credsOk, cliOk, cliAuth, config] = await Promise.all([
     hasCredentialsFile(),
     isCliInstalled(),
     checkCliAuthStatus(),
+    loadServerConfig(),
   ]);
   const envOk = hasEnvKey();
+  const hasApiKeySaved = Boolean(config.anthropicApiKey);
 
   if (cliAuth) {
     return {
@@ -96,6 +100,7 @@ export async function checkAuth(): Promise<AuthStatus> {
       email: cliAuth.email,
       authMethod: cliAuth.authMethod,
       orgName: cliAuth.orgName,
+      hasApiKeySaved,
     };
   }
 
@@ -105,5 +110,6 @@ export async function checkAuth(): Promise<AuthStatus> {
     source,
     cliInstalled: cliOk,
     lastChecked: new Date().toISOString(),
+    hasApiKeySaved,
   };
 }

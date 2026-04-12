@@ -16,13 +16,19 @@ export function DiffAcceptBar() {
 
   if (!tab || !tab.diff) return null;
 
-  const { hunks, acceptedHunkIds } = tab.diff;
+  const { hunks, acceptedHunkIds, status } = tab.diff;
+  const isStreaming = status === 'streaming';
   const acceptedSet = new Set(acceptedHunkIds);
   const acceptedCount = acceptedHunkIds.length;
   const totalCount = hunks.length;
 
   return (
     <div className="border-b bg-secondary">
+      {isStreaming && (
+        <div className="h-0.5 w-full overflow-hidden bg-muted">
+          <div className="h-full w-1/3 animate-[shimmer_1.5s_ease-in-out_infinite] bg-primary/60" />
+        </div>
+      )}
       <div className="flex h-10 items-center justify-between px-3 text-sm">
         <div className="flex items-center gap-2">
           <Button
@@ -38,20 +44,31 @@ export function DiffAcceptBar() {
               <ChevronRight className="h-3 w-3" aria-hidden="true" />
             )}
           </Button>
-          <span className="font-semibold">Claude proposed {totalCount} hunk(s)</span>
-          <span className="text-xs text-muted-foreground">
-            {acceptedCount}/{totalCount} accepted
+          <span className="font-semibold">
+            {isStreaming ? (
+              <>
+                <span className="mr-1.5 inline-block h-2 w-2 animate-pulse rounded-full bg-orange-400" />
+                Claude is editing...
+              </>
+            ) : (
+              <>Claude proposed {totalCount} hunk(s)</>
+            )}
           </span>
+          {!isStreaming && (
+            <span className="text-xs text-muted-foreground">
+              {acceptedCount}/{totalCount} accepted
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => rejectDiff(tab.id)}>
+          <Button size="sm" variant="outline" onClick={() => rejectDiff(tab.id)} disabled={isStreaming}>
             <X className="mr-1 h-4 w-4" aria-hidden="true" />
             Reject all
           </Button>
-          <Button size="sm" variant="outline" onClick={() => acceptAllHunks(tab.id)}>
+          <Button size="sm" variant="outline" onClick={() => acceptAllHunks(tab.id)} disabled={isStreaming}>
             Select all
           </Button>
-          <Button size="sm" onClick={() => applyAcceptedHunks(tab.id)}>
+          <Button size="sm" onClick={() => applyAcceptedHunks(tab.id)} disabled={isStreaming}>
             <Check className="mr-1 h-4 w-4" aria-hidden="true" />
             Apply {acceptedCount} hunk(s)
           </Button>

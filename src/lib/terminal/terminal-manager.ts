@@ -68,7 +68,6 @@ interface TerminalInstance {
   opened: boolean;
   exitCode: number | null;
   cwd: string | null;
-  helpersInjected: boolean;
 }
 
 type SessionListener = (id: string, status: TerminalInstanceStatus, exitCode: number | null) => void;
@@ -111,8 +110,11 @@ class TerminalManager {
     this.booted = true;
     const layout = useLayoutStore.getState();
     this.layoutUnsubscribe = useLayoutStore.subscribe((state, prev) => {
-      if (state.fontSize !== prev.fontSize) {
-        this.setFontSize(state.fontSize);
+      if (
+        state.fontSize !== prev.fontSize ||
+        state.panelZoom.terminal !== prev.panelZoom.terminal
+      ) {
+        this.setFontSize(Math.round(state.fontSize * state.panelZoom.terminal));
       }
       if (state.theme !== prev.theme) {
         this.setTheme(state.theme);
@@ -136,7 +138,7 @@ class TerminalManager {
     mq.addEventListener('change', this.systemThemeHandler);
 
     // Apply initial values in case sessions already exist.
-    this.setFontSize(layout.fontSize);
+    this.setFontSize(Math.round(layout.fontSize * layout.panelZoom.terminal));
     this.setTheme(layout.theme);
     this.applyFontSettings();
 
@@ -241,7 +243,7 @@ class TerminalManager {
 
     const layout = useLayoutStore.getState();
     const settings = useSettingsStore.getState();
-    const fontSize = layout.fontSize;
+    const fontSize = Math.round(layout.fontSize * layout.panelZoom.terminal);
     const term = new xtermMod.Terminal({
       cursorBlink: true,
       scrollback: 10000,
@@ -285,7 +287,6 @@ class TerminalManager {
       opened: false,
       exitCode: null,
       cwd: initialCwd,
-      helpersInjected: false,
     };
 
     // Register a custom link provider that matches file paths with optional
@@ -372,12 +373,6 @@ class TerminalManager {
         const cols = inst.lastCols || inst.term.cols || 120;
         const rows = inst.lastRows || inst.term.rows || 30;
         ws.send(JSON.stringify({ type: 'resize', cols, rows } satisfies TerminalClientControl));
-        // Install OSC 7 cwd emitter in the user's shell. Runs once per
-        // instance life (kept across restarts) so the first prompt after a
-        // Restart does not leak the snippet again.
-        if (!inst.helpersInjected) {
-          setTimeout(() => this.injectShellHelpers(inst), 250);
-        }
       },
       onClose: () => {
         // `exited` is set by the server-side exit frame handler; preserve it.
@@ -485,32 +480,6 @@ class TerminalManager {
     }
   }
 
-  /**
-   * Send a one-liner to the shell that installs an OSC 7 cwd emitter on
-   * every prompt. Works for zsh and bash; no-op in fish/pwsh/cmd. Leading
-   * space lets users with `HISTCONTROL=ignorespace` keep shell history clean.
-   */
-  private injectShellHelpers(inst: TerminalInstance): void {
-    if (inst.helpersInjected) return;
-    if (inst.ws.readyState !== WebSocket.OPEN) return;
-    const snippet =
-      ' if [ -n "${ZSH_VERSION-}" ]; then ' +
-      '_cgui_osc7(){ printf "\\033]7;file://%s%s\\033\\\\" "${HOST:-$(hostname)}" "$PWD"; }; ' +
-      'typeset -ga precmd_functions; precmd_functions+=(_cgui_osc7); _cgui_osc7; ' +
-      'elif [ -n "${BASH_VERSION-}" ]; then ' +
-      '_cgui_osc7(){ printf "\\033]7;file://%s%s\\033\\\\" "${HOSTNAME:-$(hostname)}" "$PWD"; }; ' +
-      'PROMPT_COMMAND="_cgui_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; _cgui_osc7; ' +
-      'fi\r';
-    try {
-      inst.ws.send(
-        JSON.stringify({ type: 'input', data: snippet } satisfies TerminalClientControl),
-      );
-      inst.helpersInjected = true;
-    } catch {
-      /* ignore */
-    }
-  }
-
   restartSession(id: string): void {
     const inst = this.instances.get(id);
     if (!inst) return;
@@ -579,8 +548,6 @@ class TerminalManager {
         inst.term.write(
           '\r\n\x1b[2m[previous session was evicted — started a fresh shell]\x1b[0m\r\n',
         );
-        // Re-enable shell helper injection for the new shell.
-        inst.helpersInjected = false;
       }
       inst.serverSessionId = msg.id;
       if (msg.replay) {

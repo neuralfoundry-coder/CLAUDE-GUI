@@ -97,7 +97,36 @@ async function createNewSession(req) {
     cwd,
     env,
   });
-  return terminalSessionRegistry.register(ptyProcess, cwd);
+  const record = terminalSessionRegistry.register(ptyProcess, cwd);
+
+  // Inject an OSC 7 cwd emitter into the shell so the client can track the
+  // working directory. The snippet is written directly to PTY stdin followed
+  // by `clear` so the echoed text is wiped before the user sees it. A leading
+  // space keeps the command out of shell history (HISTCONTROL=ignorespace).
+  const osc7Snippet =
+    ' if [ -n "${ZSH_VERSION-}" ]; then ' +
+    '_cgui_osc7(){ printf "\\033]7;file://%s%s\\033\\\\" "${HOST:-$(hostname)}" "$PWD"; }; ' +
+    'typeset -ga precmd_functions; precmd_functions+=(_cgui_osc7); _cgui_osc7; ' +
+    'elif [ -n "${BASH_VERSION-}" ]; then ' +
+    '_cgui_osc7(){ printf "\\033]7;file://%s%s\\033\\\\" "${HOSTNAME:-$(hostname)}" "$PWD"; }; ' +
+    'PROMPT_COMMAND="_cgui_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; _cgui_osc7; ' +
+    'fi; clear\r';
+  // Use a short delay to allow the PTY process to fully initialize its
+  // stdin pipe before we write, then flush the ring buffer so the echoed
+  // snippet is not replayed to clients that connect later.
+  setTimeout(() => {
+    try {
+      ptyProcess.write(osc7Snippet);
+    } catch { /* PTY may have already exited */ }
+    // Give the shell time to process the snippet and the `clear` command,
+    // then reset the ring buffer so the init noise is not replayed.
+    setTimeout(() => {
+      record.ringBuffer.length = 0;
+      record.ringBytes = 0;
+    }, 800);
+  }, 100);
+
+  return record;
 }
 
 export default async function terminalHandler(ws, req) {

@@ -242,7 +242,7 @@ export function middleware(req: NextRequest) {
     "worker-src 'self' blob:",                                    // Monaco web workers
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
     "img-src 'self' data: blob:",
-    "font-src 'self' data: https://fonts.gstatic.com",
+    "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net",
     "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",       // Monaco source maps
     "frame-src 'self' data: blob:",                                // iframe srcdoc + blob
   ].join('; '));
@@ -366,6 +366,7 @@ query({
 - They are injected only into the server via environment variables (`ANTHROPIC_API_KEY`).
 - Next.js `.env.local` is included in `.gitignore`.
 - Do not use the client-side `process.env.NEXT_PUBLIC_*` prefix for secrets.
+- **GUI API Key input**: When a user enters an API key through the login modal, it is saved server-side to the `anthropicApiKey` field of `~/.claudegui/server-config.json` via `POST /api/auth/api-key` (localhost-only). Only a `hasApiKeySaved: boolean` flag is sent to the frontend — the key value itself is never included in any response. On server startup, the saved key is injected into `process.env.ANTHROPIC_API_KEY` (an existing environment variable takes precedence).
 
 ### 5.6.2 Session data
 
@@ -446,3 +447,24 @@ Verify the following before release:
 - Local mode: existing `ALLOWED_ORIGINS` validation is maintained.
 - Remote mode + token: token authentication replaces Origin validation. Any origin with a valid token is allowed.
 - Remote mode + no token: warning logged, all origins allowed (recommended only for development/testing).
+
+## 5.9 MCP Server Security (FR-1400)
+
+### 5.9.1 Permission Management
+
+- MCP server tool calls pass through the existing `canUseTool` callback (§5.5) within the Agent SDK.
+- MCP tools follow the same allow/deny flow as built-in SDK tools (`Read`, `Write`, `Bash`, etc.).
+- The `permissions.allow`/`permissions.deny` rules in `.claude/settings.json` apply to MCP tools as well.
+
+### 5.9.2 Credential Protection
+
+- MCP server configuration may include API keys and tokens in environment variables (`env` field) and headers (`headers` field).
+- These values are stored in plaintext in `.claude/settings.json`; file permissions of 600 (user-only) are recommended.
+- In the management modal, environment variable values and header values are displayed as `type="password"` inputs (masked).
+- The MCP configuration API (`/api/mcp`) is server-side only; credentials are not directly exposed to the client browser.
+
+### 5.9.3 Process Isolation
+
+- stdio-type MCP servers are spawned as child processes by the Agent SDK, isolated from the main server.js process.
+- SSE/HTTP-type MCP servers are network connections to external services and do not execute code within the server process.
+- MCP server configuration is isolated per-project, preventing one project's MCP servers from accessing another project's files.

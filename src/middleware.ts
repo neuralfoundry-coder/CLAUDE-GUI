@@ -6,7 +6,7 @@ const CSP_DIRECTIVES = [
   "worker-src 'self' blob:",
   "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
   "img-src 'self' data: blob:",
-  "font-src 'self' data: https://fonts.gstatic.com",
+  "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net",
   "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",
   "frame-src 'self' data: blob:",
   "object-src 'none'",

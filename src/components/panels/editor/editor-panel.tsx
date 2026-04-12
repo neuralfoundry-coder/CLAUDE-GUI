@@ -11,6 +11,8 @@ import { useEditorStore } from '@/stores/use-editor-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useKeyboardShortcut } from '@/hooks/use-keyboard-shortcut';
 import { useFilesWebSocket } from '@/components/panels/file-explorer/use-files-websocket';
+import { usePanelFocus } from '@/hooks/use-panel-focus';
+import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 import { getLanguageFromPath, getLanguageDisplayName } from '@/lib/editor/language-map';
 import { cn } from '@/lib/utils';
 
@@ -25,6 +27,7 @@ export function EditorPanel() {
   const completionLoading = useEditorStore((s) => s.completionLoading);
   const minimapEnabled = useSettingsStore((s) => s.editorMinimapEnabled);
   const toggleMinimap = useSettingsStore((s) => s.setEditorMinimapEnabled);
+  const panelFocus = usePanelFocus('editor');
 
   useKeyboardShortcut([
     {
@@ -54,13 +57,19 @@ export function EditorPanel() {
   const languageLabel = languageId ? getLanguageDisplayName(languageId) : null;
 
   return (
-    <div className="flex h-full flex-col bg-background">
+    <div
+      className="flex h-full flex-col bg-background"
+      data-panel-id="editor"
+      onMouseDown={panelFocus.onMouseDown}
+      onFocus={panelFocus.onFocus}
+    >
       {/* Panel header */}
       <div className="flex h-7 items-center justify-between border-b bg-muted px-3">
         <span className="text-xs font-semibold uppercase text-muted-foreground">
           Editor
         </span>
         <div className="flex items-center gap-2">
+          <PanelZoomControls panelId="editor" />
           {completionLoading && (
             <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
           )}

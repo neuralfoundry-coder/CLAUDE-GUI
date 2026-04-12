@@ -21,10 +21,12 @@ import { ProjectPickerModal } from '@/components/modals/project-picker-modal';
 import { LoginPromptModal } from '@/components/modals/login-prompt-modal';
 import { ArtifactsModal } from '@/components/modals/artifacts-modal';
 import { RemoteAccessModal } from '@/components/modals/remote-access-modal';
+import { McpServersModal } from '@/components/modals/mcp-servers-modal';
 import { CommandPalette } from '@/components/command-palette/command-palette';
 import { MobileShell } from './mobile-shell';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useRemoteAccessStore } from '@/stores/use-remote-access-store';
+import { useMcpStore } from '@/stores/use-mcp-store';
 import { useLayoutStore, DEFAULT_PANEL_SIZES } from '@/stores/use-layout-store';
 import { useProjectStore } from '@/stores/use-project-store';
 import { useEditorStore } from '@/stores/use-editor-store';
@@ -276,6 +278,7 @@ export function AppShell() {
       <LoginPromptModal open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
       <ArtifactsModal />
       <RemoteAccessModalHost />
+      <McpServersModalHost />
       <CommandPalette />
     </div>
   );
@@ -291,4 +294,10 @@ function PermissionRulesModalHost() {
   const open = useSettingsStore((s) => s.rulesModalOpen);
   const close = useSettingsStore((s) => s.closeRulesModal);
   return <PermissionRulesModal open={open} onOpenChange={(v) => !v && close()} />;
+}
+
+function McpServersModalHost() {
+  const open = useMcpStore((s) => s.modalOpen);
+  const close = useMcpStore((s) => s.closeModal);
+  return <McpServersModal open={open} onOpenChange={(v) => { if (!v) close(); }} />;
 }

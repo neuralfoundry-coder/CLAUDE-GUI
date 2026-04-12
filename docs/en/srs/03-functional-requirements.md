@@ -247,6 +247,7 @@
 - Change events are received via the WebSocket `/ws/files` channel.
 - Content is updated while preserving the user's cursor position.
 - If the editor has unsaved changes, a conflict notification shall be displayed.
+- Tabs with an active Claude diff (`tab.diff` set) shall skip external change sync — the tool_use result has already set the diff view.
 
 ### FR-309: AI inline code completion
 
@@ -286,6 +287,24 @@
   - Smooth scrolling and cursor animation
   - Sticky scroll (current scope display)
   - Linked editing
+
+### FR-312: Real-time editor diff streaming for Claude tool execution
+
+- When Claude executes a `Write`/`Edit`/`MultiEdit` tool, the **editor shall display a real-time diff view**.
+- **`input_json_delta` streaming**: When the SDK streams tool input token-by-token (`content_block_delta` + `input_json_delta`), partial JSON is parsed every 500ms and a `streaming`-status diff is shown in the editor. On `content_block_stop`, the diff transitions to the final `pending` state.
+- **Diff status extension**: `diff.status` has type `'pending' | 'streaming'`. In `streaming` state, the DiffAcceptBar's Accept/Reject buttons are disabled, and a progress bar with "Claude is editing..." indicator is shown.
+- **Auto tab opening**: If the target file is not open in the editor, `openFile(filePath)` is called automatically.
+- **Auto panel expansion**: If the editor panel is collapsed, it is automatically expanded. For HTML/SVG/MD files, the preview panel is also auto-expanded.
+- **Race condition prevention**: When `tab.diff` is set and a `/ws/files` notification arrives, `syncExternalChange` is skipped to preserve the diff view.
+- Implementation: `src/stores/use-claude-store.ts` (tool input tracking + editor wiring), `src/stores/use-editor-store.ts` (`updateStreamingEdit` + `syncExternalChange` guard), `src/components/panels/editor/diff-accept-bar.tsx` (streaming UI).
+
+### FR-313: Chat panel streaming UX enhancements
+
+- **Thinking indicator**: When Claude starts responding (`system` message received + `isStreaming` active), an empty-content streaming message is inserted before the first token arrives, displaying a blinking cursor.
+- **tool_use file path display**: The `toolInput.file_path` of `Write`/`Edit`/`MultiEdit` tools is displayed in the chat message with a file icon. Clicking it opens the file in the editor.
+- **ReactMarkdown performance optimization**: `useDeferredValue` optimizes Markdown rendering batching during streaming.
+- **Streaming activity status bar**: During file-edit tool execution, "Writing file.tsx..." or "Editing file.tsx..." status is shown above the input area.
+- Implementation: `src/stores/use-claude-store.ts` (thinking placeholder), `src/components/panels/claude/chat-message-item.tsx` (file path + useDeferredValue), `src/components/panels/claude/claude-chat-panel.tsx` (StreamingActivityBar).
 
 ---
 
@@ -414,7 +433,7 @@
 - **Rename**: double-clicking a tab label swaps it for an inline `<input>`. Enter commits, Escape cancels, blur commits. Sessions that have been renamed are marked `customName: true`.
 - **CWD label**: the tab label appends the current PTY cwd basename separated by `·` (e.g. `Terminal 1 · src`). Basenames longer than 20 characters are ellipsized. The full path is exposed via the tab's `title` attribute.
 - **OSC 7**: `TerminalManager` registers `term.parser.registerOscHandler(7, …)` to consume the shell's OSC 7 sequences (`\e]7;file://host/path\e\\`), updates the session's `cwd` field, and propagates the change through a listener. Malformed payloads (URL parse failure) are ignored.
-- **Shell helper auto-injection**: 250 ms after the socket opens, the manager sends a one-time input frame containing an OSC 7 emitter snippet. The snippet detects `ZSH_VERSION` or `BASH_VERSION` and installs itself into either zsh's `precmd_functions` or bash's `PROMPT_COMMAND`. The command is prefixed with a leading space to keep it out of shell history for users with `HISTCONTROL=ignorespace`. Injection happens exactly once per session lifetime and is not repeated on Restart.
+- **Shell helper auto-injection**: the server (`terminal-handler.mjs`) writes an OSC 7 emitter snippet directly to PTY stdin immediately after spawn. The snippet detects `ZSH_VERSION` or `BASH_VERSION` and installs itself into either zsh's `precmd_functions` or bash's `PROMPT_COMMAND`. The command is prefixed with a leading space to keep it out of shell history for users with `HISTCONTROL=ignorespace`. Immediately after writing the snippet, the server sends a `clear` command and resets the ring buffer so the injection is never visible to the user. Injection happens once per PTY spawn; on Restart a new PTY is spawned, so the snippet is automatically re-injected.
 - **Project change banner**: when `useProjectStore.activeRoot` changes and at least one existing tab has a `cwd` different from the new root, a non-intrusive banner is rendered at the top of the terminal panel. The banner offers "Open new tab here" and "Dismiss" actions. It does not auto-inject `cd` (which could corrupt in-progress shell state). Dismissal applies only to the current active root; a subsequent change re-shows the banner.
 
 ### FR-414: Server-side terminal session registry with reconnect replay (ADR-019/020)
@@ -617,8 +636,13 @@
 - The system shall display the current Claude CLI auth status as a live header badge.
 - Auth source must be one of `credentials-file` (`~/.claude/.credentials.json`), `env` (`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`), or `none`.
 - A separate `cliInstalled: false` indicator is shown when the CLI is not on `PATH`.
-- Clicking an unauthenticated badge opens a modal guiding the user to run `claude login`.
-- Implementation: `src/lib/claude/auth-status.ts`, `GET /api/auth/status`, `src/components/layout/auth-badge.tsx`.
+- When authenticated, the badge shall display **"Verified"** instead of the account name.
+- When unauthenticated, the badge shall display **"Sign In"**; clicking it opens the login modal.
+- The login modal provides two authentication methods via tabs:
+  - **CLI Login tab**: instructions to run `claude login` and a button to open the terminal.
+  - **API Key tab**: a form to enter, save, and remove an `ANTHROPIC_API_KEY`. The key is stored server-side in `~/.claudegui/server-config.json`; only a `hasApiKeySaved: boolean` flag is exposed to the frontend.
+- API key management endpoints: `POST /api/auth/api-key` (save), `DELETE /api/auth/api-key` (remove). Localhost-only.
+- Implementation: `src/lib/claude/auth-status.ts`, `GET /api/auth/status`, `src/app/api/auth/api-key/route.ts`, `src/components/layout/auth-badge.tsx`, `src/components/modals/login-prompt-modal.tsx`.
 
 ### FR-511: Prompt @ file/directory references
 
@@ -669,17 +693,35 @@
 
 - When the user types text starting with `/` in the Claude chat input, the system shall display a popover listing available slash commands.
 - Slash commands are classified into two types:
-  - **Client commands**: handled directly within the GUI (`/clear`, `/new`, `/usage`, `/context`, `/cost`, `/model`, `/help`)
-  - **Passthrough commands**: the entire input is forwarded to Claude CLI (`/compact`, `/plan`, `/review`)
+  - **Client commands**: handled directly within the GUI
+  - **Passthrough commands**: the entire input is forwarded to Claude CLI
+- Passthrough commands respect the `requiresSession` flag:
+  - `requiresSession: true` (default): execution is blocked when no active session exists (`/compact`, `/context`)
+  - `requiresSession: false`: execution proceeds without an active session; a new session is created automatically (`/init`, `/plan`, `/review`, `/pr-comments`)
 - The popover is shown while the input starts with `/` and contains no spaces; candidates are filtered by prefix matching as the user types.
 - Keyboard navigation: `ArrowUp`/`ArrowDown` to move between candidates, `Enter` to execute immediately, `Tab` to fill the command name into the input, `Escape` to dismiss.
-- Commands are grouped by category: Session (`/clear`, `/new`, `/compact`), Info (`/usage`, `/context`, `/cost`, `/model`, `/help`), Mode (`/plan`, `/review`).
+- Commands are grouped into 6 categories:
+  - **Session**: `/clear`, `/new`, `/compact`
+  - **Info**: `/usage`, `/context`, `/cost`, `/model`, `/help`
+  - **Mode**: `/plan`, `/review`
+  - **System**: `/bug`, `/config`, `/doctor`, `/login`, `/logout`, `/status`, `/vim`, `/terminal-setup`
+  - **Tools**: `/permissions`, `/approved-tools`, `/mcp`
+  - **Project**: `/init`, `/memory`, `/pr-comments`, `/add-dir`
+- A total of 25 slash commands are supported, providing full parity with the Claude Code CLI command set.
 - Client commands display results as system messages (`role: 'system'`, `kind: 'system'`) in the chat area.
-- `/help` displays a Markdown table of all available slash commands.
+- `/help` dynamically generates a full command table from the `SLASH_COMMANDS` registry.
 - `/usage`, `/context`, `/cost` query the active session data from `useClaudeStore.sessionStats`.
 - `/model` displays current model information and specs from `src/lib/claude/model-specs.ts`.
+- `/doctor` runs comprehensive diagnostics: server health, CLI installation, authentication, WebSocket connections, and MCP servers.
+- `/config`, `/permissions`, `/approved-tools` fetch and display settings from `/api/settings`.
+- `/mcp` fetches MCP server status and opens the MCP server management modal.
+- `/memory` opens the project root's `CLAUDE.md` in the editor.
+- `/vim` toggles vim keybindings in the Monaco editor (`useSettingsStore.editorVimMode`).
+- `/login`, `/logout` check and modify authentication state (`/api/auth/status`, `/api/auth/logout`).
+- `/bug` opens the GitHub Issues page in a new tab.
+- `/add-dir <path>` adds a directory to the project context (`POST /api/project`).
 - Alias support: `/reset` is an alias for `/new`.
-- Implementation: `src/lib/claude/slash-commands.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+- Implementation: `src/lib/claude/slash-commands.ts`, `src/lib/claude/slash-command-handlers.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
 
 ### FR-517: File/Image Drag-and-Drop Input
 
@@ -768,9 +810,9 @@
 - The preview panel shall update in real time **independently of the file-selection state** when it detects **any language code fence** (` ```html `, ` ```python `, ` ```typescript `, etc.) or a `Write`/`Edit`/`MultiEdit` `tool_use` targeting **any file type** in a Claude assistant response.
 - **Multi-page model (v0.6)**: Each code fence or `tool_use` within a single stream is managed as an independent "page (`LivePage`)". Each page has `id`, `kind` (html/svg/markdown/code/text), `language`, `title`, `content`, `renderable`, `complete`, and `viewMode` (source/rendered) properties.
 - **Per-kind rendering**:
-  - `html`: renders via iframe `srcdoc` when renderable markers are detected (`<!doctype`, `<html`, `<body`, or balanced top-level tag); falls back to source view otherwise. iframe uses `sandbox="allow-scripts"` (never `allow-same-origin`). Debounce 150ms.
-  - `svg`: renders via iframe when `</svg>` closing tag is detected; source view otherwise.
-  - `markdown`: always progressively renderable (react-markdown). Debounce 200ms.
+  - `html`: renders via iframe `srcdoc` when renderable markers are detected (`<!doctype`, `<html`, `<body`, or balanced top-level tag); falls back to source view otherwise. iframe uses `sandbox="allow-scripts"` (never `allow-same-origin`). Debounce 80ms.
+  - `svg`: renders via iframe when `</svg>` closing tag is detected; source view otherwise. Debounce 150ms.
+  - `markdown`: always progressively renderable (react-markdown). Debounce 100ms.
   - `code`: highlight.js syntax-highlighted source view (JavaScript, TypeScript, Python, CSS, JSON, Bash, YAML, SQL, and more).
   - `text`: plain `<pre>` block source view.
 - **Per-page code/preview dual mode**: Every page can toggle between source view and rendered view via `viewMode`. When `renderable` transitions from false to true, the view automatically switches to rendered mode.
@@ -975,6 +1017,27 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 - On boot, `TerminalManager.attachCustomKeyEventHandler` vetoes the reserved combinations so xterm never writes them to the PTY.
 - The global shortcut handler (`src/hooks/use-global-shortcuts.ts`) listens for the same combinations and dispatches `useTerminalStore` actions.
 - `Cmd+K` arbitration: when focus is inside the terminal, the Command Palette (`FR-801`) `Cmd+K` handler becomes a no-op and the buffer-clear action takes over. Outside the terminal, the palette still opens as before.
+
+### FR-807: Per-panel zoom
+
+Each panel (file explorer, editor, terminal, Claude chat, preview) shall support **independent** zoom in/out.
+
+- **State**: `useLayoutStore.panelZoom` — per-panel zoom multiplier (`Record<PanelId, number>`), default `1.0`, range `0.5 – 2.0`, step `0.1`.
+- **Focus tracking**: `useLayoutStore.focusedPanel` tracks which panel currently has focus. It is set automatically when the user clicks or focuses inside a panel.
+- **UI controls**: Each panel header shows `+` / `−` buttons and the current zoom percentage (e.g. `100%`). Clicking the percentage resets zoom to `100%`.
+- **Keyboard shortcuts**:
+
+| Key (macOS / other) | Action |
+|---|---|
+| `Cmd+Shift+=` / `Ctrl+Shift+=` | Zoom in focused panel (+10%) |
+| `Cmd+Shift+-` / `Ctrl+Shift+-` | Zoom out focused panel (-10%) |
+| `Cmd+Shift+0` / `Ctrl+Shift+0` | Reset focused panel zoom (100%) |
+
+- **Application method**:
+  - Editor: applies `fontSize × zoom` to Monaco Editor `fontSize` option
+  - Terminal: applies `fontSize × zoom` to xterm `fontSize` option
+  - File explorer / Claude chat / Preview: applies CSS `zoom` property on the content area
+- **Persistence**: `panelZoom` is stored in `localStorage`. `focusedPanel` is ephemeral and not persisted across sessions.
 
 ---
 
@@ -1319,3 +1382,36 @@ Allows switching the server binding address from `127.0.0.1` (local only) to `0.
 - Supports sidecar process restart via the Tauri IPC `restart_server` command.
 - The web UI uses `isTauri()` detection to select the appropriate restart path.
 - Implementation: `installer/tauri/src-tauri/src/main.rs`, `src/lib/runtime.ts`.
+
+---
+
+## MCP Server Integration (FR-1400)
+
+### FR-1400: MCP Server Configuration Management
+
+- Users can add, edit, and delete MCP (Model Context Protocol) servers on a per-project basis.
+- Supported MCP server types: stdio (local command), SSE (Server-Sent Events), HTTP (Streamable HTTP).
+- Configuration is stored per-project in the `mcpServers` field of `.claude/settings.json`.
+- Each server has a name (unique key), enabled/disabled toggle, description, and type-specific settings (command/args/env or url/headers).
+
+### FR-1401: MCP Server Configuration UI
+
+- A Blocks icon button in the header opens the MCP server management modal. The icon turns blue when active servers exist.
+- The command palette (Cmd+K) provides "MCP: Manage Servers" and "MCP: Refresh Status" entries.
+- The management modal displays a server list with a status dot (green/yellow/red), type badge, enable/disable toggle, and edit/delete buttons for each entry.
+- A "Quick Add" dropdown provides presets for commonly used MCP servers (Filesystem, GitHub, Brave Search, Slack, PostgreSQL) for rapid configuration.
+- Implementation: `src/components/modals/mcp-servers-modal.tsx`, `src/stores/use-mcp-store.ts`.
+
+### FR-1402: MCP Server Backend Integration
+
+- `claude-handler.mjs`'s `runQuery()` loads enabled MCP servers from `.claude/settings.json` at query start and passes them to the Agent SDK's `queryOptions.mcpServers`.
+- MCP server tool calls are processed through the existing `canUseTool` permission gate, so the existing allow/deny modal works without additional permission logic.
+- `GET /api/mcp` — returns the current project's MCP server configuration.
+- `PUT /api/mcp` — updates MCP server configuration (merged with existing settings).
+- `GET /api/mcp/status` — returns MCP server connection statuses from the active SDK session.
+
+### FR-1403: MCP Server Status Display
+
+- The status bar shows the number of active MCP servers and an aggregate status indicator (green: all connected, yellow: some pending, red: any failed). Clicking opens the management modal.
+- Within the management modal, each server's real-time connection status is shown as a colored dot (connected/pending/failed/needs-auth/unknown).
+- Implementation: `src/components/layout/status-bar.tsx`, `src/components/layout/header.tsx`.

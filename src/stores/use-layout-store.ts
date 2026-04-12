@@ -56,6 +56,17 @@ function createThrottledStorage<T>(): PersistStorage<T> {
 export type Theme = 'dark' | 'light' | 'high-contrast' | 'retro-green' | 'system';
 export type PanelId = 'fileExplorer' | 'editor' | 'terminal' | 'claude' | 'preview';
 
+const ZOOM_MIN = 0.5;
+const ZOOM_MAX = 2.0;
+const ZOOM_STEP = 0.1;
+const DEFAULT_PANEL_ZOOM: Record<PanelId, number> = {
+  fileExplorer: 1,
+  editor: 1,
+  terminal: 1,
+  claude: 1,
+  preview: 1,
+};
+
 export const DEFAULT_PANEL_SIZES = {
   fileExplorer: 18,
   center: 52,
@@ -79,6 +90,8 @@ interface LayoutState {
   retroScanlines: boolean;
   fontSize: number;
   mobileActivePanel: PanelId;
+  focusedPanel: PanelId | null;
+  panelZoom: Record<PanelId, number>;
 
   setPanelSize: (panel: 'fileExplorer' | 'editor' | 'terminal' | 'preview', size: number) => void;
   togglePanel: (panel: PanelId) => void;
@@ -90,6 +103,10 @@ interface LayoutState {
   increaseFontSize: () => void;
   decreaseFontSize: () => void;
   setMobileActivePanel: (panel: PanelId) => void;
+  setFocusedPanel: (panel: PanelId | null) => void;
+  increasePanelZoom: (panel: PanelId) => void;
+  decreasePanelZoom: (panel: PanelId) => void;
+  resetPanelZoom: (panel: PanelId) => void;
 }
 
 export const useLayoutStore = create<LayoutState>()(
@@ -108,6 +125,8 @@ export const useLayoutStore = create<LayoutState>()(
       retroScanlines: true,
       fontSize: 14,
       mobileActivePanel: 'editor' as PanelId,
+      focusedPanel: null as PanelId | null,
+      panelZoom: { ...DEFAULT_PANEL_ZOOM },
 
       setPanelSize: (panel, size) =>
         set((state) => {
@@ -142,11 +161,42 @@ export const useLayoutStore = create<LayoutState>()(
       increaseFontSize: () => set((s) => ({ fontSize: Math.min(s.fontSize + 1, 24) })),
       decreaseFontSize: () => set((s) => ({ fontSize: Math.max(s.fontSize - 1, 10) })),
       setMobileActivePanel: (mobileActivePanel) => set({ mobileActivePanel }),
+      setFocusedPanel: (focusedPanel) => set({ focusedPanel }),
+      increasePanelZoom: (panel) =>
+        set((s) => ({
+          panelZoom: {
+            ...s.panelZoom,
+            [panel]: Math.min(
+              Math.round((s.panelZoom[panel] + ZOOM_STEP) * 10) / 10,
+              ZOOM_MAX,
+            ),
+          },
+        })),
+      decreasePanelZoom: (panel) =>
+        set((s) => ({
+          panelZoom: {
+            ...s.panelZoom,
+            [panel]: Math.max(
+              Math.round((s.panelZoom[panel] - ZOOM_STEP) * 10) / 10,
+              ZOOM_MIN,
+            ),
+          },
+        })),
+      resetPanelZoom: (panel) =>
+        set((s) => ({
+          panelZoom: { ...s.panelZoom, [panel]: 1 },
+        })),
     }),
     {
       name: 'claudegui-layout',
       storage: createThrottledStorage<LayoutState>(),
-      version: 3,
+      partialize: (state) => {
+        // Exclude ephemeral focusedPanel from persistence
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { focusedPanel: _, ...rest } = state;
+        return rest as LayoutState;
+      },
+      version: 4,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
         if (version < 3) {
@@ -154,6 +204,11 @@ export const useLayoutStore = create<LayoutState>()(
           if (state.editorCollapsed === undefined) state.editorCollapsed = false;
           if (state.claudeCollapsed === undefined) state.claudeCollapsed = false;
           if (state.mobileActivePanel === undefined) state.mobileActivePanel = 'editor';
+        }
+        if (version < 4) {
+          // Add per-panel zoom for v4
+          if (state.panelZoom === undefined) state.panelZoom = { ...DEFAULT_PANEL_ZOOM };
+          if (state.focusedPanel === undefined) state.focusedPanel = null;
         }
         return state as unknown as LayoutState;
       },

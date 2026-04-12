@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 export interface ServerConfig {
   remoteAccess: boolean;
   remoteAccessToken: string | null;
+  anthropicApiKey?: string | null;
 }
 
 function configDir(): string {
@@ -22,7 +23,7 @@ function configPath(): string {
 }
 
 function defaults(): ServerConfig {
-  return { remoteAccess: false, remoteAccessToken: null };
+  return { remoteAccess: false, remoteAccessToken: null, anthropicApiKey: null };
 }
 
 export async function loadServerConfig(): Promise<ServerConfig> {
@@ -32,6 +33,7 @@ export async function loadServerConfig(): Promise<ServerConfig> {
     return {
       remoteAccess: typeof parsed.remoteAccess === 'boolean' ? parsed.remoteAccess : false,
       remoteAccessToken: typeof parsed.remoteAccessToken === 'string' ? parsed.remoteAccessToken : null,
+      anthropicApiKey: typeof parsed.anthropicApiKey === 'string' && parsed.anthropicApiKey.length > 0 ? parsed.anthropicApiKey : null,
     };
   } catch {
     return defaults();

@@ -7,6 +7,8 @@ import { cn } from '@/lib/utils';
 import { useTerminalStore, type TerminalSession } from '@/stores/use-terminal-store';
 import { useProjectStore } from '@/stores/use-project-store';
 import { terminalApi } from '@/lib/api-client';
+import { usePanelFocus } from '@/hooks/use-panel-focus';
+import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 import { XTerminalAttach } from './x-terminal';
 import { TerminalSearchOverlay } from './terminal-search-overlay';
 
@@ -186,6 +188,7 @@ export function TerminalPanel() {
   const searchOpen = useTerminalStore((s) => s.searchOverlayOpen);
   const closeSearchOverlay = useTerminalStore((s) => s.closeSearchOverlay);
   const activeRoot = useProjectStore((s) => s.activeRoot);
+  const panelFocus = usePanelFocus('terminal');
 
   const [dismissedRoot, setDismissedRoot] = useState<string | null>(null);
 
@@ -209,7 +212,13 @@ export function TerminalPanel() {
     sessions.some((s) => s.cwd && s.cwd !== activeRoot);
 
   return (
-    <div className="flex h-full flex-col bg-background" data-terminal-panel="true">
+    <div
+      className="flex h-full flex-col bg-background"
+      data-terminal-panel="true"
+      data-panel-id="terminal"
+      onMouseDown={panelFocus.onMouseDown}
+      onFocus={panelFocus.onFocus}
+    >
       {bannerVisible && activeRoot && (
         <div
           className="flex items-center justify-between gap-2 border-b bg-amber-500/10 px-3 py-1 text-xs"
@@ -271,6 +280,8 @@ export function TerminalPanel() {
         >
           <ExternalLink className="h-3 w-3" aria-hidden="true" />
         </Button>
+        <div className="ml-auto" />
+        <PanelZoomControls panelId="terminal" />
       </div>
       <div className="relative flex-1 overflow-hidden">
         {splitEnabled ? (

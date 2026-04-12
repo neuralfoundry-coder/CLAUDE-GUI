@@ -17,7 +17,9 @@ interface MonacoDiffWrapperProps {
 
 export function MonacoDiffWrapper({ original, modified, language }: MonacoDiffWrapperProps) {
   const resolvedTheme = useResolvedTheme();
-  const fontSize = useLayoutStore((s) => s.fontSize);
+  const baseFontSize = useLayoutStore((s) => s.fontSize);
+  const editorZoom = useLayoutStore((s) => s.panelZoom.editor);
+  const fontSize = Math.round(baseFontSize * editorZoom);
 
   const onMount: DiffOnMount = () => {
     /* no-op */

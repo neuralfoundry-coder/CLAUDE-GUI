@@ -2,6 +2,33 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { getActiveRoot } from '@/lib/project/project-context.mjs';
 
+export interface McpStdioServerConfig {
+  type?: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface McpSSEServerConfig {
+  type: 'sse';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export interface McpHttpServerConfig {
+  type: 'http';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type McpServerConfig = McpStdioServerConfig | McpSSEServerConfig | McpHttpServerConfig;
+
+export interface McpServerEntry {
+  enabled: boolean;
+  description?: string;
+  config: McpServerConfig;
+}
+
 export interface ClaudeSettings {
   permissions?: {
     allow?: string[];
@@ -12,6 +39,7 @@ export interface ClaudeSettings {
     tools?: string[];
     bashCommands?: string[];
   };
+  mcpServers?: Record<string, McpServerEntry>;
   [key: string]: unknown;
 }
 

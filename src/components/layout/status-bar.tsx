@@ -2,6 +2,7 @@
 
 import { useClaudeStore } from '@/stores/use-claude-store';
 import { useRemoteAccessStore } from '@/stores/use-remote-access-store';
+import { useMcpStore } from '@/stores/use-mcp-store';
 import { ConnectionIndicator } from './connection-indicator';
 
 export function StatusBar() {
@@ -10,6 +11,18 @@ export function StatusBar() {
   const activeSession = useClaudeStore((s) => s.activeSessionId);
   const remoteAccess = useRemoteAccessStore((s) => s.remoteAccess);
   const localIPs = useRemoteAccessStore((s) => s.localIPs);
+  const mcpServers = useMcpStore((s) => s.servers);
+  const mcpStatuses = useMcpStore((s) => s.statuses);
+  const openMcpModal = useMcpStore((s) => s.openModal);
+
+  const enabledMcpCount = Object.values(mcpServers).filter((s) => s.enabled).length;
+  const mcpStatusColor = (() => {
+    if (enabledMcpCount === 0) return '';
+    if (mcpStatuses.some((s) => s.status === 'failed')) return 'text-red-500';
+    if (mcpStatuses.some((s) => s.status === 'pending')) return 'text-yellow-500';
+    if (mcpStatuses.length > 0 && mcpStatuses.every((s) => s.status === 'connected')) return 'text-green-500';
+    return 'text-blue-500';
+  })();
 
   return (
     <footer className="flex h-6 items-center justify-between border-t bg-muted px-3 text-xs text-muted-foreground">
@@ -18,6 +31,14 @@ export function StatusBar() {
         <span>Claude: {isStreaming ? 'streaming' : 'idle'}</span>
       </div>
       <div className="flex items-center gap-3">
+        {enabledMcpCount > 0 && (
+          <button
+            className={`hover:underline ${mcpStatusColor}`}
+            onClick={openMcpModal}
+          >
+            MCP: {enabledMcpCount} server{enabledMcpCount !== 1 ? 's' : ''}
+          </button>
+        )}
         {remoteAccess && (
           <span className="text-green-500">
             Remote ({localIPs[0] ?? '0.0.0.0'})

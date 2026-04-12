@@ -70,7 +70,9 @@ export function MonacoEditorWrapper({ tabId }: MonacoEditorWrapperProps) {
   const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
   const setCursorPosition = useEditorStore((s) => s.setCursorPosition);
   const resolvedTheme = useResolvedTheme();
-  const fontSize = useLayoutStore((s) => s.fontSize);
+  const baseFontSize = useLayoutStore((s) => s.fontSize);
+  const editorZoom = useLayoutStore((s) => s.panelZoom.editor);
+  const fontSize = Math.round(baseFontSize * editorZoom);
 
   // Editor settings from settings store
   const wordWrap = useSettingsStore((s) => s.editorWordWrap);

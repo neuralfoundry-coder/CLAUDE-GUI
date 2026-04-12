@@ -209,26 +209,49 @@ interface EditorTab {
 ### AI diff handling
 
 ```typescript
-// When Claude edits a file
+// diff.status: 'pending' | 'streaming'
+// 'streaming' — Claude is still streaming tool input (Accept/Reject disabled)
+// 'pending'  — tool execution complete, awaiting user approval
+
+// When Claude executes Write/Edit/MultiEdit (auto-wired from use-claude-store.ts)
+// 1. input_json_delta streaming → updateStreamingEdit(path, partial) → status:'streaming'
+// 2. content_block_stop → applyClaudeEdit(path, final) → status:'pending'
+
 function applyClaudeEdit(path: string, newContent: string) {
   const tab = findTab(path);
+  const original = tab.diff?.original ?? tab.content; // preserve streaming baseline
   tab.diff = {
-    original: tab.modelId.getValue(),
+    original,
     modified: newContent,
     status: 'pending',
+    hunks: computeHunks(original, newContent),
+    acceptedHunkIds: allHunkIds,
   };
-  tab.locked = true;  // switch to read-only
-  // show DiffAcceptBar
+  tab.locked = true;
 }
 
-// When the user accepts
-function acceptDiff(tabId: string) {
-  const tab = findTab(tabId);
-  tab.modelId.setValue(tab.diff.modified);
-  tab.diff = null;
-  tab.locked = false;
+function updateStreamingEdit(path: string, partialContent: string) {
+  // Same as applyClaudeEdit but sets status:'streaming'
+}
+
+// syncExternalChange guard: skip when tab.diff is set
+function syncExternalChange(path: string) {
+  const tab = findTab(path);
+  if (tab.diff) return; // Claude diff is showing — do not overwrite
+  // ... existing logic
 }
 ```
+
+### Auto panel expansion
+
+- When Claude edits a file and the editor panel is collapsed, it is automatically expanded.
+- For HTML/SVG/MD files, the preview panel is also auto-expanded.
+- The `forwardToolToEditor()` helper calls `useLayoutStore.setCollapsed()`.
+
+### Streaming activity display
+
+- A `StreamingActivityBar` is added to the chat panel showing the file currently being edited.
+- The DiffAcceptBar now shows a shimmer progress bar and "Claude is editing..." indicator during streaming.
 
 ## 2.5 TerminalPanel Component
 
@@ -262,14 +285,14 @@ The store subscribes to each and reflects them in the tab labels, status indicat
 |---|---|
 | App boot (`app-shell.tsx`) | `terminalManager.boot()` is called once. It subscribes to `useLayoutStore.fontSize`, registers a reserved-key predicate (`Cmd+T/W/F/K`, `Cmd+Shift+R`, `Ctrl+Tab`, `Cmd+1..9`) consumed by `attachCustomKeyEventHandler`, and installs an HMR hot-dispose hook. |
 | Session creation | Store `createSession` → `terminalManager.ensureSession(id)`. xterm is constructed (the `SearchAddon` instance is kept on the `TerminalInstance`, and an OSC 7 handler is registered via `term.parser.registerOscHandler(7, …)`); a `TerminalSocket` is opened (PTY spawns here). `term.open()` is deferred. |
-| Socket open | The `createSocket` `onOpen` callback sends an initial `resize` frame. On the first open, it schedules `injectShellHelpers(inst)` 250 ms later to install the OSC 7 emitter snippet via a single `{type:"input"}` frame. |
+| Socket open | The `createSocket` `onOpen` callback sends an initial `resize` frame. The OSC 7 emitter snippet is injected server-side immediately after PTY spawn, so no client-side action is needed here. |
 | React attach | `XTerminalAttach`'s `useEffect` → `terminalManager.attach(id, host)`. The manager appends its persistent `<div>` into `host`, calls `term.open()` on first attach only, waits for a non-zero rect with `requestAnimationFrame`, runs `fit()`, sends a resize frame, and calls `focus()`. The WebGL addon is lazy-loaded at this point. |
 | Tab switch | Store `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. `searchOverlayOpen` is reset to false. |
 | Font-size change | Manager subscription callback → `setFontSize(px)` → sets `term.options.fontSize` and re-fits every instance. No PTY restart. |
 | Panel collapse | `<TerminalPanel>` unmounts → `XTerminalAttach.useEffect` cleanup → `terminalManager.detach(id)`. The manager unparents its persistent `<div>` but keeps xterm and the WS alive. |
 | Unexpected socket close | The `createSocket` `onClose` callback transitions status to `closed` and writes `[connection to PTY lost]` to the xterm buffer. **No reconnect attempt**. |
 | Shell exit | Server sends `{type:"exit", code}` control frame → `applyServerControl` transitions status to `exited`. The tab remains until the user closes it. |
-| Restart | `restartSession(id)` — permitted only when `closed`/`exited`. Keeps the xterm buffer (no `dispose`), inserts a `─── restarted at HH:MM:SS ───` separator, resets `pendingBytes`/`paused`/`exitCode`, sets status `connecting`, and calls `createSocket(inst)` again. `helpersInjected=true` ensures the OSC 7 snippet is not re-injected. |
+| Restart | `restartSession(id)` — permitted only when `closed`/`exited`. Keeps the xterm buffer (no `dispose`), inserts a `─── restarted at HH:MM:SS ───` separator, resets `pendingBytes`/`paused`/`exitCode`, sets status `connecting`, and calls `createSocket(inst)` again. The OSC 7 snippet is automatically re-injected server-side when the new PTY is spawned. |
 | Tab close | Store `closeSession(id)` → `terminalManager.closeSession(id)` → ws.close (server kills PTY). Then `term.dispose()` and removal from the map. |
 
 ### Addon setup
@@ -328,6 +351,18 @@ Terminal shortcuts use a **hybrid routing** pattern:
 - The same combinations are observed by a window-level keydown listener in `src/hooks/use-global-shortcuts.ts`, which dispatches `useTerminalStore` actions (createSession, closeActiveSession, toggleSearchOverlay, clearActiveBuffer, restartActiveSession, next/prev/activateTabByIndex) only when `isFocusInsideTerminal()` returns true.
 - `isFocusInsideTerminal()` walks up from `document.activeElement` via `closest('[data-terminal-panel="true"]')`. xterm routes input through a hidden textarea, so this scoping is stable.
 - `Cmd+K` arbitration: when focus is inside the terminal, the Command Palette (`FR-801`) `Cmd+K` handler early-returns. Elsewhere the palette opens as before.
+
+### Per-panel zoom (FR-807)
+
+Each panel stores an independent zoom multiplier (`panelZoom: Record<PanelId, number>`) in `useLayoutStore`. Focus tracking is implemented via the `usePanelFocus` hook (`src/hooks/use-panel-focus.ts`), which returns `onMouseDown`/`onFocus` handlers bound to each panel's root `<div>`.
+
+**Zoom application**:
+- Editor/Terminal: `fontSize × panelZoom[panel]` is passed to Monaco/xterm `fontSize` option. `TerminalManager` subscribes to `panelZoom.terminal` changes in its `useLayoutStore.subscribe` callback.
+- File explorer / Claude chat / Preview: CSS `zoom` property is conditionally applied to the content area (only when `zoom !== 1`).
+
+**UI controls**: `PanelZoomControls` component (`src/components/panels/panel-zoom-controls.tsx`) renders `−` / percentage / `+` buttons in each panel header. `onMouseDown` stopPropagation prevents zoom-button clicks from changing focused panel.
+
+**Shortcuts**: `Cmd+Shift+=`/`-`/`0` (macOS) · `Ctrl+Shift+=`/`-`/`0` (other) zoom in / out / reset the focused panel. Registered in `use-global-shortcuts.ts`.
 
 ### Search overlay (FR-405)
 
@@ -578,6 +613,10 @@ interface LayoutState {
   // mobile — active tab when viewport < 1280px
   mobileActivePanel: PanelId;
 
+  // per-panel zoom (FR-807)
+  focusedPanel: PanelId | null;  // currently focused panel (ephemeral, excluded from persist)
+  panelZoom: Record<PanelId, number>;  // per-panel zoom multiplier (default 1.0, range 0.5–2.0)
+
   // actions
   setPanelSize(panel: string, size: number): void;
   togglePanel(panel: PanelId): void;
@@ -585,13 +624,17 @@ interface LayoutState {
   resetPanelSizes(): void;
   setTheme(theme: Theme): void;
   setMobileActivePanel(panel: PanelId): void;
+  setFocusedPanel(panel: PanelId | null): void;
+  increasePanelZoom(panel: PanelId): void;
+  decreasePanelZoom(panel: PanelId): void;
+  resetPanelZoom(panel: PanelId): void;
 }
 
-// persist middleware applied (v3 migration: adds editorCollapsed, claudeCollapsed, mobileActivePanel)
+// persist middleware applied (v4 migration: adds panelZoom, focusedPanel)
 export const useLayoutStore = create<LayoutState>()(
   persist(
     (set) => ({ ... }),
-    { name: 'claudegui-layout', version: 3 }
+    { name: 'claudegui-layout', version: 4 }
   )
 );
 ```
@@ -872,4 +915,42 @@ User → Globe button → RemoteAccessModal
        Close HTTP+WS servers → Reload config → New server listen
                ↓
        Poll /api/health → Update status → Close modal
+```
+
+---
+
+## 2.11 MCP Server Integration Module (FR-1400, ADR-025)
+
+### Server-side components
+
+| File | Role |
+|------|------|
+| `src/lib/claude/settings-manager.ts` | `ClaudeSettings.mcpServers` type definitions (`McpServerEntry`, `McpServerConfig`) |
+| `server-handlers/claude-handler.mjs` | Loads MCP servers in `runQuery()` and passes to SDK, exports `getMcpServerStatus()` |
+| `src/app/api/mcp/route.ts` | `GET/PUT /api/mcp` — MCP server config CRUD |
+| `src/app/api/mcp/status/route.ts` | `GET /api/mcp/status` — queries SDK session for MCP connection statuses |
+
+### Client-side components
+
+| File | Role |
+|------|------|
+| `src/stores/use-mcp-store.ts` | MCP state management (Zustand, no persist — source of truth is server) |
+| `src/components/modals/mcp-servers-modal.tsx` | MCP server management modal (add/edit/delete/toggle, preset templates) |
+| `src/components/layout/header.tsx` | Blocks icon button (blue when active servers exist) |
+| `src/components/layout/status-bar.tsx` | "MCP: N servers" status indicator |
+| `src/components/command-palette/command-palette.tsx` | "MCP: Manage Servers", "MCP: Refresh Status" entries |
+
+### Data flow
+
+```
+User → Blocks button / Cmd+K "MCP" → McpServersModal
+  ├─ Add/edit/delete/toggle server → PUT /api/mcp → .claude/settings.json (mcpServers merge)
+  └─ Status query → GET /api/mcp/status → sdk.mcpServerStatus()
+               ↓
+On Claude query:
+  runQuery() → loadSettings() → filter enabled servers → queryOptions.mcpServers
+               ↓
+  SDK manages MCP process lifecycle, communication, and tool routing
+               ↓
+  MCP tool call → canUseTool(ADR-011) permission gate → existing allow/deny modal
 ```

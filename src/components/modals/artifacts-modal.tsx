@@ -19,6 +19,7 @@ import {
   exportArtifact,
   type ExportFormat,
 } from '@/lib/claude/artifact-export';
+import { wrapSrcdoc } from '@/lib/preview/srcdoc-shim';
 import { MarkdownPreview } from '@/components/panels/preview/markdown-preview';
 import { PdfPreview } from '@/components/panels/preview/pdf-preview';
 import { DocxPreview } from '@/components/panels/preview/docx-preview';
@@ -342,7 +343,7 @@ export function ArtifactsModal() {
     <Dialog open={isOpen} onOpenChange={(open) => !open && close()}>
       <DialogContent
         ref={dialogContentRef}
-        className="relative overflow-hidden p-0"
+        className="overflow-hidden p-0"
         style={contentStyle}
       >
         <div className="flex h-full flex-col">
@@ -656,7 +657,7 @@ function ArtifactPreview({ artifact, mode }: ArtifactPreviewProps) {
         key={artifact.id}
         title={artifact.title}
         sandbox="allow-scripts"
-        srcDoc={artifact.content}
+        srcDoc={wrapSrcdoc(artifact.content)}
         className="h-full min-h-[400px] w-full bg-white"
       />
     );

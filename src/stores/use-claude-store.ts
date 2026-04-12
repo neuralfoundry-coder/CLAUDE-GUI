@@ -6,6 +6,9 @@ import { sessionsApi, type SessionHistoryMessage } from '@/lib/api-client';
 import { UniversalStreamExtractor } from '@/lib/claude/universal-stream-extractor';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { useArtifactStore } from '@/stores/use-artifact-store';
+import { useEditorStore } from '@/stores/use-editor-store';
+import { useLayoutStore } from '@/stores/use-layout-store';
+import { applyEditOps } from '@/lib/claude/artifact-from-tool';
 
 export type MessageKind = 'text' | 'tool_use' | 'tool_result' | 'system' | 'error' | 'auto_decision';
 
@@ -210,6 +213,106 @@ async function fetchFileContent(filePath: string): Promise<string | null> {
   }
 }
 
+// ---- Streaming tool input accumulation (input_json_delta) ----
+interface StreamingToolInput {
+  toolName: string;
+  chunks: string[];
+  lastFlushAt: number;
+  filePath: string | null;
+}
+const streamingToolInputs = new Map<number, StreamingToolInput>();
+const STREAMING_EDIT_FLUSH_INTERVAL = 500; // ms
+
+function tryParsePartialJson(chunks: string[]): Record<string, unknown> | null {
+  const raw = chunks.join('');
+  // Try to parse the accumulated JSON; the SDK streams partial JSON that may
+  // not be valid yet, so wrap in braces and attempt recovery.
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch { /* not parseable yet */ }
+  // Try adding a closing brace — the SDK often streams valid-up-to-the-cursor JSON
+  try {
+    return JSON.parse(raw + '"}') as Record<string, unknown>;
+  } catch { /* still not parseable */ }
+  try {
+    return JSON.parse(raw + '"}]}') as Record<string, unknown>;
+  } catch { /* still not parseable */ }
+  return null;
+}
+
+function extractFilePath(parsed: Record<string, unknown>): string | null {
+  if (typeof parsed.file_path === 'string' && parsed.file_path) return parsed.file_path;
+  return null;
+}
+
+const FILE_EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
+
+/** Forward a tool_use result to the editor as a streaming or final diff. */
+async function forwardToolToEditor(
+  tool: { name: string; input: unknown },
+  mode: 'streaming' | 'final',
+): Promise<void> {
+  if (!FILE_EDIT_TOOLS.has(tool.name)) return;
+  const input = tool.input as Record<string, unknown> | null;
+  if (!input) return;
+  const filePath = typeof input.file_path === 'string' ? input.file_path : '';
+  if (!filePath) return;
+
+  const editorStore = useEditorStore.getState();
+  const layoutStore = useLayoutStore.getState();
+
+  // Auto-expand editor panel
+  if (layoutStore.editorCollapsed) {
+    layoutStore.setCollapsed('editor', false);
+  }
+
+  // Auto-expand preview panel for previewable file types
+  const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+  const PREVIEWABLE_EXTS = new Set(['html', 'htm', 'svg', 'md', 'markdown']);
+  if (PREVIEWABLE_EXTS.has(ext) && layoutStore.previewCollapsed) {
+    layoutStore.setCollapsed('preview', false);
+  }
+
+  // Ensure the file is open in the editor
+  const existingTab = editorStore.tabs.find((t) => t.path === filePath);
+  if (!existingTab) {
+    await editorStore.openFile(filePath);
+  }
+
+  // Compute modified content
+  let modified: string | undefined;
+  if (tool.name === 'Write') {
+    modified = typeof input.content === 'string' ? input.content : undefined;
+  } else {
+    // Edit / MultiEdit — apply ops against baseline
+    const tab = useEditorStore.getState().tabs.find((t) => t.path === filePath);
+    const baseline = tab?.diff?.original ?? tab?.content;
+    if (baseline) {
+      const ops: Array<{ oldString: string; newString: string; replaceAll: boolean }> = [];
+      if (typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+        ops.push({ oldString: input.old_string, newString: input.new_string as string, replaceAll: input.replace_all === true });
+      }
+      if (Array.isArray(input.edits)) {
+        for (const entry of input.edits) {
+          if (!entry || typeof entry !== 'object') continue;
+          const obj = entry as Record<string, unknown>;
+          if (typeof obj.old_string !== 'string' || typeof obj.new_string !== 'string') continue;
+          ops.push({ oldString: obj.old_string, newString: obj.new_string, replaceAll: obj.replace_all === true });
+        }
+      }
+      modified = applyEditOps(baseline, ops);
+    }
+  }
+
+  if (modified === undefined) return;
+
+  if (mode === 'streaming') {
+    useEditorStore.getState().updateStreamingEdit(filePath, modified);
+  } else {
+    useEditorStore.getState().applyClaudeEdit(filePath, modified);
+  }
+}
+
 function ensureExtractor(streamId: string): UniversalStreamExtractor {
   if (currentExtractor) return currentExtractor;
   const live = useLivePreviewStore.getState();
@@ -333,6 +436,16 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           // Handle content_block_start for tool_use
           if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
             const block = evt.content_block;
+            const blockIndex = evt.index ?? -1;
+            // Start tracking streaming input for file-edit tools
+            if (block.name && FILE_EDIT_TOOLS.has(block.name) && blockIndex >= 0) {
+              streamingToolInputs.set(blockIndex, {
+                toolName: block.name,
+                chunks: [],
+                lastFlushAt: Date.now(),
+                filePath: null,
+              });
+            }
             set((s) => ({
               messages: [
                 ...s.messages,
@@ -348,6 +461,50 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
                 },
               ],
             }));
+          }
+
+          // Handle input_json_delta — accumulate partial tool input for streaming edits
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
+            const blockIndex = evt.index ?? -1;
+            const tracker = streamingToolInputs.get(blockIndex);
+            if (tracker) {
+              tracker.chunks.push(evt.delta.partial_json);
+              const now = Date.now();
+              // Throttle: flush to editor every STREAMING_EDIT_FLUSH_INTERVAL ms
+              if (now - tracker.lastFlushAt >= STREAMING_EDIT_FLUSH_INTERVAL) {
+                tracker.lastFlushAt = now;
+                const parsed = tryParsePartialJson(tracker.chunks);
+                if (parsed) {
+                  // Extract file path early for UI display
+                  const fp = extractFilePath(parsed);
+                  if (fp) tracker.filePath = fp;
+                  // For Write tools, stream partial content to editor
+                  if (tracker.toolName === 'Write' && typeof parsed.content === 'string' && tracker.filePath) {
+                    void forwardToolToEditor(
+                      { name: 'Write', input: { file_path: tracker.filePath, content: parsed.content } },
+                      'streaming',
+                    );
+                  }
+                }
+              }
+            }
+          }
+
+          // Handle content_block_stop — finalize streaming tool input
+          if (evt.type === 'content_block_stop') {
+            const blockIndex = evt.index ?? -1;
+            const tracker = streamingToolInputs.get(blockIndex);
+            if (tracker) {
+              streamingToolInputs.delete(blockIndex);
+              // Parse final accumulated JSON and forward to editor as final diff
+              const parsed = tryParsePartialJson(tracker.chunks);
+              if (parsed && tracker.filePath) {
+                void forwardToolToEditor(
+                  { name: tracker.toolName, input: parsed },
+                  'final',
+                );
+              }
+            }
           }
 
           return;
@@ -379,8 +536,24 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
             const sid = sys.session_id;
             set((s) => {
               const prev = s.sessionStats[sid] ?? emptyStats(sid);
+              // Insert a thinking placeholder if no streaming assistant message yet
+              const hasStreamingAssistant = s.streamingMessageId !== null;
+              const shouldInsertThinking = !hasStreamingAssistant && s.isStreaming;
+              const thinkingId = shouldInsertThinking ? nextId('a') : null;
               return {
                 activeSessionId: sid,
+                messages: shouldInsertThinking
+                  ? [...s.messages, {
+                      id: thinkingId!,
+                      role: 'assistant' as const,
+                      kind: 'text' as const,
+                      content: '',
+                      timestamp: Date.now(),
+                      isStreaming: true,
+                    }]
+                  : s.messages,
+                streamingMessageId: thinkingId ?? s.streamingMessageId,
+                streamingChunks: shouldInsertThinking ? [] : s.streamingChunks,
                 sessionStats: {
                   ...s.sessionStats,
                   [sid]: {
@@ -420,6 +593,14 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
             const toolSessionId = asst.session_id ?? null;
             for (const tool of tools) {
               artifactStore.ingestToolUse(nextId('tool'), toolSessionId, tool);
+            }
+          }
+          // Forward Write/Edit/MultiEdit results to editor as final diffs.
+          // If content_block_stop already handled this, applyClaudeEdit will
+          // simply recompute identical hunks (idempotent).
+          for (const tool of tools) {
+            if (FILE_EDIT_TOOLS.has(tool.name)) {
+              void forwardToolToEditor(tool, 'final');
             }
           }
           let newAssistantMessageId: string | null = null;

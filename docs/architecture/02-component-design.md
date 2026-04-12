@@ -207,26 +207,49 @@ interface EditorTab {
 ### AI diff 처리
 
 ```typescript
-// Claude가 파일 편집 시
+// diff.status: 'pending' | 'streaming'
+// 'streaming' — Claude가 아직 도구 입력을 스트리밍 중 (Accept/Reject 비활성화)
+// 'pending'  — 도구 실행 완료, 사용자 승인 대기
+
+// Claude가 Write/Edit/MultiEdit 실행 시 (use-claude-store.ts에서 자동 연결)
+// 1. input_json_delta 스트리밍 → updateStreamingEdit(path, partial) → status:'streaming'
+// 2. content_block_stop → applyClaudeEdit(path, final) → status:'pending'
+
 function applyClaudeEdit(path: string, newContent: string) {
   const tab = findTab(path);
+  const original = tab.diff?.original ?? tab.content; // streaming baseline 보존
   tab.diff = {
-    original: tab.modelId.getValue(),
+    original,
     modified: newContent,
     status: 'pending',
+    hunks: computeHunks(original, newContent),
+    acceptedHunkIds: allHunkIds,
   };
-  tab.locked = true;  // 읽기 전용 전환
-  // DiffAcceptBar 표시
+  tab.locked = true;
 }
 
-// 사용자 수락 시
-function acceptDiff(tabId: string) {
-  const tab = findTab(tabId);
-  tab.modelId.setValue(tab.diff.modified);
-  tab.diff = null;
-  tab.locked = false;
+function updateStreamingEdit(path: string, partialContent: string) {
+  // applyClaudeEdit과 동일하나 status:'streaming' 설정
+}
+
+// syncExternalChange 가드: tab.diff가 설정된 상태에서는 skip
+function syncExternalChange(path: string) {
+  const tab = findTab(path);
+  if (tab.diff) return; // Claude diff 표시 중 — 덮어쓰지 않음
+  // ... 기존 로직
 }
 ```
+
+### 자동 패널 확장
+
+- Claude가 파일을 편집하면 에디터 패널이 접혀있을 경우 자동으로 펼친다.
+- HTML/SVG/MD 파일의 경우 프리뷰 패널도 자동으로 펼친다.
+- `forwardToolToEditor()` 헬퍼가 `useLayoutStore.setCollapsed()`를 호출한다.
+
+### 스트리밍 활동 표시
+
+- 채팅 패널에 `StreamingActivityBar`를 추가하여 현재 편집 중인 파일을 표시한다.
+- DiffAcceptBar에 shimmer 프로그레스 바와 "Claude is editing..." 인디케이터를 추가하였다.
 
 ## 2.5 TerminalPanel 컴포넌트
 
@@ -260,14 +283,14 @@ function acceptDiff(tabId: string) {
 |---|---|
 | 앱 부트 (`app-shell.tsx`) | `terminalManager.boot()` 1회 호출. `useLayoutStore.subscribe`로 `fontSize` 변화를 구독. `attachCustomKeyEventHandler`에 전달할 예약 키 predicate을 등록(`Cmd+T/W/F/K`, `Cmd+Shift+R`, `Ctrl+Tab`, `Cmd+1..9`). HMR 핫디스포즈 등록. |
 | 세션 생성 | 스토어 `createSession` → `terminalManager.ensureSession(id)`. xterm 생성(SearchAddon 인스턴스를 저장해 두고, `term.parser.registerOscHandler(7, …)`로 OSC 7 리스너 등록) + `TerminalSocket` 연결(이 시점에 PTY 스폰). `term.open()`은 아직 호출하지 않음. |
-| 소켓 open | `createSocket`의 `onOpen` 콜백이 `resize` 프레임을 송신. 첫 open인 경우 250 ms 뒤에 `injectShellHelpers(inst)`가 OSC 7 emitter 스니펫을 `{type:"input"}` 프레임으로 1회 주입. |
+| 소켓 open | `createSocket`의 `onOpen` 콜백이 `resize` 프레임을 송신. OSC 7 emitter 스니펫 주입은 서버측에서 PTY spawn 직후 수행되므로 클라이언트에서는 별도 처리 없음. |
 | React attach | `XTerminalAttach`의 `useEffect` → `terminalManager.attach(id, host)`. 매니저가 소유한 persistent `<div>`를 host에 append 후 첫 호출에 한해 `term.open()`. `requestAnimationFrame`으로 non-zero size를 기다려 `fit()` → resize 전송 → `focus()`. WebGL 애드온은 이 시점에 지연 로드. |
 | 탭 전환 | 스토어 `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. searchOverlayOpen은 false로 리셋. |
 | 폰트 크기 변경 | 매니저 구독 콜백 → `setFontSize(px)` → 모든 인스턴스의 `term.options.fontSize` 변경 + `fit()`. PTY 재시작 없음. |
 | 패널 collapse | `<TerminalPanel>` unmount → `XTerminalAttach.useEffect` cleanup → `terminalManager.detach(id)`. 매니저는 persistent `<div>`를 DOM에서 떼어내기만 하고 xterm/WS는 유지. |
 | 소켓 unexpected close | `createSocket`의 `onClose` 콜백이 status를 `closed`로 전이, xterm 버퍼에 `[connection to PTY lost]` 라인 기록. **재연결 시도 없음**. |
 | 쉘 종료 | 서버가 `{type:"exit", code}` 제어 프레임 전송 → `applyServerControl`이 status를 `exited`로 전이. 탭은 사용자가 닫을 때까지 유지. |
-| Restart | `restartSession(id)` — `closed`/`exited`에서만 허용. xterm `dispose` 없이 스크롤백 유지, `─── restarted at HH:MM:SS ───` separator 삽입, pendingBytes/paused/exitCode 리셋, status `connecting`, `createSocket(inst)` 재호출. `helpersInjected=true`이므로 OSC 7 스니펫은 재주입되지 않는다. |
+| Restart | `restartSession(id)` — `closed`/`exited`에서만 허용. xterm `dispose` 없이 스크롤백 유지, `─── restarted at HH:MM:SS ───` separator 삽입, pendingBytes/paused/exitCode 리셋, status `connecting`, `createSocket(inst)` 재호출. OSC 7 스니펫 주입은 서버측에서 새 PTY spawn 시 자동 수행된다. |
 | 탭 닫기 | 스토어 `closeSession(id)` → `terminalManager.closeSession(id)` → ws.close (서버가 PTY kill). `term.dispose()` 후 map에서 제거. |
 
 ### 애드온 구성
@@ -326,6 +349,18 @@ term.loadAddon(new WebLinksAddon());
 - 동일한 조합은 `src/hooks/use-global-shortcuts.ts`에서 window-level keydown 리스너가 포착하고, `isFocusInsideTerminal()`이 참인 경우에만 `useTerminalStore` 액션(createSession, closeActiveSession, toggleSearchOverlay, clearActiveBuffer, restartActiveSession, next/prev/activateTabByIndex)을 디스패치한다.
 - `isFocusInsideTerminal()`은 `document.activeElement`에서 `closest('[data-terminal-panel="true"]')`로 스코프를 판정한다. xterm이 내부적으로 hidden textarea에 입력을 라우팅하므로 이 방식이 안정적이다.
 - `Cmd+K` 충돌: 포커스가 터미널 안일 때 Command Palette(`FR-801`)의 `Cmd+K` 핸들러는 즉시 early-return 한다. 밖에 있으면 원래대로 팔레트가 열린다.
+
+### 패널별 확대/축소 (FR-807)
+
+각 패널은 독립적인 줌 배율(`panelZoom: Record<PanelId, number>`)을 `useLayoutStore`에 저장한다. 포커스 추적은 `usePanelFocus` 훅(`src/hooks/use-panel-focus.ts`)이 `onMouseDown`/`onFocus` 핸들러를 반환하여 각 패널 루트 `<div>`에 바인딩하는 방식으로 구현한다.
+
+**줌 적용 방식**:
+- 에디터/터미널: `fontSize × panelZoom[panel]`을 Monaco/xterm `fontSize` 옵션에 전달. `TerminalManager`는 `useLayoutStore.subscribe`에서 `panelZoom.terminal` 변화도 감지.
+- 파일 탐색기 / Claude 채팅 / 프리뷰: 콘텐츠 영역에 CSS `zoom` 프로퍼티를 조건부 적용 (`zoom !== 1`일 때만).
+
+**UI 컨트롤**: `PanelZoomControls` 컴포넌트(`src/components/panels/panel-zoom-controls.tsx`)가 `−` / 퍼센트 / `+` 버튼을 렌더링. 헤더 내부에 배치되며, `onMouseDown` stopPropagation으로 줌 버튼 클릭 시 패널 포커스가 이동하지 않게 한다.
+
+**단축키**: `Cmd+Shift+=`/`-`/`0` (macOS) · `Ctrl+Shift+=`/`-`/`0` (기타)로 포커스된 패널의 확대/축소/리셋을 수행. `use-global-shortcuts.ts`에 등록.
 
 ### 검색 오버레이 (FR-405)
 
@@ -575,6 +610,10 @@ interface LayoutState {
   // 모바일 — < 1280px에서 활성 탭
   mobileActivePanel: PanelId;
 
+  // 패널별 확대/축소 (FR-807)
+  focusedPanel: PanelId | null;  // 현재 포커스된 패널 (ephemeral, persist 제외)
+  panelZoom: Record<PanelId, number>;  // 패널별 줌 배율 (기본 1.0, 범위 0.5–2.0)
+
   // 액션
   setPanelSize(panel: string, size: number): void;
   togglePanel(panel: PanelId): void;
@@ -582,13 +621,17 @@ interface LayoutState {
   resetPanelSizes(): void;
   setTheme(theme: Theme): void;
   setMobileActivePanel(panel: PanelId): void;
+  setFocusedPanel(panel: PanelId | null): void;
+  increasePanelZoom(panel: PanelId): void;
+  decreasePanelZoom(panel: PanelId): void;
+  resetPanelZoom(panel: PanelId): void;
 }
 
-// persist 미들웨어 적용 (v3 마이그레이션: editorCollapsed, claudeCollapsed, mobileActivePanel 추가)
+// persist 미들웨어 적용 (v4 마이그레이션: panelZoom, focusedPanel 추가)
 export const useLayoutStore = create<LayoutState>()(
   persist(
     (set) => ({ ... }),
-    { name: 'claudegui-layout', version: 3 }
+    { name: 'claudegui-layout', version: 4 }
   )
 );
 ```
@@ -840,4 +883,42 @@ ArtifactsModal preview
        HTTP+WS 서버 닫기 → 설정 재로드 → 새 서버 listen
                ↓
        /api/health 폴링 → 상태 갱신 → 모달 닫기
+```
+
+---
+
+## 2.11 MCP 서버 통합 모듈 (FR-1400, ADR-025)
+
+### 서버 측 컴포넌트
+
+| 파일 | 역할 |
+|------|------|
+| `src/lib/claude/settings-manager.ts` | `ClaudeSettings.mcpServers` 타입 정의 (`McpServerEntry`, `McpServerConfig`) |
+| `server-handlers/claude-handler.mjs` | `runQuery()`에서 MCP 서버 로딩·전달, `getMcpServerStatus()` export |
+| `src/app/api/mcp/route.ts` | `GET/PUT /api/mcp` — MCP 서버 설정 CRUD |
+| `src/app/api/mcp/status/route.ts` | `GET /api/mcp/status` — SDK 세션의 MCP 연결 상태 조회 |
+
+### 클라이언트 측 컴포넌트
+
+| 파일 | 역할 |
+|------|------|
+| `src/stores/use-mcp-store.ts` | MCP 상태 관리 (Zustand, persist 미사용 — source of truth는 서버) |
+| `src/components/modals/mcp-servers-modal.tsx` | MCP 서버 관리 모달 (추가/편집/삭제/토글, 프리셋 템플릿) |
+| `src/components/layout/header.tsx` | Blocks 아이콘 버튼 (활성 서버 시 파란색) |
+| `src/components/layout/status-bar.tsx` | "MCP: N servers" 상태 인디케이터 |
+| `src/components/command-palette/command-palette.tsx` | "MCP: Manage Servers", "MCP: Refresh Status" 항목 |
+
+### 데이터 흐름
+
+```
+사용자 → Blocks 버튼 / Cmd+K "MCP" → McpServersModal
+  ├─ 서버 추가/편집/삭제/토글 → PUT /api/mcp → .claude/settings.json (mcpServers 병합)
+  └─ 상태 조회 → GET /api/mcp/status → sdk.mcpServerStatus()
+               ↓
+Claude 쿼리 시:
+  runQuery() → loadSettings() → enabled 서버 필터 → queryOptions.mcpServers
+               ↓
+  SDK가 MCP 프로세스 시작·통신·도구 라우팅 전담
+               ↓
+  MCP 도구 호출 → canUseTool(ADR-011) 권한 게이트 → 기존 허용/거부 모달
 ```

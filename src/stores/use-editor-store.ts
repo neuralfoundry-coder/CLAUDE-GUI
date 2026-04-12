@@ -14,7 +14,7 @@ export interface EditorTab {
   diff?: {
     original: string;
     modified: string;
-    status: 'pending';
+    status: 'pending' | 'streaming';
     hunks: DiffHunk[];
     acceptedHunkIds: string[];
   } | null;
@@ -45,6 +45,7 @@ interface EditorState {
   updateContent: (id: string, content: string) => void;
   saveFile: (id: string) => Promise<void>;
   applyClaudeEdit: (path: string, modified: string) => void;
+  updateStreamingEdit: (path: string, partialModified: string) => void;
   acceptDiff: (id: string) => void;
   acceptAllHunks: (id: string) => void;
   rejectDiff: (id: string) => void;
@@ -154,14 +155,36 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((t) => {
         if (t.path !== path) return t;
-        const hunks = computeHunks(t.content, modified);
+        // Use the streaming diff's original as baseline if one exists
+        const original = t.diff?.original ?? t.content;
+        const hunks = computeHunks(original, modified);
         return {
           ...t,
           locked: true,
           diff: {
-            original: t.content,
+            original,
             modified,
-            status: 'pending',
+            status: 'pending' as const,
+            hunks,
+            acceptedHunkIds: hunks.map((h) => h.id),
+          },
+        };
+      }),
+    })),
+
+  updateStreamingEdit: (path, partialModified) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.path !== path) return t;
+        const original = t.diff?.original ?? t.content;
+        const hunks = computeHunks(original, partialModified);
+        return {
+          ...t,
+          locked: true,
+          diff: {
+            original,
+            modified: partialModified,
+            status: 'streaming' as const,
             hunks,
             acceptedHunkIds: hunks.map((h) => h.id),
           },
@@ -236,6 +259,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   syncExternalChange: async (path) => {
     const tab = get().tabs.find((t) => t.path === path);
     if (!tab) return;
+    // Skip if Claude diff is showing — tool_use already set the diff view
+    if (tab.diff) return;
     try {
       const { content } = await filesApi.read(path);
       if (content === tab.content) return;

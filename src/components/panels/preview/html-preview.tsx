@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { wrapSrcdoc } from '@/lib/preview/srcdoc-shim';
 
 interface HtmlPreviewProps {
   content: string;
@@ -8,6 +9,7 @@ interface HtmlPreviewProps {
 
 export function HtmlPreview({ content }: HtmlPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const shimmed = useMemo(() => wrapSrcdoc(content), [content]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -16,14 +18,14 @@ export function HtmlPreview({ content }: HtmlPreviewProps) {
     // always reflects the latest content — relying solely on the srcDoc
     // attribute can fail when React skips the DOM update because the
     // prop value is referentially identical to the previous render.
-    iframe.srcdoc = content;
-  }, [content]);
+    iframe.srcdoc = shimmed;
+  }, [shimmed]);
 
   return (
     <div className="h-full w-full bg-muted p-2">
       <iframe
         ref={iframeRef}
-        srcDoc={content}
+        srcDoc={shimmed}
         sandbox="allow-scripts"
         referrerPolicy="no-referrer"
         className="h-full w-full border-0 bg-white shadow-sm ring-1 ring-border/70"

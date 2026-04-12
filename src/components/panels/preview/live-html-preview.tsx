@@ -5,6 +5,7 @@ import { Code, Eye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { useEditorStore } from '@/stores/use-editor-store';
+import { wrapSrcdoc } from '@/lib/preview/srcdoc-shim';
 
 export function LiveHtmlPreview() {
   const mode = useLivePreviewStore((s) => s.mode);
@@ -32,6 +33,8 @@ export function LiveHtmlPreview() {
     const id = window.setTimeout(() => setDebouncedSource(source), 150);
     return () => window.clearTimeout(id);
   }, [source]);
+
+  const shimmedSource = useMemo(() => wrapSrcdoc(debouncedSource), [debouncedSource]);
 
   const isSourceOnly = activePg ? !activePg.renderable && !activePg.complete : false;
   const showSource = userSource || (!usingEditor && isSourceOnly);
@@ -70,7 +73,7 @@ export function LiveHtmlPreview() {
         ) : (
           <iframe
             ref={iframeRef}
-            srcDoc={debouncedSource}
+            srcDoc={shimmedSource}
             sandbox="allow-scripts"
             referrerPolicy="no-referrer"
             title="Live HTML preview"

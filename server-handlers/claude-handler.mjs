@@ -15,6 +15,23 @@ const dbg = createDebug('claude');
  *  to cancel running queries when the WebSocket is already gone. */
 export const activeAbortControllers = new Set();
 
+/** Module-level reference to the active SDK instance for MCP status queries. */
+let _activeSdk = null;
+
+/**
+ * Returns MCP server connection statuses from the active SDK session.
+ * Called by the /api/mcp/status route.
+ */
+export async function getMcpServerStatus() {
+  if (!_activeSdk) return [];
+  try {
+    const statuses = await _activeSdk.mcpServerStatus();
+    return statuses ?? [];
+  } catch {
+    return [];
+  }
+}
+
 const DANGER_PATTERNS = [
   /\brm\s+-[rfR]+/,
   /\bsudo\b/,
@@ -54,6 +71,7 @@ export default async function claudeHandler(ws, _req) {
     ws.send(JSON.stringify({ type: 'error', message: 'Claude Agent SDK not available' }));
     return;
   }
+  _activeSdk = sdk;
 
   const pendingPermissions = new Map();
   let currentAbort = null;
@@ -247,6 +265,24 @@ export default async function claudeHandler(ws, _req) {
       }
     }
 
+    // Load enabled MCP servers from project settings
+    let mcpServers = undefined;
+    try {
+      const settings = await loadSettings();
+      if (settings.mcpServers) {
+        mcpServers = {};
+        for (const [name, entry] of Object.entries(settings.mcpServers)) {
+          if (entry.enabled) {
+            mcpServers[name] = entry.config;
+          }
+        }
+        if (Object.keys(mcpServers).length === 0) mcpServers = undefined;
+        else dbg.info('MCP servers loaded', Object.keys(mcpServers));
+      }
+    } catch (err) {
+      dbg.warn('failed to load MCP server config', err);
+    }
+
     try {
       const queryOptions = {
         cwd,
@@ -256,6 +292,7 @@ export default async function claudeHandler(ws, _req) {
         ...(sessionId ? { resume: sessionId } : {}),
         ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
         ...(options.model ? { model: options.model } : {}),
+        ...(mcpServers ? { mcpServers } : {}),
       };
 
       const stream = sdk.query({ prompt: finalPrompt, options: queryOptions });
