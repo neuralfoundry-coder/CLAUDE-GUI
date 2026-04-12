@@ -82,6 +82,7 @@ class TerminalManager {
   private activityListeners = new Set<ActivityListener>();
   private layoutUnsubscribe: (() => void) | null = null;
   private settingsUnsubscribe: (() => void) | null = null;
+  private systemThemeHandler: (() => void) | null = null;
   private booted = false;
   private reservedKeyPredicate: ReservedKeyPredicate | null = null;
   private fileLinkHandler: ((path: string, line?: number, col?: number) => void) | null = null;
@@ -125,6 +126,15 @@ class TerminalManager {
         this.applyFontSettings();
       }
     });
+    // Re-apply terminal theme when OS color-scheme changes (for 'system' theme).
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    this.systemThemeHandler = () => {
+      if (useLayoutStore.getState().theme === 'system') {
+        this.setTheme('system');
+      }
+    };
+    mq.addEventListener('change', this.systemThemeHandler);
+
     // Apply initial values in case sessions already exist.
     this.setFontSize(layout.fontSize);
     this.setTheme(layout.theme);

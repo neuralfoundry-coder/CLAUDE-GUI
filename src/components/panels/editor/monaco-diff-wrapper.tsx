@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import type { DiffOnMount } from '@monaco-editor/react';
 import { useLayoutStore } from '@/stores/use-layout-store';
+import { useResolvedTheme } from '@/hooks/use-theme';
 
 const DiffEditor = dynamic(() => import('@monaco-editor/react').then((m) => m.DiffEditor), {
   ssr: false,
@@ -15,7 +16,7 @@ interface MonacoDiffWrapperProps {
 }
 
 export function MonacoDiffWrapper({ original, modified, language }: MonacoDiffWrapperProps) {
-  const theme = useLayoutStore((s) => s.theme);
+  const resolvedTheme = useResolvedTheme();
   const fontSize = useLayoutStore((s) => s.fontSize);
 
   const onMount: DiffOnMount = () => {
@@ -27,7 +28,7 @@ export function MonacoDiffWrapper({ original, modified, language }: MonacoDiffWr
       original={original}
       modified={modified}
       language={language}
-      theme={theme === 'light' ? 'light' : 'vs-dark'}
+      theme={resolvedTheme === 'light' ? 'light' : 'vs-dark'}
       options={{
         readOnly: true,
         renderSideBySide: true,

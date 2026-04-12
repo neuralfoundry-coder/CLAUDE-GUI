@@ -8,6 +8,7 @@ import { useEditorStore } from '@/stores/use-editor-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { getLanguageFromPath } from '@/lib/editor/language-map';
+import { useResolvedTheme } from '@/hooks/use-theme';
 import { registerClaudeCompletionProvider } from './claude-completion-provider';
 
 /**
@@ -68,7 +69,7 @@ export function MonacoEditorWrapper({ tabId }: MonacoEditorWrapperProps) {
   const pendingReveal = useEditorStore((s) => s.pendingReveal);
   const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
   const setCursorPosition = useEditorStore((s) => s.setCursorPosition);
-  const theme = useLayoutStore((s) => s.theme);
+  const resolvedTheme = useResolvedTheme();
   const fontSize = useLayoutStore((s) => s.fontSize);
 
   // Editor settings from settings store
@@ -146,7 +147,7 @@ export function MonacoEditorWrapper({ tabId }: MonacoEditorWrapperProps) {
       path={tab.path}
       language={getLanguageFromPath(tab.path)}
       value={tab.content}
-      theme={theme === 'light' ? 'light' : 'vs-dark'}
+      theme={resolvedTheme === 'light' ? 'light' : 'vs-dark'}
       options={{
         fontSize,
         fontFamily: 'JetBrains Mono, Menlo, monospace',
