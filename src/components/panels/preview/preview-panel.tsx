@@ -11,7 +11,7 @@ import {
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { PreviewRouter } from './preview-router';
-import { LiveHtmlPreview } from './live-html-preview';
+import { LiveStreamPreview } from './live-stream-preview';
 import { PreviewDownloadMenu } from './preview-download-menu';
 import { cn } from '@/lib/utils';
 
@@ -87,7 +87,7 @@ export function PreviewPanel() {
           </Button>
         </div>
       </div>
-      <div className="flex-1 overflow-hidden">{showLive ? <LiveHtmlPreview /> : <PreviewRouter />}</div>
+      <div className="flex-1 overflow-hidden">{showLive ? <LiveStreamPreview /> : <PreviewRouter />}</div>
     </div>
   );
 }

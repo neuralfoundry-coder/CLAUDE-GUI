@@ -128,7 +128,7 @@ export function PreviewDownloadMenu() {
     }
   }
 
-  const streamingBadge = resolved.fromLive && liveMode === 'live-code';
+  const streamingBadge = resolved.fromLive && liveMode === 'streaming';
 
   return (
     <div className="relative" data-preview-download-menu>

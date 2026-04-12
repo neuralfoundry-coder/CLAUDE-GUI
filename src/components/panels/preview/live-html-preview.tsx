@@ -8,7 +8,10 @@ import { useEditorStore } from '@/stores/use-editor-store';
 
 export function LiveHtmlPreview() {
   const mode = useLivePreviewStore((s) => s.mode);
-  const buffer = useLivePreviewStore((s) => s.buffer);
+  const pages = useLivePreviewStore((s) => s.pages);
+  const activePageIndex = useLivePreviewStore((s) => s.activePageIndex);
+  const activePg = pages[activePageIndex];
+  const buffer = activePg?.content ?? '';
   const generatedFilePath = useLivePreviewStore((s) => s.generatedFilePath);
   // When the user has opened the generated HTML file in the editor, the
   // editor buffer becomes the source of truth so live edits re-render.
@@ -30,14 +33,15 @@ export function LiveHtmlPreview() {
     return () => window.clearTimeout(id);
   }, [source]);
 
-  const showSource = userSource || (!usingEditor && mode === 'live-code');
+  const isSourceOnly = activePg ? !activePg.renderable && !activePg.complete : false;
+  const showSource = userSource || (!usingEditor && isSourceOnly);
 
   const statusLabel = useMemo(() => {
     if (usingEditor) return 'Editor';
-    if (mode === 'live-html') return 'Rendered';
-    if (mode === 'live-code') return 'Source (streaming)';
+    if (mode === 'streaming') return activePg?.renderable ? 'Rendered' : 'Source (streaming)';
+    if (mode === 'complete') return 'Rendered';
     return 'Idle';
-  }, [mode, usingEditor]);
+  }, [mode, usingEditor, activePg?.renderable]);
 
   return (
     <div className="flex h-full flex-col">
