@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import 'highlight.js/styles/github-dark.css';
+import '@xterm/xterm/css/xterm.css';
 import './globals.css';
 
 export const metadata: Metadata = {

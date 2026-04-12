@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClaudeGUI Investor Pitch Generator</title>
+  <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #065F46 0%, #064E3B 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 16px;
+      padding: 40px;
+      max-width: 600px;
+      width: 100%;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+    }
+    h1 {
+      color: #065F46;
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      color: #6B7280;
+      font-size: 14px;
+      margin-bottom: 32px;
+    }
+    .specs {
+      background: #F0FDF4;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .specs h3 {
+      color: #065F46;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    .spec-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      color: #374151;
+      font-size: 13px;
+    }
+    .spec-item span {
+      color: #CA8A04;
+    }
+    .slides-preview {
+      margin-bottom: 24px;
+    }
+    .slides-preview h3 {
+      color: #065F46;
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    .slide-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid #E5E7EB;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+    .slide-num {
+      background: #065F46;
+      color: white;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .slide-info h4 {
+      color: #1F2937;
+      font-size: 14px;
+      margin-bottom: 2px;
+    }
+    .slide-info p {
+      color: #6B7280;
+      font-size: 12px;
+    }
+    .generate-btn {
+      width: 100%;
+      background: linear-gradient(135deg, #CA8A04 0%, #B45309 100%);
+      color: white;
+      border: none;
+      padding: 16px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .generate-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(202, 138, 4, 0.3);
+    }
+    .generate-btn:active {
+      transform: translateY(0);
+    }
+    .generate-btn.loading {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+    .success-msg {
+      display: none;
+      background: #065F46;
+      color: white;
+      padding: 16px;
+      border-radius: 12px;
+      margin-top: 16px;
+      text-align: center;
+    }
+    .success-msg.show {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ClaudeGUI Investor Pitch</h1>
+    <p class="subtitle">Professional 5-slide presentation for financial sector investors</p>
+
+    <div class="specs">
+      <h3>Design Specifications</h3>
+      <div class="spec-item"><span>Primary:</span> Forest Green (#065F46)</div>
+      <div class="spec-item"><span>Accent:</span> Gold (#CA8A04)</div>
+      <div class="spec-item"><span>Layout:</span> 16:9 Z-pattern, 60/40 visual-text ratio</div>
+      <div class="spec-item"><span>Style:</span> Minimalist, action titles, data visualizations</div>
+    </div>
+
+    <div class="slides-preview">
+      <h3>Slide Overview</h3>
+      <div class="slide-item">
+        <div class="slide-num">1</div>
+        <div class="slide-info">
+          <h4>Title Slide</h4>
+          <p>Next-Generation AI-Powered Development IDE</p>
+        </div>
+      </div>
+      <div class="slide-item">
+        <div class="slide-num">2</div>
+        <div class="slide-info">
+          <h4>Problem & Solution</h4>
+          <p>AI Development Tools Are Transforming the Industry</p>
+        </div>
+      </div>
+      <div class="slide-item">
+        <div class="slide-num">3</div>
+        <div class="slide-info">
+          <h4>Technology Stack</h4>
+          <p>Enterprise-Grade Architecture</p>
+        </div>
+      </div>
+      <div class="slide-item">
+        <div class="slide-num">4</div>
+        <div class="slide-info">
+          <h4>Market Opportunity</h4>
+          <p>The $50B AI Dev Tools Market Is Exploding</p>
+        </div>
+      </div>
+      <div class="slide-item">
+        <div class="slide-num">5</div>
+        <div class="slide-info">
+          <h4>Investment Ask</h4>
+          <p>Join the AI Development Revolution</p>
+        </div>
+      </div>
+    </div>
+
+    <button class="generate-btn" onclick="generatePresentation()">
+      Generate Presentation (PPTX)
+    </button>
+
+    <div class="success-msg" id="successMsg">
+      Presentation downloaded successfully!
+    </div>
+  </div>
+
+  <script>
+    // Color Palette
+    const COLORS = {
+      primary: '065F46',
+      accent: 'CA8A04',
+      white: 'FFFFFF',
+      lightSage: 'F0FDF4',
+      darkText: '1F2937',
+      lightText: '6B7280',
+      success: '10B981',
+      gradientDark: '064E3B',
+    };
+
+    const FONTS = {
+      heading: 'Arial',
+      body: 'Arial',
+    };
+
+    async function generatePresentation() {
+      const btn = document.querySelector('.generate-btn');
+      btn.classList.add('loading');
+      btn.textContent = 'Generating...';
+
+      try {
+        const pptx = new PptxGenJS();
+
+        // Presentation metadata
+        pptx.author = 'ClaudeGUI Team';
+        pptx.title = 'ClaudeGUI - Investment Proposal';
+        pptx.subject = 'AI-Powered Development IDE Investment Pitch';
+        pptx.company = 'ClaudeGUI';
+        pptx.layout = 'LAYOUT_16x9';
+
+        // ============================================================
+        // SLIDE 1: Title Slide
+        // ============================================================
+        const slide1 = pptx.addSlide();
+        slide1.addShape(pptx.shapes.RECTANGLE, {
+          x: 0, y: 0, w: '100%', h: '100%',
+          fill: { type: 'solid', color: COLORS.primary },
+        });
+        slide1.addShape(pptx.shapes.RECTANGLE, {
+          x: 0.5, y: 2.8, w: 1.5, h: 0.08,
+          fill: { color: COLORS.accent },
+        });
+        slide1.addText('ClaudeGUI', {
+          x: 0.5, y: 1.5, w: 9, h: 1.2,
+          fontSize: 54, fontFace: FONTS.heading, color: COLORS.white, bold: true,
+        });
+        slide1.addText('Next-Generation AI-Powered\nDevelopment IDE', {
+          x: 0.5, y: 3.0, w: 6, h: 1.2,
+          fontSize: 28, fontFace: FONTS.body, color: COLORS.lightSage, lineSpacing: 36,
+        });
+        slide1.addText('Transforming How Developers Build with AI', {
+          x: 0.5, y: 4.5, w: 8, h: 0.5,
+          fontSize: 18, fontFace: FONTS.body, color: COLORS.accent, italic: true,
+        });
+        slide1.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 8.5, y: 4.3, w: 1.3, h: 0.5,
+          fill: { color: COLORS.accent }, rectRadius: 0.1,
+        });
+        slide1.addText('SERIES A', {
+          x: 8.5, y: 4.35, w: 1.3, h: 0.4,
+          fontSize: 11, fontFace: FONTS.heading, color: COLORS.primary, bold: true, align: 'center', valign: 'middle',
+        });
+
+        // ============================================================
+        // SLIDE 2: Problem & Solution
+        // ============================================================
+        const slide2 = pptx.addSlide();
+        slide2.addShape(pptx.shapes.RECTANGLE, {
+          x: 0, y: 0, w: '100%', h: 0.6,
+          fill: { color: COLORS.primary },
+        });
+        slide2.addText('AI Development Tools Are Transforming the Industry', {
+          x: 0.5, y: 0.12, w: 9, h: 0.4,
+          fontSize: 18, fontFace: FONTS.heading, color: COLORS.white, bold: true,
+        });
+
+        // Problem column
+        slide2.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 0.4, y: 0.9, w: 4.5, h: 4.0,
+          fill: { color: 'FEF2F2' }, rectRadius: 0.15, line: { color: 'FCA5A5', width: 1 },
+        });
+        slide2.addText('THE CHALLENGE', {
+          x: 0.6, y: 1.1, w: 4, h: 0.35,
+          fontSize: 12, fontFace: FONTS.heading, color: 'DC2626', bold: true,
+        });
+        slide2.addText('Current AI coding tools lack seamless integration', {
+          x: 0.6, y: 1.5, w: 4.1, h: 0.7,
+          fontSize: 16, fontFace: FONTS.heading, color: COLORS.darkText, bold: true,
+        });
+        const problems = [
+          { icon: 'X', text: 'Context switching between terminals' },
+          { icon: 'X', text: 'Manual file synchronization' },
+          { icon: 'X', text: '40% time lost on tool management' },
+        ];
+        problems.forEach((p, i) => {
+          slide2.addText(`${p.text}`, {
+            x: 0.6, y: 2.4 + (i * 0.55), w: 4.1, h: 0.5,
+            fontSize: 13, fontFace: FONTS.body, color: COLORS.darkText, bullet: { type: 'bullet', color: 'DC2626' },
+          });
+        });
+
+        // Solution column
+        slide2.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 5.1, y: 0.9, w: 4.5, h: 4.0,
+          fill: { color: COLORS.lightSage }, rectRadius: 0.15, line: { color: COLORS.success, width: 1 },
+        });
+        slide2.addText('OUR SOLUTION', {
+          x: 5.3, y: 1.1, w: 4, h: 0.35,
+          fontSize: 12, fontFace: FONTS.heading, color: COLORS.primary, bold: true,
+        });
+        slide2.addText('Unified AI-Native IDE Experience', {
+          x: 5.3, y: 1.5, w: 4.1, h: 0.7,
+          fontSize: 16, fontFace: FONTS.heading, color: COLORS.darkText, bold: true,
+        });
+        const solutions = [
+          '4-panel integrated workspace',
+          'Real-time Claude AI streaming',
+          'Native file system integration',
+        ];
+        solutions.forEach((s, i) => {
+          slide2.addText(s, {
+            x: 5.3, y: 2.4 + (i * 0.55), w: 4.1, h: 0.5,
+            fontSize: 13, fontFace: FONTS.body, color: COLORS.darkText, bullet: { type: 'bullet', color: COLORS.primary },
+          });
+        });
+
+        // Arrow
+        slide2.addText('-->', {
+          x: 4.6, y: 2.5, w: 0.5, h: 0.5,
+          fontSize: 24, fontFace: FONTS.heading, color: COLORS.accent, align: 'center',
+        });
+
+        // ============================================================
+        // SLIDE 3: Technology Stack
+        // ============================================================
+        const slide3 = pptx.addSlide();
+        slide3.addShape(pptx.shapes.RECTANGLE, {
+          x: 0, y: 0, w: '100%', h: 0.6,
+          fill: { color: COLORS.primary },
+        });
+        slide3.addText('Enterprise-Grade Technology Powering Innovation', {
+          x: 0.5, y: 0.12, w: 9, h: 0.4,
+          fontSize: 18, fontFace: FONTS.heading, color: COLORS.white, bold: true,
+        });
+
+        const panels = [
+          { name: 'File Explorer', tech: 'react-arborist', x: 0.4, color: '3B82F6' },
+          { name: 'Code Editor', tech: 'Monaco Editor', x: 2.65, color: 'F59E0B' },
+          { name: 'AI Terminal', tech: 'xterm.js + pty', x: 4.9, color: '8B5CF6' },
+          { name: 'Preview', tech: 'Multi-format', x: 7.15, color: '10B981' },
+        ];
+
+        panels.forEach((panel) => {
+          slide3.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+            x: panel.x, y: 0.9, w: 2.1, h: 1.4,
+            fill: { color: COLORS.white }, rectRadius: 0.1, line: { color: panel.color, width: 2 },
+            shadow: { type: 'outer', blur: 4, offset: 2, angle: 45, opacity: 0.2 },
+          });
+          slide3.addShape(pptx.shapes.RECTANGLE, {
+            x: panel.x, y: 0.9, w: 2.1, h: 0.35,
+            fill: { color: panel.color },
+          });
+          slide3.addText(panel.name, {
+            x: panel.x, y: 0.92, w: 2.1, h: 0.3,
+            fontSize: 10, fontFace: FONTS.heading, color: COLORS.white, bold: true, align: 'center',
+          });
+          slide3.addText(panel.tech, {
+            x: panel.x, y: 1.4, w: 2.1, h: 0.6,
+            fontSize: 11, fontFace: FONTS.body, color: COLORS.darkText, align: 'center', valign: 'middle',
+          });
+        });
+
+        slide3.addText('CORE STACK', {
+          x: 0.4, y: 2.55, w: 2, h: 0.3,
+          fontSize: 11, fontFace: FONTS.heading, color: COLORS.primary, bold: true,
+        });
+
+        const techStack = [
+          ['Next.js 14+', 'App Router'],
+          ['TypeScript', 'Strict Mode'],
+          ['WebSocket', 'Real-time'],
+          ['Zustand', 'State Mgmt'],
+        ];
+
+        techStack.forEach((tech, i) => {
+          const xPos = 0.4 + (i * 2.35);
+          slide3.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+            x: xPos, y: 2.9, w: 2.2, h: 0.9,
+            fill: { color: COLORS.lightSage }, rectRadius: 0.08,
+          });
+          slide3.addText(tech[0], {
+            x: xPos, y: 2.95, w: 2.2, h: 0.45,
+            fontSize: 13, fontFace: FONTS.heading, color: COLORS.primary, bold: true, align: 'center',
+          });
+          slide3.addText(tech[1], {
+            x: xPos, y: 3.35, w: 2.2, h: 0.35,
+            fontSize: 10, fontFace: FONTS.body, color: COLORS.lightText, align: 'center',
+          });
+        });
+
+        slide3.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 0.4, y: 4.1, w: 9.2, h: 0.75,
+          fill: { color: COLORS.primary }, rectRadius: 0.1,
+        });
+        slide3.addText('Enterprise Security: Path validation | Sandbox isolation | Rate limiting | Native file watching', {
+          x: 0.6, y: 4.2, w: 8.8, h: 0.55,
+          fontSize: 12, fontFace: FONTS.body, color: COLORS.white, align: 'center', valign: 'middle',
+        });
+
+        // ============================================================
+        // SLIDE 4: Market Opportunity
+        // ============================================================
+        const slide4 = pptx.addSlide();
+        slide4.addShape(pptx.shapes.RECTANGLE, {
+          x: 0, y: 0, w: '100%', h: 0.6,
+          fill: { color: COLORS.primary },
+        });
+        slide4.addText('The $50B AI Developer Tools Market Is Exploding', {
+          x: 0.5, y: 0.12, w: 9, h: 0.4,
+          fontSize: 18, fontFace: FONTS.heading, color: COLORS.white, bold: true,
+        });
+
+        slide4.addText('MARKET GROWTH PROJECTION', {
+          x: 0.4, y: 0.85, w: 4, h: 0.3,
+          fontSize: 11, fontFace: FONTS.heading, color: COLORS.lightText, bold: true,
+        });
+
+        const marketData = [
+          { year: '2023', value: 15, height: 0.9 },
+          { year: '2024', value: 22, height: 1.32 },
+          { year: '2025', value: 32, height: 1.92 },
+          { year: '2026', value: 50, height: 3.0 },
+        ];
+
+        marketData.forEach((d, i) => {
+          const xPos = 0.8 + (i * 1.1);
+          slide4.addShape(pptx.shapes.RECTANGLE, {
+            x: xPos, y: 4.1 - d.height, w: 0.8, h: d.height,
+            fill: { color: i === 3 ? COLORS.accent : COLORS.primary },
+          });
+          slide4.addText(d.year, {
+            x: xPos, y: 4.2, w: 0.8, h: 0.3,
+            fontSize: 10, fontFace: FONTS.body, color: COLORS.darkText, align: 'center',
+          });
+          slide4.addText(`$${d.value}B`, {
+            x: xPos, y: 4.0 - d.height - 0.25, w: 0.8, h: 0.25,
+            fontSize: 10, fontFace: FONTS.heading, color: COLORS.primary, bold: true, align: 'center',
+          });
+        });
+
+        slide4.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 0.5, y: 4.55, w: 1.2, h: 0.35,
+          fill: { color: COLORS.accent }, rectRadius: 0.08,
+        });
+        slide4.addText('49% CAGR', {
+          x: 0.5, y: 4.58, w: 1.2, h: 0.3,
+          fontSize: 10, fontFace: FONTS.heading, color: COLORS.white, bold: true, align: 'center',
+        });
+
+        slide4.addText('KEY DIFFERENTIATORS', {
+          x: 5.3, y: 0.85, w: 4, h: 0.3,
+          fontSize: 11, fontFace: FONTS.heading, color: COLORS.lightText, bold: true,
+        });
+
+        const metrics = [
+          { number: '4-Panel', label: 'Professional IDE Layout' },
+          { number: 'Real-time', label: 'WebSocket Streaming' },
+          { number: 'Native', label: 'Claude AI Integration' },
+          { number: 'Zero', label: 'Configuration Setup' },
+        ];
+
+        metrics.forEach((m, i) => {
+          const yPos = 1.25 + (i * 0.85);
+          slide4.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+            x: 5.3, y: yPos, w: 4.3, h: 0.75,
+            fill: { color: COLORS.lightSage }, rectRadius: 0.1,
+          });
+          slide4.addText(m.number, {
+            x: 5.5, y: yPos + 0.08, w: 4, h: 0.35,
+            fontSize: 14, fontFace: FONTS.heading, color: COLORS.primary, bold: true,
+          });
+          slide4.addText(m.label, {
+            x: 5.5, y: yPos + 0.4, w: 4, h: 0.3,
+            fontSize: 11, fontFace: FONTS.body, color: COLORS.lightText,
+          });
+        });
+
+        // ============================================================
+        // SLIDE 5: Investment Ask
+        // ============================================================
+        const slide5 = pptx.addSlide();
+        slide5.addShape(pptx.shapes.RECTANGLE, {
+          x: 0, y: 0, w: '100%', h: '100%',
+          fill: { color: COLORS.primary },
+        });
+        slide5.addShape(pptx.shapes.OVAL, {
+          x: -1, y: -1, w: 3, h: 3,
+          fill: { color: COLORS.gradientDark }, line: { color: COLORS.gradientDark },
+        });
+        slide5.addShape(pptx.shapes.OVAL, {
+          x: 8.5, y: 3.5, w: 2.5, h: 2.5,
+          fill: { color: COLORS.gradientDark }, line: { color: COLORS.gradientDark },
+        });
+
+        slide5.addText('Join the AI Development\nRevolution', {
+          x: 0.5, y: 0.8, w: 7, h: 1.4,
+          fontSize: 38, fontFace: FONTS.heading, color: COLORS.white, bold: true, lineSpacing: 48,
+        });
+
+        slide5.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 0.5, y: 2.5, w: 4.2, h: 2.0,
+          fill: { color: COLORS.white }, rectRadius: 0.15,
+        });
+        slide5.addText('INVESTMENT OPPORTUNITY', {
+          x: 0.7, y: 2.65, w: 3.8, h: 0.3,
+          fontSize: 10, fontFace: FONTS.heading, color: COLORS.primary, bold: true,
+        });
+        slide5.addText('Series A Round', {
+          x: 0.7, y: 3.0, w: 3.8, h: 0.4,
+          fontSize: 20, fontFace: FONTS.heading, color: COLORS.darkText, bold: true,
+        });
+        slide5.addText('Enterprise IDE market entry\nAI-native development tools\nGlobal developer community', {
+          x: 0.7, y: 3.45, w: 3.8, h: 0.9,
+          fontSize: 11, fontFace: FONTS.body, color: COLORS.lightText, lineSpacing: 18, bullet: { type: 'bullet' },
+        });
+
+        slide5.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 5.0, y: 2.5, w: 4.5, h: 2.0,
+          fill: { color: COLORS.accent }, rectRadius: 0.15,
+        });
+        slide5.addText('USE OF FUNDS', {
+          x: 5.2, y: 2.65, w: 4.1, h: 0.3,
+          fontSize: 10, fontFace: FONTS.heading, color: COLORS.primary, bold: true,
+        });
+
+        const fundAllocation = [
+          ['50%', 'Product Development'],
+          ['30%', 'Go-to-Market'],
+          ['20%', 'Operations'],
+        ];
+        fundAllocation.forEach((f, i) => {
+          slide5.addText(`${f[0]}  ${f[1]}`, {
+            x: 5.2, y: 3.05 + (i * 0.45), w: 4.1, h: 0.4,
+            fontSize: 13, fontFace: FONTS.body, color: COLORS.primary,
+          });
+        });
+
+        slide5.addShape(pptx.shapes.ROUNDED_RECTANGLE, {
+          x: 3.2, y: 4.6, w: 3.6, h: 0.5,
+          fill: { color: COLORS.white }, rectRadius: 0.25,
+        });
+        slide5.addText("Let's Build Together", {
+          x: 3.2, y: 4.65, w: 3.6, h: 0.4,
+          fontSize: 14, fontFace: FONTS.heading, color: COLORS.primary, bold: true, align: 'center',
+        });
+
+        // Generate and download
+        await pptx.writeFile({ fileName: 'ClaudeGUI_Investor_Pitch.pptx' });
+
+        btn.textContent = 'Download Complete!';
+        btn.style.background = 'linear-gradient(135deg, #065F46 0%, #064E3B 100%)';
+        document.getElementById('successMsg').classList.add('show');
+
+        setTimeout(() => {
+          btn.textContent = 'Generate Presentation (PPTX)';
+          btn.style.background = 'linear-gradient(135deg, #CA8A04 0%, #B45309 100%)';
+          btn.classList.remove('loading');
+        }, 3000);
+
+      } catch (error) {
+        console.error('Error generating presentation:', error);
+        btn.textContent = 'Error - Try Again';
+        btn.classList.remove('loading');
+        setTimeout(() => {
+          btn.textContent = 'Generate Presentation (PPTX)';
+        }, 2000);
+      }
+    }
+  </script>
+</body>
+</html>

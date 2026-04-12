@@ -13,33 +13,7 @@ import { filesApi } from '@/lib/api-client';
 import { useProjectStore } from '@/stores/use-project-store';
 import { useFileContextMenuStore } from '@/stores/use-file-context-menu-store';
 import { cn } from '@/lib/utils';
-
-function collectFilesFromDataTransfer(dt: DataTransfer): File[] {
-  const files: File[] = [];
-  if (dt.items && dt.items.length > 0) {
-    for (const item of Array.from(dt.items)) {
-      if (item.kind === 'file') {
-        const f = item.getAsFile();
-        if (f) files.push(f);
-      }
-    }
-    if (files.length > 0) return files;
-  }
-  if (dt.files && dt.files.length > 0) {
-    return Array.from(dt.files);
-  }
-  return files;
-}
-
-function hasFilePayload(dt: DataTransfer | null): boolean {
-  if (!dt) return false;
-  const types = dt.types;
-  if (!types) return false;
-  for (let i = 0; i < types.length; i += 1) {
-    if (types[i] === 'Files') return true;
-  }
-  return false;
-}
+import { collectFilesFromDataTransfer, hasFilePayload } from '@/lib/fs/collect-files';
 
 function formatRelative(ts: number | null, now: number): string {
   if (ts === null) return 'never';
@@ -404,6 +378,7 @@ export function FileExplorerPanel() {
           onSelectionChange={setSelection}
           onMove={onMove}
           onRename={onRenameInline}
+          onExternalFileDrop={uploadFiles}
         />
       </div>
       <FileContextMenu

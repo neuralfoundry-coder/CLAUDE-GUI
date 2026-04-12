@@ -20,9 +20,11 @@ import { PermissionRulesModal } from '@/components/modals/permission-rules-modal
 import { ProjectPickerModal } from '@/components/modals/project-picker-modal';
 import { LoginPromptModal } from '@/components/modals/login-prompt-modal';
 import { ArtifactsModal } from '@/components/modals/artifacts-modal';
+import { RemoteAccessModal } from '@/components/modals/remote-access-modal';
 import { CommandPalette } from '@/components/command-palette/command-palette';
 import { MobileShell } from './mobile-shell';
 import { useSettingsStore } from '@/stores/use-settings-store';
+import { useRemoteAccessStore } from '@/stores/use-remote-access-store';
 import { useLayoutStore, DEFAULT_PANEL_SIZES } from '@/stores/use-layout-store';
 import { useProjectStore } from '@/stores/use-project-store';
 import { useEditorStore } from '@/stores/use-editor-store';
@@ -49,6 +51,11 @@ export function AppShell() {
   useEffect(() => {
     if (projectInitialized && !activeRoot) setProjectPickerOpen(true);
   }, [projectInitialized, activeRoot]);
+
+  // Fetch remote access status on mount
+  useEffect(() => {
+    useRemoteAccessStore.getState().fetchStatus();
+  }, []);
 
   useEffect(() => {
     // Boot shared WebSocket clients so connection status updates early.
@@ -268,9 +275,16 @@ export function AppShell() {
       <ProjectPickerModal open={projectPickerOpen} onOpenChange={setProjectPickerOpen} />
       <LoginPromptModal open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
       <ArtifactsModal />
+      <RemoteAccessModalHost />
       <CommandPalette />
     </div>
   );
+}
+
+function RemoteAccessModalHost() {
+  const open = useRemoteAccessStore((s) => s.modalOpen);
+  const close = useRemoteAccessStore((s) => s.closeModal);
+  return <RemoteAccessModal open={open} onOpenChange={(v) => { if (!v) close(); }} />;
 }
 
 function PermissionRulesModalHost() {

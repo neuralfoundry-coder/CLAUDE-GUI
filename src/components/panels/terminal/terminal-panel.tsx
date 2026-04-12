@@ -190,7 +190,7 @@ export function TerminalPanel() {
   const [dismissedRoot, setDismissedRoot] = useState<string | null>(null);
 
   useEffect(() => {
-    if (sessions.length === 0) createSession();
+    if (sessions.length === 0) createSession(activeRoot ? { initialCwd: activeRoot } : undefined);
   }, [sessions.length, createSession]);
 
   // When the active project root changes, reset the dismiss state so the
@@ -224,7 +224,7 @@ export function TerminalPanel() {
               variant="outline"
               size="sm"
               className="h-6 px-2 text-xs"
-              onClick={() => createSession()}
+              onClick={() => createSession(activeRoot ? { initialCwd: activeRoot } : undefined)}
             >
               Open new tab here
             </Button>
@@ -255,7 +255,7 @@ export function TerminalPanel() {
           variant="ghost"
           size="icon"
           className="ml-1 h-6 w-6"
-          onClick={() => createSession()}
+          onClick={() => createSession(activeRoot ? { initialCwd: activeRoot } : undefined)}
           title="New terminal"
           aria-label="New terminal"
         >

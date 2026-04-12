@@ -72,6 +72,8 @@ function Node({ node, style, dragHandle, onOpenDir, onActivateFile }: NodeProps)
     <div
       ref={dragHandle}
       style={style}
+      data-tree-path={node.data.path}
+      data-tree-is-dir={node.data.isDirectory ? 'true' : undefined}
       className={cn(
         'group flex cursor-pointer items-center gap-1 px-2 text-sm hover:bg-accent',
         node.isSelected && 'bg-accent',
@@ -143,6 +145,7 @@ interface FileTreeProps {
     altKey: boolean;
   }) => void | Promise<void>;
   onRename?: (args: { id: string; name: string }) => void | Promise<void>;
+  onExternalFileDrop?: (destDir: string, files: File[]) => void;
 }
 
 export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
@@ -155,6 +158,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
     onSelectionChange,
     onMove,
     onRename,
+    onExternalFileDrop,
   },
   ref,
 ) {
@@ -193,21 +197,74 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
   // expose it via a ref for the move handler.
   const dragAltKeyRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const externalFileDropRef = useRef(onExternalFileDrop);
+  externalFileDropRef.current = onExternalFileDrop;
+
   useEffect(() => {
     const node = containerRef.current;
     if (!node) return;
+
+    // Track whether an internal tree drag is in progress so we can
+    // distinguish it from OS file drags in the capture-phase drop handler.
+    const isInternalDrag = { current: false };
+
     const onDragStart = (e: DragEvent) => {
       dragAltKeyRef.current = e.altKey;
+      isInternalDrag.current = true;
+    };
+    const onDragEnd = () => {
+      isInternalDrag.current = false;
     };
     const onDragOver = (e: DragEvent) => {
       // Update on hover so user can toggle Alt mid-drag.
       dragAltKeyRef.current = e.altKey;
     };
+
+    // Capture-phase drop handler intercepts OS file drops before react-dnd's
+    // HTML5Backend can swallow the event.
+    const onDropCapture = (e: DragEvent) => {
+      if (isInternalDrag.current) return; // let react-arborist handle tree moves
+      const dt = e.dataTransfer;
+      if (!dt || !Array.from(dt.types).includes('Files')) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const files: File[] = [];
+      if (dt.items && dt.items.length > 0) {
+        for (const item of Array.from(dt.items)) {
+          if (item.kind === 'file') {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+      } else if (dt.files && dt.files.length > 0) {
+        files.push(...Array.from(dt.files));
+      }
+      if (files.length === 0) return;
+
+      // Determine the target folder from the node under the cursor.
+      let destDir = '';
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const nodeEl = el?.closest('[data-tree-path]') as HTMLElement | null;
+      if (nodeEl) {
+        const path = nodeEl.getAttribute('data-tree-path') ?? '';
+        const isDir = nodeEl.getAttribute('data-tree-is-dir') === 'true';
+        destDir = isDir ? path : path.split('/').slice(0, -1).join('/');
+      }
+
+      externalFileDropRef.current?.(destDir, files);
+    };
+
     node.addEventListener('dragstart', onDragStart);
+    node.addEventListener('dragend', onDragEnd);
     node.addEventListener('dragover', onDragOver);
+    node.addEventListener('drop', onDropCapture, true); // capture phase
     return () => {
       node.removeEventListener('dragstart', onDragStart);
+      node.removeEventListener('dragend', onDragEnd);
       node.removeEventListener('dragover', onDragOver);
+      node.removeEventListener('drop', onDropCapture, true);
     };
   }, []);
 

@@ -2,11 +2,12 @@
 
 import {
   Moon, Sun, Contrast, Terminal, Sidebar, Eye, FolderOpen, MonitorSmartphone,
-  Monitor, Code2, MessageSquare,
+  Monitor, Code2, MessageSquare, Globe,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLayoutStore, type Theme } from '@/stores/use-layout-store';
 import { useProjectStore } from '@/stores/use-project-store';
+import { useRemoteAccessStore } from '@/stores/use-remote-access-store';
 import { AuthBadge } from './auth-badge';
 
 const THEME_ICONS: Record<Theme, React.ComponentType<{ className?: string }>> = {
@@ -35,6 +36,9 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
   const setTheme = useLayoutStore((s) => s.setTheme);
   const togglePanel = useLayoutStore((s) => s.togglePanel);
   const activeRoot = useProjectStore((s) => s.activeRoot);
+  const remoteAccess = useRemoteAccessStore((s) => s.remoteAccess);
+  const localIPs = useRemoteAccessStore((s) => s.localIPs);
+  const openRemoteModal = useRemoteAccessStore((s) => s.openModal);
 
   const ThemeIcon = THEME_ICONS[theme];
 
@@ -105,6 +109,17 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
           title="Toggle preview (⌃⌘P)"
         >
           <Eye className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={openRemoteModal}
+          aria-label="Remote access settings"
+          title={remoteAccess
+            ? `원격 접근: 켜짐 (${localIPs[0] ?? '0.0.0.0'})`
+            : '원격 접근: 꺼��'}
+        >
+          <Globe className={`h-4 w-4 ${remoteAccess ? 'text-green-500' : ''}`} />
         </Button>
         <Button
           variant="ghost"
