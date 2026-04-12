@@ -3,20 +3,30 @@
 import { ReconnectingWebSocket } from './reconnecting-ws';
 import { useClaudeStore } from '@/stores/use-claude-store';
 import { useConnectionStore } from '@/stores/use-connection-store';
+import { useEditorStore } from '@/stores/use-editor-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
-import type { ClaudeClientMessage, ClaudeServerMessage } from '@/types/websocket';
+import type { ActiveFileContext, ClaudeClientMessage, ClaudeServerMessage } from '@/types/websocket';
 
 let singleton: ClaudeClient | null = null;
 
 class ClaudeClient {
   private ws: ReconnectingWebSocket;
   private completionCallbacks = new Map<string, (completions: string[]) => void>();
+  private boundBeforeUnload: (() => void) | null = null;
 
   constructor() {
     this.ws = new ReconnectingWebSocket({
       url: `${typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws'}://${typeof location !== 'undefined' ? location.host : 'localhost'}/ws/claude`,
       onOpen: () => useConnectionStore.getState().setStatus('claude', 'open'),
-      onClose: () => useConnectionStore.getState().setStatus('claude', 'closed'),
+      onClose: () => {
+        useConnectionStore.getState().setStatus('claude', 'closed');
+        // Reset streaming state when connection drops so the UI
+        // doesn't get stuck in a loading state after reconnection.
+        const store = useClaudeStore.getState();
+        if (store.isStreaming) {
+          store.setStreaming(false);
+        }
+      },
       onMessage: (event) => {
         try {
           const msg = JSON.parse(event.data as string) as ClaudeServerMessage;
@@ -35,10 +45,44 @@ class ClaudeClient {
         }
       },
     });
+
+    // On page refresh/close, send abort via WebSocket and use sendBeacon
+    // as a fallback to ensure the server cancels running commands.
+    if (typeof window !== 'undefined') {
+      this.boundBeforeUnload = () => {
+        // Best-effort: send abort over WebSocket before it closes
+        try {
+          this.ws.sendJson({ type: 'abort', requestId: 'page-unload' });
+        } catch {
+          /* ignore */
+        }
+        // Fallback: sendBeacon to HTTP abort endpoint (works even if WS is already closed)
+        try {
+          navigator.sendBeacon('/api/claude/abort');
+        } catch {
+          /* ignore */
+        }
+      };
+      window.addEventListener('beforeunload', this.boundBeforeUnload);
+    }
   }
 
   send(msg: ClaudeClientMessage): void {
     this.ws.sendJson(msg);
+  }
+
+  private getActiveFileContext(): ActiveFileContext | undefined {
+    const { tabs, activeTabId, cursorLine, cursorCol } = useEditorStore.getState();
+    if (!activeTabId) return undefined;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (!tab) return undefined;
+    return {
+      path: tab.path,
+      dirty: tab.dirty,
+      hasDiff: tab.diff != null,
+      cursorLine,
+      cursorCol,
+    };
   }
 
   sendQuery(
@@ -52,13 +96,16 @@ class ClaudeClient {
     // the parent id as `sessionId` so the SDK creates a new session.
     const sessionId = activeId && activeId.startsWith('fork-of-') ? undefined : activeId;
     const selectedModel = useSettingsStore.getState().selectedModel;
+    const activeFile = this.getActiveFileContext();
     useClaudeStore.getState().pushUserMessage(prompt);
     useClaudeStore.getState().setStreaming(true);
+    useClaudeStore.getState().setCurrentRequestId(requestId);
     this.send({
       type: 'query',
       requestId,
       prompt,
       sessionId,
+      ...(activeFile ? { activeFile } : {}),
       ...(intent ? { intent } : {}),
       ...(selectedModel ? { options: { model: selectedModel } } : {}),
     });
@@ -90,6 +137,10 @@ class ClaudeClient {
   }
 
   close(): void {
+    if (typeof window !== 'undefined' && this.boundBeforeUnload) {
+      window.removeEventListener('beforeunload', this.boundBeforeUnload);
+      this.boundBeforeUnload = null;
+    }
     this.ws.close();
   }
 }

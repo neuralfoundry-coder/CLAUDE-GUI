@@ -674,6 +674,7 @@ dropdown in the Claude chat panel header (FR-512).
   `persist` middleware.
 - On query send, `claude-client.ts`'s `sendQuery` reads `selectedModel` and
   includes it in `ClaudeQueryMessage.options.model`.
+- Additionally, `sendQuery` reads active tab information from `useEditorStore` and includes it in `ClaudeQueryMessage.activeFile` (FR-518). The server side injects this information as a `[Active file: <path>, line <n>:<col>]` prefix into the prompt.
 - Uses the shadcn/ui `DropdownMenu` component.
 
 #### ChatFilterBar (Claude panel)

@@ -663,6 +663,7 @@ SDK가 값을 주지 않은 필드는 `null`로 유지되며, UI에서는 "-"로
 - 모델 목록은 `src/lib/claude/model-specs.ts`의 `MODEL_SPECS` 상수에서 가져온다.
 - 선택된 모델은 `useSettingsStore`의 `persist` 미들웨어를 통해 `localStorage`에 저장된다.
 - 쿼리 전송 시 `claude-client.ts`의 `sendQuery`가 `selectedModel`을 읽어 `ClaudeQueryMessage.options.model`에 포함한다.
+- 또한 `sendQuery`는 `useEditorStore`에서 활성 탭 정보를 읽어 `ClaudeQueryMessage.activeFile`에 포함한다 (FR-518). 서버 측에서는 이 정보를 `[Active file: <path>, line <n>:<col>]` 형태의 prefix로 프롬프트에 주입한다.
 - shadcn/ui `DropdownMenu` 컴포넌트를 사용한다.
 
 #### ChatFilterBar (Claude 패널)

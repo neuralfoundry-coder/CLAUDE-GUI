@@ -20,6 +20,7 @@ export class ReconnectingWebSocket {
   >;
   private closed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private boundBeforeUnload: (() => void) | null = null;
 
   constructor(opts: ReconnectingWsOptions) {
     this.url = opts.url;
@@ -27,6 +28,16 @@ export class ReconnectingWebSocket {
     this.maxBackoff = opts.maxBackoffMs ?? 30_000;
     this.backoff = this.initialBackoff;
     this.handlers = opts;
+
+    // Close cleanly on page unload to prevent reconnection and allow
+    // the server to detect the disconnect immediately.
+    if (typeof window !== 'undefined') {
+      this.boundBeforeUnload = () => {
+        this.close();
+      };
+      window.addEventListener('beforeunload', this.boundBeforeUnload);
+    }
+
     this.connect();
   }
 
@@ -75,6 +86,10 @@ export class ReconnectingWebSocket {
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (typeof window !== 'undefined' && this.boundBeforeUnload) {
+      window.removeEventListener('beforeunload', this.boundBeforeUnload);
+      this.boundBeforeUnload = null;
+    }
     this.ws?.close();
   }
 

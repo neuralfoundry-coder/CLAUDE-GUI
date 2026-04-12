@@ -684,6 +684,17 @@
 - 텍스트 또는 URL 드래그는 무시한다(`hasFilePayload` 검증).
 - 구현: `src/components/panels/claude/use-chat-drop.ts`, `src/components/panels/claude/drop-overlay.tsx`, `src/components/panels/claude/attached-files-bar.tsx`, `src/lib/fs/collect-files.ts`.
 
+### FR-518: 활성 에디터 파일 컨텍스트 자동 전달
+
+- Claude 채팅 패널은 에디터 패널에서 현재 활성화된(포커스된) 파일을 자동으로 인식하여 쿼리에 포함해야 한다.
+- 전달되는 컨텍스트 정보: 파일 경로, 커서 위치(행/열), 미저장 상태(`dirty`), 보류 중인 diff 유무(`hasDiff`).
+- 클라이언트 측: `ClaudeClient.sendQuery()` 호출 시 `useEditorStore`에서 활성 탭 정보를 조회하여 `ClaudeQueryMessage.activeFile` 필드로 서버에 전송한다.
+- 서버 측: `claude-handler.mjs`의 `runQuery()`에서 `activeFile` 정보가 존재하면 프롬프트 앞에 `[Active file: <path>, line <n>:<col>, unsaved, has pending diff]` 형태의 컨텍스트 prefix를 자동 삽입한다.
+- UI: 채팅 패널 입력 영역 바로 위에 현재 활성 파일 경로를 표시하는 인라인 인디케이터(`Focusing: <path>`)를 제공한다. 활성 파일이 없으면 인디케이터를 숨긴다.
+- 기존 `@` 파일 참조(FR-511)와 독립적으로 동작한다. `@` 참조는 명시적 파일 지정이고, 활성 파일 컨텍스트는 암시적 포커스 정보이다.
+- WebSocket 메시지 타입: `ActiveFileContext` (`path`, `dirty`, `hasDiff`, `cursorLine?`, `cursorCol?`).
+- 구현: `src/types/websocket.ts`, `src/lib/websocket/claude-client.ts`, `server-handlers/claude-handler.mjs`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
 ### FR-520: 네이티브 앱 실행 모드 (v0.3)
 
 - Tauri v2 기반 네이티브 앱(`.dmg` / `.msi`)으로 ClaudeGUI를 실행할 수 있어야 한다.

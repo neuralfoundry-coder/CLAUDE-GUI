@@ -11,9 +11,12 @@ User                Browser (React)           Server (Node.js)         Claude CL
   │                     │                          │                       │
   │ 1. enter prompt      │                          │                       │
   │──────────────────▶│                          │                       │
-  │                     │ 2. ws.send({type: query})│                       │
+  │                     │ 2. getActiveFileContext() │                       │
+  │                     │    + ws.send({type:query, │                       │
+  │                     │      activeFile})         │                       │
   │                     │─────────────────────────▶│                       │
-  │                     │                          │ 3. Agent SDK query()  │
+  │                     │                          │ 3. activeFile prefix  │
+  │                     │                          │    + Agent SDK query()│
   │                     │                          │──────────────────────▶│
   │                     │                          │                       │
   │                     │                          │◀────────── assistant │
@@ -49,7 +52,7 @@ User                Browser (React)           Server (Node.js)         Claude CL
   │◀──────────────────│                          │                       │
 ```
 
-**Related FR**: FR-501, FR-502, FR-504, FR-505
+**Related FR**: FR-501, FR-502, FR-504, FR-505, FR-518
 
 ### 3.1.1 Intent Detection and Prompt Injection Flow
 

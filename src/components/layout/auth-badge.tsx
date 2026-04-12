@@ -60,14 +60,21 @@ export function AuthBadge({ onRequestLogin }: AuthBadgeProps) {
     );
   }
 
+  const displayName = status.email
+    ? status.email.split('@')[0]
+    : status.orgName ?? 'Claude';
+  const tooltip = status.email
+    ? `${status.email}${status.orgName ? ` (${status.orgName})` : ''}`
+    : `Signed in (${status.source})`;
+
   return (
     <span
       className="flex items-center gap-1 rounded-md border border-emerald-500/60 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400"
       aria-label={`Claude authenticated via ${status.source}`}
-      title={`Signed in (${status.source})`}
+      title={tooltip}
     >
       <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-      Claude
+      {displayName}
     </span>
   );
 }

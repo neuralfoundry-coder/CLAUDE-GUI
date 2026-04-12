@@ -49,6 +49,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#222}
   position:relative !important;
   left:auto !important;top:auto !important;
   width:100% !important;height:100% !important;
+  aspect-ratio:16/9;
   display:flex !important;flex-direction:column !important;
   justify-content:center !important;align-items:center !important;
   padding:24px !important;box-sizing:border-box !important;
@@ -95,7 +96,7 @@ function SlideCard({
       </span>
 
       {/* Slide preview iframe */}
-      <div className="aspect-[960/700] w-full overflow-hidden rounded-[4px]">
+      <div className="aspect-video w-full overflow-hidden rounded-[4px]">
         <iframe
           srcDoc={doc}
           sandbox=""

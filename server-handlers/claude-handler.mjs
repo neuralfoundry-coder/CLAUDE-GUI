@@ -10,6 +10,11 @@ import { intentRegistry } from './prompt-templates/registry.mjs';
 
 const dbg = createDebug('claude');
 
+/** Module-level set of active AbortControllers across all connections.
+ *  Used by the HTTP /api/claude/abort endpoint (sendBeacon fallback)
+ *  to cancel running queries when the WebSocket is already gone. */
+export const activeAbortControllers = new Set();
+
 const DANGER_PATTERNS = [
   /\brm\s+-[rfR]+/,
   /\bsudo\b/,
@@ -137,6 +142,7 @@ export default async function claudeHandler(ws, _req) {
     // Allow aborting completions via the shared currentAbort reference
     const prevAbort = currentAbort;
     currentAbort = abort;
+    activeAbortControllers.add(abort);
 
     try {
       const completionPrompt = [
@@ -184,14 +190,29 @@ export default async function claudeHandler(ws, _req) {
         send({ type: 'error', requestId, message: String(err?.message || err), code: 5502 });
       }
     } finally {
+      activeAbortControllers.delete(abort);
       if (currentAbort === abort) currentAbort = prevAbort;
     }
   };
 
+  function buildActiveFilePrefix(activeFile) {
+    if (!activeFile?.path) return '';
+    const parts = [`[Active file: ${activeFile.path}`];
+    if (activeFile.cursorLine != null) {
+      parts.push(`, line ${activeFile.cursorLine}`);
+      if (activeFile.cursorCol != null) parts.push(`:${activeFile.cursorCol}`);
+    }
+    if (activeFile.dirty) parts.push(', unsaved');
+    if (activeFile.hasDiff) parts.push(', has pending diff');
+    parts.push(']');
+    return parts.join('');
+  }
+
   const runQuery = async (msg) => {
-    const { requestId, prompt, sessionId, intent, options = {} } = msg;
+    const { requestId, prompt, sessionId, activeFile, intent, options = {} } = msg;
     const abort = new AbortController();
     currentAbort = abort;
+    activeAbortControllers.add(abort);
 
     const cwd = getActiveRoot();
     if (!cwd) {
@@ -205,10 +226,17 @@ export default async function claudeHandler(ws, _req) {
       currentAbort = null;
       return;
     }
-    dbg.info('query start', { requestId, sessionId: sessionId ?? '(new)', cwd });
+    dbg.info('query start', { requestId, sessionId: sessionId ?? '(new)', cwd, activeFile: activeFile?.path });
 
     // Resolve augmented prompt via intent registry if applicable
     let finalPrompt = prompt;
+
+    // Prepend active file context so Claude is aware of the user's focus
+    const filePrefix = buildActiveFilePrefix(activeFile);
+    if (filePrefix) {
+      finalPrompt = `${filePrefix}\n${finalPrompt}`;
+    }
+
     if (intent?.type && intentRegistry[intent.type]) {
       try {
         const mod = await intentRegistry[intent.type]();
@@ -258,6 +286,7 @@ export default async function claudeHandler(ws, _req) {
         send({ type: 'error', requestId, message: String(err?.message || err), code: 5501 });
       }
     } finally {
+      activeAbortControllers.delete(abort);
       currentAbort = null;
       for (const resolve of pendingPermissions.values()) {
         try {

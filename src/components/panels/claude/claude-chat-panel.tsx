@@ -30,6 +30,7 @@ import {
 } from '@/lib/claude/slash-commands';
 import { SlashCommandPopover } from './slash-command-popover';
 import { useSettingsStore } from '@/stores/use-settings-store';
+import { useEditorStore } from '@/stores/use-editor-store';
 import { findModelSpec } from '@/lib/claude/model-specs';
 import { useChatDrop } from './use-chat-drop';
 import { DropOverlay } from './drop-overlay';
@@ -56,6 +57,11 @@ export function ClaudeChatPanel() {
   );
   const artifactCount = useArtifactStore((s) => s.artifacts.length);
   const openArtifacts = useArtifactStore((s) => s.open);
+  const activeTabPath = useEditorStore((s) => {
+    if (!s.activeTabId) return null;
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    return tab?.path ?? null;
+  });
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { entries: mentionEntries } = useFileMentions();
@@ -124,6 +130,14 @@ export function ClaudeChatPanel() {
   const executeSlashCommand = useCallback(
     (cmd: SlashCommand, fullInput: string) => {
       if (cmd.handler === 'passthrough') {
+        // Commands like /compact and /context require an existing session
+        const sid = useClaudeStore.getState().activeSessionId;
+        if (!sid) {
+          pushSystemMessage(
+            `\`${cmd.name}\` requires an active session. Send a message first to start a conversation.`,
+          );
+          return;
+        }
         getClaudeClient().sendQuery(fullInput);
         return;
       }
@@ -160,16 +174,27 @@ export function ClaudeChatPanel() {
         case '/usage': {
           const sid = useClaudeStore.getState().activeSessionId;
           const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
-          if (!stats) {
-            pushSystemMessage('No active session. Start a conversation first.');
-            break;
-          }
           const fmt = (n: number) =>
             n >= 1_000_000
               ? `${(n / 1_000_000).toFixed(1)}M`
               : n >= 1_000
                 ? `${(n / 1_000).toFixed(1)}k`
                 : String(n);
+          if (!stats) {
+            const lines = [
+              '**Token Usage**',
+              '',
+              '- **Input tokens:** 0',
+              '- **Output tokens:** 0',
+              '- **Cache read:** 0',
+              '- **Total tokens:** 0',
+              '- **Turns:** -',
+              '',
+              '_No conversation yet. Send a message to start tracking usage._',
+            ];
+            pushSystemMessage(lines.join('\n'));
+            break;
+          }
           const lines = [
             `**Token Usage** (session \`${sid?.slice(0, 8)}…\`)`,
             '',
@@ -321,6 +346,15 @@ export function ClaudeChatPanel() {
     [executeSlashCommand],
   );
 
+  const onStop = useCallback(() => {
+    const reqId = useClaudeStore.getState().currentRequestId;
+    if (reqId) {
+      getClaudeClient().abort(reqId);
+    }
+    useClaudeStore.getState().setStreaming(false);
+    useClaudeStore.getState().setCurrentRequestId(null);
+  }, []);
+
   const onSend = () => {
     if (!input.trim() || isStreaming) return;
     const trimmed = input.trim();
@@ -457,7 +491,7 @@ export function ClaudeChatPanel() {
 
   return (
     <div
-      className="relative flex h-full flex-col border-l bg-background"
+      className={`relative flex h-full flex-col border-l bg-background${isStreaming ? ' claude-streaming' : ''}`}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -575,6 +609,15 @@ export function ClaudeChatPanel() {
 
       <AttachedFilesBar files={pendingFiles} onRemove={removePendingFile} />
 
+      {activeTabPath && (
+        <div className="flex items-center gap-1 border-t px-2 py-0.5 text-[10px] text-muted-foreground">
+          <span className="shrink-0">Focusing:</span>
+          <span className="truncate font-mono" title={activeTabPath}>
+            {activeTabPath}
+          </span>
+        </div>
+      )}
+
       <div className="border-t p-2">
         <div className="flex items-start gap-2">
           <div className="relative flex-1">
@@ -610,18 +653,25 @@ export function ClaudeChatPanel() {
               className="w-full resize-none rounded-md border bg-background p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
-          <Button
-            size="icon"
-            onClick={onSend}
-            disabled={isStreaming || uploading || !input.trim()}
-            aria-label={isStreaming ? 'Stop' : 'Send prompt'}
-          >
-            {isStreaming ? (
+          {isStreaming ? (
+            <Button
+              size="icon"
+              variant="destructive"
+              onClick={onStop}
+              aria-label="Stop generation"
+            >
               <Square className="h-4 w-4" aria-hidden="true" />
-            ) : (
+            </Button>
+          ) : (
+            <Button
+              size="icon"
+              onClick={onSend}
+              disabled={uploading || !input.trim()}
+              aria-label="Send prompt"
+            >
               <Send className="h-4 w-4" aria-hidden="true" />
-            )}
-          </Button>
+            </Button>
+          )}
         </div>
       </div>
 

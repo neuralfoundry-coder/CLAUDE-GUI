@@ -167,6 +167,7 @@ interface ClaudeState {
   reset: () => void;
   setActiveSessionId: (id: string | null) => void;
   setStreaming: (streaming: boolean) => void;
+  setCurrentRequestId: (id: string | null) => void;
   toggleFilter: (kind: MessageKind) => void;
   loadSession: (id: string) => Promise<void>;
 }
@@ -633,6 +634,7 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
     }),
   setActiveSessionId: (id) => set({ activeSessionId: id }),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
+  setCurrentRequestId: (id) => set({ currentRequestId: id }),
   toggleFilter: (kind) =>
     set((s) => {
       const next = new Set(s.messageFilter);

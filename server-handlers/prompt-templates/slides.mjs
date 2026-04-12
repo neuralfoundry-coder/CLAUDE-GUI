@@ -36,6 +36,7 @@ export function buildSlidePrompt(userPrompt, preferences = {}) {
 - Each slide is a \`<section>\` element inside \`<div class="reveal"><div class="slides">...</div></div>\`.
 - Include inline \`<style>\` for custom colors, fonts, and layout — do not rely on external CSS beyond the reveal.js theme.
 - The HTML file must be self-contained and renderable when opened directly in a browser or in ClaudeGUI's preview panel.
+- **All slides must be designed for 16:9 aspect ratio (1920×1080).** Set \`width: 1920, height: 1080\` in the Reveal.initialize() config and design all layouts accordingly.
 
 Follow these strict design and content guidelines for high visibility and consistency:
 

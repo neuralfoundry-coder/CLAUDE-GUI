@@ -13,6 +13,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { useLayoutStore } from '@/stores/use-layout-store';
 import { useAuthStore } from '@/stores/use-auth-store';
+import { useTerminalStore } from '@/stores/use-terminal-store';
 
 interface LoginPromptModalProps {
   open: boolean;
@@ -26,8 +27,9 @@ export function LoginPromptModal({ open, onOpenChange }: LoginPromptModalProps) 
   const [copied, setCopied] = useState<string | null>(null);
   const status = useAuthStore((s) => s.status);
   const refresh = useAuthStore((s) => s.refresh);
-  const terminalCollapsed = useLayoutStore((s) => s.terminalCollapsed);
-  const togglePanel = useLayoutStore((s) => s.togglePanel);
+  const setCollapsed = useLayoutStore((s) => s.setCollapsed);
+  const sessions = useTerminalStore((s) => s.sessions);
+  const createSession = useTerminalStore((s) => s.createSession);
 
   const cliMissing = status?.cliInstalled === false;
 
@@ -42,7 +44,10 @@ export function LoginPromptModal({ open, onOpenChange }: LoginPromptModalProps) 
   };
 
   const openTerminal = () => {
-    if (terminalCollapsed) togglePanel('terminal');
+    setCollapsed('terminal', false);
+    if (sessions.length === 0) {
+      createSession();
+    }
     onOpenChange(false);
   };
 
@@ -57,7 +62,7 @@ export function LoginPromptModal({ open, onOpenChange }: LoginPromptModalProps) 
           <DialogDescription>
             {cliMissing
               ? 'The Claude CLI is not installed. Run this command in any terminal — ClaudeGUI will detect it automatically.'
-              : 'Run the login command in the built-in terminal. Your credentials will persist in ~/.claude/.credentials.json.'}
+              : 'Run the login command in the built-in terminal. ClaudeGUI will detect your credentials automatically.'}
           </DialogDescription>
         </DialogHeader>
 

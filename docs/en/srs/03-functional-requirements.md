@@ -695,6 +695,17 @@
 - Text or URL drags are ignored (`hasFilePayload` validation).
 - Implementation: `src/components/panels/claude/use-chat-drop.ts`, `src/components/panels/claude/drop-overlay.tsx`, `src/components/panels/claude/attached-files-bar.tsx`, `src/lib/fs/collect-files.ts`.
 
+### FR-518: Active Editor File Context Auto-Forwarding
+
+- The Claude chat panel shall automatically recognize the currently active (focused) file in the editor panel and include it in queries.
+- Context information forwarded: file path, cursor position (line/column), unsaved status (`dirty`), pending diff status (`hasDiff`).
+- Client side: When `ClaudeClient.sendQuery()` is called, active tab information is retrieved from `useEditorStore` and sent to the server via the `ClaudeQueryMessage.activeFile` field.
+- Server side: In `claude-handler.mjs`'s `runQuery()`, if `activeFile` information is present, a context prefix in the form `[Active file: <path>, line <n>:<col>, unsaved, has pending diff]` is automatically prepended to the prompt.
+- UI: An inline indicator (`Focusing: <path>`) showing the current active file path is displayed just above the chat panel input area. The indicator is hidden when no file is active.
+- This operates independently of the existing `@` file references (FR-511). `@` references are explicit file designations, while active file context is implicit focus information.
+- WebSocket message type: `ActiveFileContext` (`path`, `dirty`, `hasDiff`, `cursorLine?`, `cursorCol?`).
+- Implementation: `src/types/websocket.ts`, `src/lib/websocket/claude-client.ts`, `server-handlers/claude-handler.mjs`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
 ### FR-520: Native application run mode (v0.3)
 
 - ClaudeGUI shall be runnable as a native application (`.dmg` / `.msi`) via Tauri v2.

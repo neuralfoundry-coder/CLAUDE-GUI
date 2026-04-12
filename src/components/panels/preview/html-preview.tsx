@@ -10,7 +10,13 @@ export function HtmlPreview({ content }: HtmlPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   useEffect(() => {
-    // Debounced via parent
+    const iframe = iframeRef.current;
+    if (!iframe) return;
+    // Explicitly write content to the iframe document to ensure it
+    // always reflects the latest content — relying solely on the srcDoc
+    // attribute can fail when React skips the DOM update because the
+    // prop value is referentially identical to the previous render.
+    iframe.srcdoc = content;
   }, [content]);
 
   return (

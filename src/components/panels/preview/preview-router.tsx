@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { filesApi } from '@/lib/api-client';
-import { debounce } from '@/lib/utils';
+
 import { usePreviewStore, detectPreviewType } from '@/stores/use-preview-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { HtmlPreview } from './html-preview';
@@ -22,9 +22,21 @@ export function PreviewRouter() {
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
   const updateTabContent = useEditorStore((s) => s.updateContent);
   const [content, setContent] = useState<string>('');
+  // Monotonic counter to force content refresh even when the string is identical.
+  const [contentKey, setContentKey] = useState(0);
+  const prevFileRef = useRef<string | null>(null);
 
   const filePath = currentFile ?? activeTab?.path ?? null;
   const type = detectPreviewType(filePath);
+
+  // Bump contentKey when the user navigates back to a previously-viewed file
+  // so that child components (especially iframes) re-apply the content.
+  useEffect(() => {
+    if (filePath !== prevFileRef.current) {
+      prevFileRef.current = filePath;
+      setContentKey((k) => k + 1);
+    }
+  }, [filePath]);
 
   const handleSlideContentChange = useCallback(
     (newContent: string) => {
@@ -60,8 +72,8 @@ export function PreviewRouter() {
 
   useEffect(() => {
     if (!activeTab || !filePath || activeTab.path !== filePath) return;
-    const update = debounce((c: string) => setContent(c), 300);
-    update(activeTab.content);
+    const timer = setTimeout(() => setContent(activeTab.content), 300);
+    return () => clearTimeout(timer);
   }, [activeTab, filePath]);
 
   if (!filePath || type === 'none') {
@@ -72,7 +84,7 @@ export function PreviewRouter() {
     return viewMode === 'source' ? (
       <SourcePreview content={content} language="html" />
     ) : (
-      <HtmlPreview content={content} />
+      <HtmlPreview key={`${filePath}:${contentKey}`} content={content} />
     );
   }
   if (type === 'markdown') {

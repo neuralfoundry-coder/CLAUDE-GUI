@@ -1,14 +1,21 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
 
-export type AuthSource = 'credentials-file' | 'env' | 'none';
+const execAsync = promisify(exec);
+
+export type AuthSource = 'credentials-file' | 'env' | 'cli-oauth' | 'none';
 
 export interface AuthStatus {
   authenticated: boolean;
   source: AuthSource;
   cliInstalled: boolean;
   lastChecked: string;
+  email?: string;
+  authMethod?: string;
+  orgName?: string;
 }
 
 function credentialsPath(): string {
@@ -54,9 +61,44 @@ async function isCliInstalled(): Promise<boolean> {
   return false;
 }
 
+interface CliAuthResult {
+  loggedIn: boolean;
+  email?: string;
+  authMethod?: string;
+  orgName?: string;
+}
+
+async function checkCliAuthStatus(): Promise<CliAuthResult | null> {
+  try {
+    const { stdout } = await execAsync('claude auth status --json', { timeout: 2500 });
+    const parsed = JSON.parse(stdout.trim());
+    if (parsed && parsed.loggedIn === true) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function checkAuth(): Promise<AuthStatus> {
-  const [credsOk, cliOk] = await Promise.all([hasCredentialsFile(), isCliInstalled()]);
+  const [credsOk, cliOk, cliAuth] = await Promise.all([
+    hasCredentialsFile(),
+    isCliInstalled(),
+    checkCliAuthStatus(),
+  ]);
   const envOk = hasEnvKey();
+
+  if (cliAuth) {
+    return {
+      authenticated: true,
+      source: 'cli-oauth',
+      cliInstalled: cliOk,
+      lastChecked: new Date().toISOString(),
+      email: cliAuth.email,
+      authMethod: cliAuth.authMethod,
+      orgName: cliAuth.orgName,
+    };
+  }
+
   const source: AuthSource = credsOk ? 'credentials-file' : envOk ? 'env' : 'none';
   return {
     authenticated: credsOk || envOk,

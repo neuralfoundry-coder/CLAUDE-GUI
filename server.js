@@ -184,8 +184,27 @@ async function startServer(nextHandler, upgradeHandler) {
       res.end(JSON.stringify({ success: false, error: 'Unauthorized: invalid or missing token' }));
       return;
     }
+
+    // Fast-path: abort all active Claude queries (called via sendBeacon on page unload)
+    const parsedUrl = parse(req.url || '/', true);
+    if (parsedUrl.pathname === '/api/claude/abort' && req.method === 'POST') {
+      try {
+        const { activeAbortControllers } = await import('./server-handlers/claude-handler.mjs');
+        let aborted = 0;
+        for (const controller of activeAbortControllers) {
+          try { controller.abort(); aborted++; } catch { /* ignore */ }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, aborted }));
+      } catch (err) {
+        dbg.error('abort handler error', err);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, aborted: 0 }));
+      }
+      return;
+    }
+
     try {
-      const parsedUrl = parse(req.url || '/', true);
       await nextHandler(req, res, parsedUrl);
     } catch (err) {
       dbg.error('request handler error', err);

@@ -38,11 +38,20 @@ export type TerminalControlMessage =
   | { type: 'resume' }
   | { type: 'exit'; code: number };
 
+export interface ActiveFileContext {
+  path: string;
+  dirty: boolean;
+  hasDiff: boolean;
+  cursorLine?: number | null;
+  cursorCol?: number | null;
+}
+
 export interface ClaudeQueryMessage {
   type: 'query';
   requestId: string;
   prompt: string;
   sessionId?: string;
+  activeFile?: ActiveFileContext;
   intent?: {
     type: string;
     preferences?: Record<string, unknown>;
