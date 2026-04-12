@@ -6,7 +6,7 @@ const next = require('next');
 const { WebSocketServer } = require('ws');
 
 const dev = process.env.NODE_ENV !== 'production';
-const hostname = process.env.HOST || '127.0.0.1';
+const envHostname = process.env.HOST; // explicit HOST env takes precedence
 const port = Number(process.env.PORT || 3000);
 
 // Lazy-load the module-based debug helper (ESM). Fallback to console.* if
@@ -27,20 +27,125 @@ let dbg = {
   }
 })();
 
-const app = next({ dev, hostname, port });
+// ---------------------------------------------------------------------------
+// Server config (remote access)
+// ---------------------------------------------------------------------------
 
-const ALLOWED_ORIGINS = new Set([
-  `http://${hostname}:${port}`,
-  `http://localhost:${port}`,
-  `http://127.0.0.1:${port}`,
-]);
+/** @returns {{ remoteAccess: boolean, remoteAccessToken: string|null }} */
+function loadConfigSync() {
+  try {
+    const { loadServerConfigSync } = require('./src/lib/server-config.mjs');
+    return loadServerConfigSync();
+  } catch {
+    // Fallback: try dynamic import path with readFileSync
+    try {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const os = require('node:os');
+      const raw = fs.readFileSync(
+        path.join(os.homedir(), '.claudegui', 'server-config.json'),
+        'utf-8',
+      );
+      const parsed = JSON.parse(raw);
+      return {
+        remoteAccess: typeof parsed.remoteAccess === 'boolean' ? parsed.remoteAccess : false,
+        remoteAccessToken: typeof parsed.remoteAccessToken === 'string' ? parsed.remoteAccessToken : null,
+      };
+    } catch {
+      return { remoteAccess: false, remoteAccessToken: null };
+    }
+  }
+}
+
+let serverConfig = loadConfigSync();
+
+function resolveHostname() {
+  if (envHostname) return envHostname; // HOST env always wins
+  return serverConfig.remoteAccess ? '0.0.0.0' : '127.0.0.1';
+}
+
+let hostname = resolveHostname();
+
+// Expose current server state to Next.js API routes via globalThis
+globalThis.__serverHostname = hostname;
+globalThis.__serverPort = port;
+globalThis.__serverConfig = serverConfig;
+
+// ---------------------------------------------------------------------------
+// Origin / token verification
+// ---------------------------------------------------------------------------
+
+function buildAllowedOrigins(h, p) {
+  const s = new Set([
+    `http://${h}:${p}`,
+    `http://localhost:${p}`,
+    `http://127.0.0.1:${p}`,
+  ]);
+  if (h === '0.0.0.0') {
+    // When binding to all interfaces, also allow the actual LAN IP origins.
+    // We can't enumerate them statically here, so we rely on token auth
+    // for remote clients. But add common patterns for convenience.
+    s.add(`http://0.0.0.0:${p}`);
+  }
+  return s;
+}
+
+let ALLOWED_ORIGINS = buildAllowedOrigins(hostname, port);
+
+function isLocalhostAddr(addr) {
+  if (!addr) return true; // no address info => treat as local (e.g. unix socket)
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+function verifyToken(req) {
+  if (!serverConfig.remoteAccess || !serverConfig.remoteAccessToken) return true;
+
+  // Localhost connections are exempt from token checks
+  const remoteAddr = req.socket?.remoteAddress || req.connection?.remoteAddress;
+  if (isLocalhostAddr(remoteAddr)) return true;
+
+  // Check Authorization header
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const parts = authHeader.split(' ');
+    if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
+      if (parts[1] === serverConfig.remoteAccessToken) return true;
+    }
+  }
+
+  // Check URL query parameter (for WebSocket upgrade requests)
+  try {
+    const { query } = parse(req.url || '/', true);
+    if (query.token === serverConfig.remoteAccessToken) return true;
+  } catch { /* ignore parse errors */ }
+
+  return false;
+}
 
 function verifyOrigin(req) {
+  // When remote access is on with a valid token, skip origin check
+  if (serverConfig.remoteAccess && serverConfig.remoteAccessToken) {
+    if (verifyToken(req)) return true;
+  }
+
   if (!dev && process.env.ALLOW_ANY_ORIGIN === 'true') return true;
   const origin = req.headers.origin;
   if (!origin) return dev;
   return ALLOWED_ORIGINS.has(origin);
 }
+
+const app = next({ dev, hostname: '127.0.0.1', port });
+
+// ---------------------------------------------------------------------------
+// Main server setup
+// ---------------------------------------------------------------------------
+
+/** @type {http.Server|null} */
+let currentServer = null;
+/** @type {NodeJS.Timeout|null} */
+let heartbeatInterval = null;
+/** @type {WebSocketServer[]} */
+let wsServers = [];
 
 async function main() {
   await app.prepare();
@@ -54,10 +159,31 @@ async function main() {
   }
 
   // Resolve handlers after prepare() so internal `this` context is fully bound.
-  const nextHandler = app.getRequestHandler();
-  const upgradeHandler = typeof app.getUpgradeHandler === 'function' ? app.getUpgradeHandler() : null;
+  // Cache them for in-process restarts.
+  _nextHandler = app.getRequestHandler();
+  _upgradeHandler = typeof app.getUpgradeHandler === 'function' ? app.getUpgradeHandler() : null;
+
+  await startServer(_nextHandler, _upgradeHandler);
+}
+
+async function startServer(nextHandler, upgradeHandler) {
+  // Reload config in case it changed (e.g. after restart)
+  serverConfig = loadConfigSync();
+  hostname = resolveHostname();
+  ALLOWED_ORIGINS = buildAllowedOrigins(hostname, port);
+
+  // Update globals
+  globalThis.__serverHostname = hostname;
+  globalThis.__serverPort = port;
+  globalThis.__serverConfig = serverConfig;
 
   const server = http.createServer(async (req, res) => {
+    // Token auth middleware for remote requests
+    if (!verifyToken(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Unauthorized: invalid or missing token' }));
+      return;
+    }
     try {
       const parsedUrl = parse(req.url || '/', true);
       await nextHandler(req, res, parsedUrl);
@@ -72,6 +198,7 @@ async function main() {
   const wssTerminal = new WebSocketServer({ noServer: true });
   const wssClaude = new WebSocketServer({ noServer: true });
   const wssFiles = new WebSocketServer({ noServer: true });
+  wsServers = [wssTerminal, wssClaude, wssFiles];
 
   // Lazy-load handlers to avoid module loading cost in tests
   const loadHandler = async (name) => {
@@ -95,8 +222,8 @@ async function main() {
   });
 
   // Heartbeat: ping clients every 29s, terminate stale ones
-  const heartbeat = setInterval(() => {
-    [wssTerminal, wssClaude, wssFiles].forEach((wss) => {
+  heartbeatInterval = setInterval(() => {
+    wsServers.forEach((wss) => {
       wss.clients.forEach((client) => {
         if (client.isAlive === false) {
           try {
@@ -153,6 +280,13 @@ async function main() {
       return;
     }
 
+    // Token check for application WebSockets
+    if (!verifyToken(req)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
     if (pathname === '/ws/terminal') {
       wssTerminal.handleUpgrade(req, socket, head, (ws) => {
         wssTerminal.emit('connection', ws, req);
@@ -171,30 +305,106 @@ async function main() {
     }
   });
 
-  server.listen(port, hostname, () => {
-    dbg.info(`ClaudeGUI ready on http://${hostname}:${port} (mode=${dev ? 'dev' : 'prod'})`);
-  });
+  return new Promise((resolve) => {
+    server.listen(port, hostname, () => {
+      currentServer = server;
+      dbg.info(`ClaudeGUI ready on http://${hostname}:${port} (mode=${dev ? 'dev' : 'prod'}, remote=${serverConfig.remoteAccess})`);
 
-  const shutdown = () => {
-    dbg.info('shutting down');
-    clearInterval(heartbeat);
-    [wssTerminal, wssClaude, wssFiles].forEach((wss) => {
-      wss.clients.forEach((client) => {
-        try {
-          client.close();
-        } catch {
-          /* ignore */
+      if (serverConfig.remoteAccess) {
+        if (serverConfig.remoteAccessToken) {
+          dbg.info('Remote access enabled with token authentication');
+        } else {
+          dbg.warn('⚠ Remote access enabled WITHOUT token — any network client can connect!');
         }
-      });
-      wss.close();
-    });
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5_000).unref();
-  };
+      }
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+      resolve();
+    });
+  });
 }
+
+// ---------------------------------------------------------------------------
+// In-process restart (close HTTP + WS, reload config, re-listen)
+// ---------------------------------------------------------------------------
+
+let _nextHandler = null;
+let _upgradeHandler = null;
+let _restarting = false;
+
+async function restartServer() {
+  if (_restarting) return;
+  _restarting = true;
+
+  dbg.info('Restarting server (in-process)...');
+
+  // 1. Clear heartbeat
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+
+  // 2. Close all WebSocket connections gracefully
+  wsServers.forEach((wss) => {
+    wss.clients.forEach((client) => {
+      try { client.close(1012, 'Server restarting'); } catch { /* ignore */ }
+    });
+    wss.close();
+  });
+  wsServers = [];
+
+  // 3. Close HTTP server
+  if (currentServer) {
+    await new Promise((resolve) => {
+      currentServer.close(() => resolve());
+      // Force close after 3 seconds
+      setTimeout(resolve, 3000).unref();
+    });
+    currentServer = null;
+  }
+
+  // 4. Reload config and start new server
+  serverConfig = loadConfigSync();
+  hostname = resolveHostname();
+  ALLOWED_ORIGINS = buildAllowedOrigins(hostname, port);
+
+  if (!_nextHandler) {
+    _nextHandler = app.getRequestHandler();
+    _upgradeHandler = typeof app.getUpgradeHandler === 'function' ? app.getUpgradeHandler() : null;
+  }
+
+  await startServer(_nextHandler, _upgradeHandler);
+  _restarting = false;
+  dbg.info('Server restart complete');
+}
+
+// Expose restart function to API routes
+globalThis.__restartServer = restartServer;
+
+// ---------------------------------------------------------------------------
+// Shutdown
+// ---------------------------------------------------------------------------
+
+const shutdown = () => {
+  dbg.info('shutting down');
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  wsServers.forEach((wss) => {
+    wss.clients.forEach((client) => {
+      try { client.close(); } catch { /* ignore */ }
+    });
+    wss.close();
+  });
+  if (currentServer) {
+    currentServer.close(() => process.exit(0));
+  }
+  setTimeout(() => process.exit(1), 5_000).unref();
+};
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
 
 main().catch((err) => {
   dbg.error('fatal error', err);
