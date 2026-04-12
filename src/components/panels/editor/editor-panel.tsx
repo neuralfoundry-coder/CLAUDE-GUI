@@ -1,31 +1,18 @@
 'use client';
 
 import { useEffect } from 'react';
+import { Loader2, Map } from 'lucide-react';
 import { EditorTabBar } from './editor-tab-bar';
 import { MonacoEditorWrapper } from './monaco-editor-wrapper';
 import { MonacoDiffWrapper } from './monaco-diff-wrapper';
 import { DiffAcceptBar } from './diff-accept-bar';
+import { EditorSettingsDropdown } from './editor-settings-dropdown';
 import { useEditorStore } from '@/stores/use-editor-store';
+import { useSettingsStore } from '@/stores/use-settings-store';
 import { useKeyboardShortcut } from '@/hooks/use-keyboard-shortcut';
 import { useFilesWebSocket } from '@/components/panels/file-explorer/use-files-websocket';
-
-function getLanguage(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, string> = {
-    ts: 'typescript',
-    tsx: 'typescript',
-    js: 'javascript',
-    jsx: 'javascript',
-    json: 'json',
-    md: 'markdown',
-    html: 'html',
-    css: 'css',
-    py: 'python',
-    go: 'go',
-    rs: 'rust',
-  };
-  return map[ext] ?? 'plaintext';
-}
+import { getLanguageFromPath, getLanguageDisplayName } from '@/lib/editor/language-map';
+import { cn } from '@/lib/utils';
 
 export function EditorPanel() {
   const activeTabId = useEditorStore((s) => s.activeTabId);
@@ -33,6 +20,11 @@ export function EditorPanel() {
   const saveFile = useEditorStore((s) => s.saveFile);
   const syncExternalChange = useEditorStore((s) => s.syncExternalChange);
   const tabs = useEditorStore((s) => s.tabs);
+  const cursorLine = useEditorStore((s) => s.cursorLine);
+  const cursorCol = useEditorStore((s) => s.cursorCol);
+  const completionLoading = useEditorStore((s) => s.completionLoading);
+  const minimapEnabled = useSettingsStore((s) => s.editorMinimapEnabled);
+  const toggleMinimap = useSettingsStore((s) => s.setEditorMinimapEnabled);
 
   useKeyboardShortcut([
     {
@@ -58,9 +50,46 @@ export function EditorPanel() {
   }, [activeTabId, tabs]);
 
   const showDiff = Boolean(activeTab?.diff);
+  const languageId = activeTab ? getLanguageFromPath(activeTab.path) : null;
+  const languageLabel = languageId ? getLanguageDisplayName(languageId) : null;
 
   return (
     <div className="flex h-full flex-col bg-background">
+      {/* Panel header */}
+      <div className="flex h-7 items-center justify-between border-b bg-muted px-3">
+        <span className="text-xs font-semibold uppercase text-muted-foreground">
+          Editor
+        </span>
+        <div className="flex items-center gap-2">
+          {completionLoading && (
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+          )}
+          {languageLabel && (
+            <span className="text-[10px] text-muted-foreground">{languageLabel}</span>
+          )}
+          {cursorLine != null && cursorCol != null && activeTab && (
+            <span className="text-[10px] text-muted-foreground">
+              Ln {cursorLine}, Col {cursorCol}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => toggleMinimap(!minimapEnabled)}
+            className={cn(
+              'flex items-center gap-1 rounded px-1 py-0.5 text-[10px] transition-colors',
+              minimapEnabled
+                ? 'bg-accent text-accent-foreground'
+                : 'text-muted-foreground hover:bg-accent/50',
+            )}
+            aria-label={minimapEnabled ? 'Hide minimap' : 'Show minimap'}
+            title={minimapEnabled ? 'Minimap ON' : 'Minimap OFF'}
+          >
+            <Map className="h-3 w-3" />
+          </button>
+          <EditorSettingsDropdown />
+        </div>
+      </div>
+
       <EditorTabBar />
       <DiffAcceptBar />
       <div className="flex-1 overflow-hidden">
@@ -72,7 +101,7 @@ export function EditorPanel() {
           <MonacoDiffWrapper
             original={activeTab.diff.original}
             modified={activeTab.diff.modified}
-            language={getLanguage(activeTab.path)}
+            language={getLanguageFromPath(activeTab.path)}
           />
         ) : (
           <MonacoEditorWrapper tabId={activeTabId} />

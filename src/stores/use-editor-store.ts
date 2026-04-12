@@ -32,9 +32,15 @@ interface EditorState {
   tabs: EditorTab[];
   activeTabId: string | null;
   pendingReveal: PendingReveal | null;
+  cursorLine: number | null;
+  cursorCol: number | null;
+  completionLoading: boolean;
   openFile: (path: string, opts?: { line?: number; col?: number }) => Promise<void>;
   clearPendingReveal: () => void;
   closeTab: (id: string) => void;
+  closeOtherTabs: (id: string) => void;
+  closeAllTabs: () => void;
+  closeTabsToTheRight: (id: string) => void;
   setActiveTab: (id: string) => void;
   updateContent: (id: string, content: string) => void;
   saveFile: (id: string) => Promise<void>;
@@ -45,6 +51,8 @@ interface EditorState {
   toggleHunk: (id: string, hunkId: string) => void;
   applyAcceptedHunks: (id: string) => void;
   syncExternalChange: (path: string) => Promise<void>;
+  setCursorPosition: (line: number, col: number) => void;
+  setCompletionLoading: (loading: boolean) => void;
   hasDirtyTabs: () => boolean;
   resetAll: () => void;
 }
@@ -59,6 +67,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   pendingReveal: null,
+  cursorLine: null,
+  cursorCol: null,
+  completionLoading: false,
 
   openFile: async (path, opts) => {
     const reveal = opts?.line
@@ -96,6 +107,26 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => {
       const next = s.tabs.filter((t) => t.id !== id);
       const activeTabId = s.activeTabId === id ? (next[next.length - 1]?.id ?? null) : s.activeTabId;
+      return { tabs: next, activeTabId };
+    }),
+
+  closeOtherTabs: (id) =>
+    set((s) => ({
+      tabs: s.tabs.filter((t) => t.id === id),
+      activeTabId: id,
+    })),
+
+  closeAllTabs: () =>
+    set({ tabs: [], activeTabId: null }),
+
+  closeTabsToTheRight: (id) =>
+    set((s) => {
+      const idx = s.tabs.findIndex((t) => t.id === id);
+      if (idx === -1) return s;
+      const next = s.tabs.slice(0, idx + 1);
+      const activeTabId = next.find((t) => t.id === s.activeTabId)
+        ? s.activeTabId
+        : next[next.length - 1]?.id ?? null;
       return { tabs: next, activeTabId };
     }),
 
@@ -222,7 +253,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
   },
 
+  setCursorPosition: (line, col) => set({ cursorLine: line, cursorCol: col }),
+
+  setCompletionLoading: (completionLoading) => set({ completionLoading }),
+
   hasDirtyTabs: () => get().tabs.some((t) => t.dirty),
 
-  resetAll: () => set({ tabs: [], activeTabId: null }),
+  resetAll: () => set({ tabs: [], activeTabId: null, cursorLine: null, cursorCol: null }),
 }));

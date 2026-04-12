@@ -6,6 +6,9 @@ import type { OnChange, OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
+import { useSettingsStore } from '@/stores/use-settings-store';
+import { getLanguageFromPath } from '@/lib/editor/language-map';
+import { registerClaudeCompletionProvider } from './claude-completion-provider';
 
 /**
  * Module-level reference to the currently mounted Monaco editor so that
@@ -36,31 +39,24 @@ export function getActiveEditorSelectionOrLine(): string {
   return model.getValueInRange(sel);
 }
 
-const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
-
-function getLanguage(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  const map: Record<string, string> = {
-    ts: 'typescript',
-    tsx: 'typescript',
-    js: 'javascript',
-    jsx: 'javascript',
-    json: 'json',
-    md: 'markdown',
-    markdown: 'markdown',
-    html: 'html',
-    css: 'css',
-    scss: 'scss',
-    py: 'python',
-    go: 'go',
-    rs: 'rust',
-    yml: 'yaml',
-    yaml: 'yaml',
-    sh: 'shell',
-    bash: 'shell',
-  };
-  return map[ext] ?? 'plaintext';
-}
+const Editor = dynamic(() => import('@monaco-editor/react'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full w-full flex-col bg-background">
+      <div className="flex flex-col gap-1 p-4">
+        {Array.from({ length: 12 }, (_, i) => (
+          <div key={i} className="flex items-center gap-3">
+            <span className="w-6 text-right text-xs text-muted-foreground/30">{i + 1}</span>
+            <div
+              className="h-3 animate-pulse rounded bg-muted-foreground/10"
+              style={{ width: `${30 + ((i * 37) % 50)}%` }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  ),
+});
 
 interface MonacoEditorWrapperProps {
   tabId: string;
@@ -71,8 +67,19 @@ export function MonacoEditorWrapper({ tabId }: MonacoEditorWrapperProps) {
   const updateContent = useEditorStore((s) => s.updateContent);
   const pendingReveal = useEditorStore((s) => s.pendingReveal);
   const clearPendingReveal = useEditorStore((s) => s.clearPendingReveal);
+  const setCursorPosition = useEditorStore((s) => s.setCursorPosition);
   const theme = useLayoutStore((s) => s.theme);
   const fontSize = useLayoutStore((s) => s.fontSize);
+
+  // Editor settings from settings store
+  const wordWrap = useSettingsStore((s) => s.editorWordWrap);
+  const tabSize = useSettingsStore((s) => s.editorTabSize);
+  const useSpaces = useSettingsStore((s) => s.editorUseSpaces);
+  const minimapEnabled = useSettingsStore((s) => s.editorMinimapEnabled);
+  const renderWhitespace = useSettingsStore((s) => s.editorRenderWhitespace);
+  const stickyScroll = useSettingsStore((s) => s.editorStickyScroll);
+  const bracketColors = useSettingsStore((s) => s.editorBracketColors);
+
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
 
   // Apply reveal requests coming from the terminal link provider, etc.
@@ -103,26 +110,95 @@ export function MonacoEditorWrapper({ tabId }: MonacoEditorWrapperProps) {
     if (value !== undefined) updateContent(tab.id, value);
   };
 
-  const onMount: OnMount = (editor) => {
+  const onMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     activeMonacoEditor = editor;
+
+    // Track cursor position for the header bar
+    editor.onDidChangeCursorPosition((e) => {
+      setCursorPosition(e.position.lineNumber, e.position.column);
+    });
+
+    // Report initial cursor position
+    const pos = editor.getPosition();
+    if (pos) {
+      setCursorPosition(pos.lineNumber, pos.column);
+    }
+
+    // Register Claude inline completion provider (once)
+    registerClaudeCompletionProvider(monaco);
+
+    // Alt+Z: Toggle word wrap
+    editor.addAction({
+      id: 'claudegui.toggleWordWrap',
+      label: 'Toggle Word Wrap',
+      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyZ],
+      run: () => {
+        const current = useSettingsStore.getState().editorWordWrap;
+        useSettingsStore.getState().setEditorWordWrap(!current);
+      },
+    });
   };
 
   return (
     <Editor
       key={tabId}
       path={tab.path}
-      language={getLanguage(tab.path)}
+      language={getLanguageFromPath(tab.path)}
       value={tab.content}
       theme={theme === 'light' ? 'light' : 'vs-dark'}
       options={{
         fontSize,
-        minimap: { enabled: true },
         fontFamily: 'JetBrains Mono, Menlo, monospace',
         readOnly: tab.locked,
         automaticLayout: true,
         scrollBeyondLastLine: false,
-        tabSize: 2,
+
+        // Tab / indentation
+        tabSize,
+        insertSpaces: useSpaces,
+        detectIndentation: true,
+
+        // Minimap
+        minimap: { enabled: minimapEnabled },
+
+        // Bracket matching & colorization
+        autoClosingBrackets: 'always',
+        autoClosingQuotes: 'always',
+        bracketPairColorization: { enabled: bracketColors },
+        guides: { bracketPairs: true, indentation: true },
+
+        // Code folding
+        folding: true,
+        foldingStrategy: 'indentation',
+        showFoldingControls: 'mouseover',
+
+        // Find & replace
+        find: {
+          addExtraSpaceOnTop: true,
+          seedSearchStringFromSelection: 'selection',
+        },
+
+        // Word wrap
+        wordWrap: wordWrap ? 'on' : 'off',
+
+        // Multi-cursor
+        multiCursorModifier: 'alt',
+
+        // Scrolling
+        smoothScrolling: true,
+
+        // Linked editing (rename)
+        linkedEditing: true,
+
+        // Sticky scroll (current scope header)
+        stickyScroll: { enabled: stickyScroll },
+
+        // Rendering
+        renderWhitespace,
+        renderLineHighlight: 'all',
+        cursorBlinking: 'smooth',
+        cursorSmoothCaretAnimation: 'on',
       }}
       onChange={onChange}
       onMount={onMount}
