@@ -163,6 +163,16 @@ if [ "\${1:-}" = "--project" ]; then
   export PROJECT_ROOT="\$2"
   shift 2
 fi
+# Kill any existing process on the target port for a clean start.
+if command -v lsof >/dev/null 2>&1; then
+  _PIDS=\$(lsof -ti tcp:"\$PORT" 2>/dev/null || true)
+  if [ -n "\$_PIDS" ]; then
+    kill -TERM \$_PIDS 2>/dev/null || true
+    sleep 0.5
+    kill -KILL \$_PIDS 2>/dev/null || true
+    sleep 0.3
+  fi
+fi
 cd "$INSTALL_DIR"
 exec node server.js "\$@"
 LAUNCHER_EOF
@@ -241,6 +251,20 @@ BANNER
 cd "\$INSTALL_DIR"
 export NODE_ENV=production
 export PORT
+
+# Kill any existing process on the target port for a clean start.
+if command -v lsof >/dev/null 2>&1; then
+  EXISTING_PIDS=\$(lsof -ti tcp:"\$PORT" 2>/dev/null || true)
+  if [ -n "\$EXISTING_PIDS" ]; then
+    printf '[claudegui] killing existing process on port %s (pid: %s)\n' "\$PORT" "\$EXISTING_PIDS"
+    # shellcheck disable=SC2086
+    kill -TERM \$EXISTING_PIDS 2>/dev/null || true
+    sleep 0.5
+    # shellcheck disable=SC2086
+    kill -KILL \$EXISTING_PIDS 2>/dev/null || true
+    sleep 0.3
+  fi
+fi
 
 # Background opener: poll for readiness, then open default browser.
 (

@@ -80,7 +80,7 @@ SERVER OPTIONS:
   --host <addr>        Bind host (default: 127.0.0.1, env: HOST)
   --port <n>           Bind port (default: 3000, env: PORT)
   --project <path>     Initial PROJECT_ROOT (absolute, ~ expansion supported)
-  --kill-port          Kill any process currently bound to --port before start
+  --kill-port          (no-op, kept for compat — port is always reclaimed)
 
 DEBUG OPTIONS:
   --debug <modules>    Comma-separated module filter. Available modules:
@@ -358,11 +358,12 @@ if [ "$DO_RESTART" -eq 1 ]; then
   cmd_stop || true
 fi
 
-# Guard: a running instance blocks a new background launch
+# Guard: stop any existing background instance before launching a new one
 if [ "$BACKGROUND" -eq 1 ]; then
   EXISTING_PID=$(read_pid)
   if is_alive "$EXISTING_PID"; then
-    die "already running (pid $EXISTING_PID). Use --stop, --restart, or --status."
+    warn "stopping existing instance (pid $EXISTING_PID) for clean start"
+    cmd_stop || true
   fi
   [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
 fi
@@ -372,21 +373,21 @@ if [ "$BACKGROUND" -eq 1 ] && [ "$INSPECT_BRK" -eq 1 ]; then
   warn "--inspect-brk with --background: debugger will wait silently for attach"
 fi
 
-# ----- kill port ------------------------------------------------------------
-if [ "$KILL_PORT" -eq 1 ]; then
-  if command -v lsof >/dev/null 2>&1; then
-    PIDS=$(lsof -ti tcp:"$PORT_OPT" 2>/dev/null || true)
-    if [ -n "$PIDS" ]; then
-      warn "killing existing process on port $PORT_OPT: $PIDS"
-      # shellcheck disable=SC2086
-      kill -TERM $PIDS 2>/dev/null || true
-      sleep 0.5
-      # shellcheck disable=SC2086
-      kill -KILL $PIDS 2>/dev/null || true
-    fi
-  else
-    warn "lsof not available, cannot --kill-port"
+# ----- kill port (always) ---------------------------------------------------
+# Always kill any existing process on the target port to ensure a clean start.
+if command -v lsof >/dev/null 2>&1; then
+  PIDS=$(lsof -ti tcp:"$PORT_OPT" 2>/dev/null || true)
+  if [ -n "$PIDS" ]; then
+    warn "killing existing process on port $PORT_OPT: $PIDS"
+    # shellcheck disable=SC2086
+    kill -TERM $PIDS 2>/dev/null || true
+    sleep 0.5
+    # shellcheck disable=SC2086
+    kill -KILL $PIDS 2>/dev/null || true
+    sleep 0.3
   fi
+else
+  warn "lsof not available, cannot check for existing process on port $PORT_OPT"
 fi
 
 # ----- clean ----------------------------------------------------------------
