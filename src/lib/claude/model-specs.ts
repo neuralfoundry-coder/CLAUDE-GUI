@@ -1,6 +1,7 @@
 export interface ModelSpec {
   id: string;
   displayName: string;
+  description: string;
   contextWindow: number;
   maxOutput: number;
   inputPricePer1M: number;
@@ -8,11 +9,20 @@ export interface ModelSpec {
   capabilities: string[];
 }
 
+/**
+ * Model specs aligned with Claude Code `/model` command output.
+ *
+ * Context windows & pricing sourced from Anthropic's public documentation.
+ * - Opus 4.6:  1M context (Claude Code default), $15/$75 per 1M tokens
+ * - Sonnet 4.6: 200K context, $3/$15 per 1M tokens
+ * - Haiku 4.5: 200K context, $0.80/$4 per 1M tokens
+ */
 export const MODEL_SPECS: ModelSpec[] = [
   {
     id: 'claude-opus-4-6',
-    displayName: 'Opus 4',
-    contextWindow: 200_000,
+    displayName: 'Opus 4.6',
+    description: 'Most capable for complex work',
+    contextWindow: 1_000_000,
     maxOutput: 32_000,
     inputPricePer1M: 15,
     outputPricePer1M: 75,
@@ -20,7 +30,8 @@ export const MODEL_SPECS: ModelSpec[] = [
   },
   {
     id: 'claude-sonnet-4-6',
-    displayName: 'Sonnet 4',
+    displayName: 'Sonnet 4.6',
+    description: 'Best for everyday tasks',
     contextWindow: 200_000,
     maxOutput: 16_000,
     inputPricePer1M: 3,
@@ -30,6 +41,7 @@ export const MODEL_SPECS: ModelSpec[] = [
   {
     id: 'claude-haiku-4-5-20251001',
     displayName: 'Haiku 4.5',
+    description: 'Fastest for quick answers',
     contextWindow: 200_000,
     maxOutput: 8_192,
     inputPricePer1M: 0.8,

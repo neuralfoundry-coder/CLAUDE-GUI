@@ -6,6 +6,7 @@ import {
   isToolAllowedBySettings,
   isToolDeniedBySettings,
 } from '../src/lib/claude/settings-manager.mjs';
+import { intentRegistry } from './prompt-templates/registry.mjs';
 
 const dbg = createDebug('claude');
 
@@ -188,7 +189,7 @@ export default async function claudeHandler(ws, _req) {
   };
 
   const runQuery = async (msg) => {
-    const { requestId, prompt, sessionId, options = {} } = msg;
+    const { requestId, prompt, sessionId, intent, options = {} } = msg;
     const abort = new AbortController();
     currentAbort = abort;
 
@@ -206,6 +207,18 @@ export default async function claudeHandler(ws, _req) {
     }
     dbg.info('query start', { requestId, sessionId: sessionId ?? '(new)', cwd });
 
+    // Resolve augmented prompt via intent registry if applicable
+    let finalPrompt = prompt;
+    if (intent?.type && intentRegistry[intent.type]) {
+      try {
+        const mod = await intentRegistry[intent.type]();
+        finalPrompt = mod.buildSlidePrompt(prompt, intent.preferences);
+        dbg.info('intent prompt injected', { type: intent.type });
+      } catch (err) {
+        dbg.warn('intent prompt injection failed, using raw prompt', err);
+      }
+    }
+
     try {
       const queryOptions = {
         cwd,
@@ -217,7 +230,7 @@ export default async function claudeHandler(ws, _req) {
         ...(options.model ? { model: options.model } : {}),
       };
 
-      const stream = sdk.query({ prompt, options: queryOptions });
+      const stream = sdk.query({ prompt: finalPrompt, options: queryOptions });
 
       for await (const event of stream) {
         if (abort.signal.aborted) break;

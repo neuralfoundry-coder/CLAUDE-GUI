@@ -41,7 +41,10 @@ class ClaudeClient {
     this.ws.sendJson(msg);
   }
 
-  sendQuery(prompt: string): string {
+  sendQuery(
+    prompt: string,
+    intent?: { type: string; preferences?: Record<string, unknown> },
+  ): string {
     const requestId = `q-${Date.now()}`;
     const activeId = useClaudeStore.getState().activeSessionId ?? undefined;
     // Fork pseudo-ids start with "fork-of-" and signal: begin a fresh SDK
@@ -56,6 +59,7 @@ class ClaudeClient {
       requestId,
       prompt,
       sessionId,
+      ...(intent ? { intent } : {}),
       ...(selectedModel ? { options: { model: selectedModel } } : {}),
     });
     return requestId;

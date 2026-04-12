@@ -24,7 +24,9 @@ function ToolUseMessage({ message }: { message: ChatMessage }) {
         className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left"
         onClick={() => setExpanded((v) => !v)}
       >
-        {expanded ? (
+        {message.isStreaming ? (
+          <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+        ) : expanded ? (
           <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
         ) : (
           <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -32,8 +34,13 @@ function ToolUseMessage({ message }: { message: ChatMessage }) {
         <span className="font-mono text-[10px] font-semibold uppercase text-muted-foreground">
           {message.toolName ?? 'tool'}
         </span>
+        {message.isStreaming && (
+          <span className="text-[10px] text-muted-foreground/70">
+            {message.content}
+          </span>
+        )}
       </button>
-      {expanded && (
+      {expanded && !message.isStreaming && (
         <pre className="max-h-60 overflow-auto border-t border-accent/50 px-3 py-2 text-[10px] font-mono text-muted-foreground">
           {inputStr}
         </pre>

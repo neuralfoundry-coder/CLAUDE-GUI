@@ -43,6 +43,10 @@ export interface ClaudeQueryMessage {
   requestId: string;
   prompt: string;
   sessionId?: string;
+  intent?: {
+    type: string;
+    preferences?: Record<string, unknown>;
+  };
   options?: {
     maxTurns?: number;
     maxBudget?: number;

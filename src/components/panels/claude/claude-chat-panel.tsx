@@ -19,6 +19,21 @@ import {
   useFileMentions,
 } from './use-file-mentions';
 import { MentionPopover } from './mention-popover';
+import { detectIntent } from '@/lib/claude/intent-detector';
+import { SlidePreferencesDialog } from './slide-preferences-dialog';
+import type { SlidePreferences } from '@/types/intent';
+import {
+  detectSlashCommand,
+  filterSlashCommands,
+  resolveSlashCommand,
+  type SlashCommand,
+} from '@/lib/claude/slash-commands';
+import { SlashCommandPopover } from './slash-command-popover';
+import { useSettingsStore } from '@/stores/use-settings-store';
+import { findModelSpec } from '@/lib/claude/model-specs';
+import { useChatDrop } from './use-chat-drop';
+import { DropOverlay } from './drop-overlay';
+import { AttachedFilesBar } from './attached-files-bar';
 
 export function ClaudeChatPanel() {
   const [input, setInput] = useState('');
@@ -26,6 +41,10 @@ export function ClaudeChatPanel() {
   const [mentionStart, setMentionStart] = useState<number | null>(null);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
+  const [showSlideDialog, setShowSlideDialog] = useState(false);
+  const [pendingSlidePrompt, setPendingSlidePrompt] = useState<string | null>(null);
+  const [slashQuery, setSlashQuery] = useState<string | null>(null);
+  const [slashIndex, setSlashIndex] = useState(0);
   const messages = useClaudeStore((s) => s.messages);
   const messageFilter = useClaudeStore((s) => s.messageFilter);
   const isStreaming = useClaudeStore((s) => s.isStreaming);
@@ -41,12 +60,171 @@ export function ClaudeChatPanel() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { entries: mentionEntries } = useFileMentions();
 
+  const insertReferences = useCallback((paths: string[]) => {
+    const refs = paths.map((p) => `@${p}`).join(' ');
+    setInput((prev) => {
+      const needsSpace = prev.length > 0 && !prev.endsWith(' ') && !prev.endsWith('\n');
+      return (needsSpace ? prev + ' ' : prev) + refs + ' ';
+    });
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
+
+  const {
+    pendingFiles,
+    uploading,
+    isDragOver,
+    onDragEnter,
+    onDragOver,
+    onDragLeave,
+    onDrop,
+    onPaste,
+    removePendingFile,
+    clearPending,
+  } = useChatDrop({ insertReferences });
+
   const mentionCandidates = useMemo(() => {
     if (mentionStart === null) return [];
     return filterMentionCandidates(mentionEntries, mentionQuery);
   }, [mentionStart, mentionQuery, mentionEntries]);
 
   const mentionOpen = mentionStart !== null && mentionCandidates.length > 0;
+
+  const slashCandidates = useMemo(() => {
+    if (slashQuery === null) return [];
+    return filterSlashCommands(slashQuery);
+  }, [slashQuery]);
+  const slashOpen = slashQuery !== null && slashCandidates.length > 0;
+
+  useEffect(() => {
+    if (slashIndex >= slashCandidates.length) {
+      setSlashIndex(0);
+    }
+  }, [slashCandidates.length, slashIndex]);
+
+  const closeSlash = () => {
+    setSlashQuery(null);
+    setSlashIndex(0);
+  };
+
+  const pushSystemMessage = useCallback((content: string) => {
+    useClaudeStore.setState((s) => ({
+      messages: [
+        ...s.messages,
+        {
+          id: `sys-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          role: 'system' as const,
+          kind: 'system' as const,
+          content,
+          timestamp: Date.now(),
+        },
+      ],
+    }));
+  }, []);
+
+  const executeSlashCommand = useCallback(
+    (cmd: SlashCommand, fullInput: string) => {
+      if (cmd.handler === 'passthrough') {
+        getClaudeClient().sendQuery(fullInput);
+        return;
+      }
+
+      // Client-side commands
+      switch (cmd.name) {
+        case '/clear':
+        case '/new': {
+          reset();
+          break;
+        }
+        case '/help': {
+          const lines = [
+            '**Available slash commands:**',
+            '',
+            '| Command | Description |',
+            '|---------|-------------|',
+            '| `/clear` | Clear chat and start fresh |',
+            '| `/new` | Start a new Claude session |',
+            '| `/compact` | Compact conversation context |',
+            '| `/usage` | Show token usage and cost |',
+            '| `/context` | Show context window usage |',
+            '| `/cost` | Show session cost breakdown |',
+            '| `/model` | Show current model info |',
+            '| `/plan` | Ask Claude to create a plan |',
+            '| `/review` | Ask Claude to review changes |',
+            '| `/help` | Show this help message |',
+            '',
+            'Type `@` to reference files. Use `Cmd+K` for the command palette.',
+          ];
+          pushSystemMessage(lines.join('\n'));
+          break;
+        }
+        case '/usage': {
+          const sid = useClaudeStore.getState().activeSessionId;
+          const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
+          if (!stats) {
+            pushSystemMessage('No active session. Start a conversation first.');
+            break;
+          }
+          const fmt = (n: number) =>
+            n >= 1_000_000
+              ? `${(n / 1_000_000).toFixed(1)}M`
+              : n >= 1_000
+                ? `${(n / 1_000).toFixed(1)}k`
+                : String(n);
+          const lines = [
+            `**Token Usage** (session \`${sid?.slice(0, 8)}…\`)`,
+            '',
+            `- **Input tokens:** ${fmt(stats.inputTokens)}`,
+            `- **Output tokens:** ${fmt(stats.outputTokens)}`,
+            `- **Cache read:** ${fmt(stats.cacheReadTokens)}`,
+            `- **Total tokens:** ${fmt(stats.inputTokens + stats.outputTokens)}`,
+            `- **Turns:** ${stats.numTurns ?? '-'}`,
+          ];
+          pushSystemMessage(lines.join('\n'));
+          break;
+        }
+        case '/cost': {
+          const sid = useClaudeStore.getState().activeSessionId;
+          const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
+          const totalCost = useClaudeStore.getState().totalCost;
+          const lines = [
+            '**Cost Summary**',
+            '',
+            `- **Session cost:** $${(stats?.costUsd ?? 0).toFixed(4)}`,
+            `- **Total cost (all sessions):** $${totalCost.toFixed(4)}`,
+          ];
+          pushSystemMessage(lines.join('\n'));
+          break;
+        }
+        case '/model': {
+          const sid = useClaudeStore.getState().activeSessionId;
+          const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
+          const selectedModel = useSettingsStore.getState().selectedModel;
+          const modelId = stats?.model ?? selectedModel ?? 'auto';
+          const spec = findModelSpec(modelId);
+          const lines = [
+            `**Current Model:** \`${modelId}\``,
+            '',
+          ];
+          if (spec) {
+            lines.push(
+              `- **Context window:** ${(spec.contextWindow / 1000)}k tokens`,
+              `- **Max output:** ${(spec.maxOutput / 1000)}k tokens`,
+              `- **Price:** $${spec.inputPricePer1M}/M input, $${spec.outputPricePer1M}/M output`,
+            );
+            if (spec.capabilities.length > 0) {
+              lines.push(`- **Capabilities:** ${spec.capabilities.join(', ')}`);
+            }
+          }
+          lines.push('', 'Use the model selector in the header to change models.');
+          pushSystemMessage(lines.join('\n'));
+          break;
+        }
+        default:
+          pushSystemMessage(`Unknown command: ${cmd.name}`);
+      }
+    },
+    [reset, pushSystemMessage],
+  );
 
   // Track whether the user has scrolled away from the bottom so we can
   // auto-scroll only when they are near the end.
@@ -102,6 +280,13 @@ export function ClaudeChatPanel() {
     const value = e.target.value;
     const cursor = e.target.selectionStart ?? value.length;
     setInput(value);
+    // Slash command detection (only at start of input)
+    const sq = detectSlashCommand(value);
+    if (sq !== null) {
+      setSlashQuery(sq);
+    } else {
+      closeSlash();
+    }
     syncMentionFromCursor(value, cursor);
   };
 
@@ -126,11 +311,69 @@ export function ClaudeChatPanel() {
     });
   };
 
+  const acceptSlashCommand = useCallback(
+    (cmd: SlashCommand) => {
+      setInput('');
+      closeSlash();
+      closeMention();
+      executeSlashCommand(cmd, cmd.name);
+    },
+    [executeSlashCommand],
+  );
+
   const onSend = () => {
     if (!input.trim() || isStreaming) return;
-    getClaudeClient().sendQuery(input.trim());
+    const trimmed = input.trim();
+
+    // Check if it's a slash command
+    const cmd = resolveSlashCommand(trimmed);
+    if (cmd) {
+      setInput('');
+      closeSlash();
+      closeMention();
+      executeSlashCommand(cmd, trimmed);
+      return;
+    }
+
+    const intent = detectIntent(trimmed);
+    if (intent === 'slides') {
+      setPendingSlidePrompt(trimmed);
+      setShowSlideDialog(true);
+      setInput('');
+      closeMention();
+      return;
+    }
+    getClaudeClient().sendQuery(trimmed);
     setInput('');
     closeMention();
+    closeSlash();
+    clearPending();
+  };
+
+  const handleSlideSubmit = (preferences: SlidePreferences) => {
+    if (!pendingSlidePrompt) return;
+    getClaudeClient().sendQuery(pendingSlidePrompt, {
+      type: 'slides',
+      preferences: preferences as unknown as Record<string, unknown>,
+    });
+    setShowSlideDialog(false);
+    setPendingSlidePrompt(null);
+  };
+
+  const handleSlideSkip = () => {
+    if (!pendingSlidePrompt) return;
+    getClaudeClient().sendQuery(pendingSlidePrompt, {
+      type: 'slides',
+      preferences: { purpose: '일반', textSize: 'medium', colorTone: 'deep-navy' },
+    });
+    setShowSlideDialog(false);
+    setPendingSlidePrompt(null);
+  };
+
+  const handleSlideCancel = () => {
+    if (pendingSlidePrompt) setInput(pendingSlidePrompt);
+    setShowSlideDialog(false);
+    setPendingSlidePrompt(null);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -138,6 +381,39 @@ export function ClaudeChatPanel() {
     // Enter commits the composition. Treating it as submit would send the
     // text without the last composing char and leave that char in the box.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (slashOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % slashCandidates.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSlashIndex((i) => (i - 1 + slashCandidates.length) % slashCandidates.length);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const chosen = slashCandidates[slashIndex];
+        if (chosen) {
+          // Fill the input with the command name so the user can add args or just press Enter
+          setInput(chosen.name + ' ');
+          closeSlash();
+        }
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const chosen = slashCandidates[slashIndex];
+        if (chosen) acceptSlashCommand(chosen);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeSlash();
+        return;
+      }
+    }
     if (mentionOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -173,11 +449,21 @@ export function ClaudeChatPanel() {
   };
 
   const onBlur = () => {
-    setTimeout(closeMention, 150);
+    setTimeout(() => {
+      closeMention();
+      closeSlash();
+    }, 150);
   };
 
   return (
-    <div className="flex h-full flex-col border-l bg-background">
+    <div
+      className="relative flex h-full flex-col border-l bg-background"
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <DropOverlay visible={isDragOver} />
       <div className="flex h-7 items-center justify-between border-b bg-muted px-2">
         <div className="flex items-center gap-1.5">
           <span className="text-xs font-semibold uppercase text-muted-foreground">Claude</span>
@@ -234,7 +520,7 @@ export function ClaudeChatPanel() {
       >
         {filteredMessages.length === 0 ? (
           <div className="flex h-full items-center justify-center p-3 text-center text-xs text-muted-foreground">
-            Ask Claude to edit files, write code, or create presentations.
+            Ask Claude to edit files, write code, or create presentations. Type / for commands.
           </div>
         ) : (
           <div
@@ -287,9 +573,19 @@ export function ClaudeChatPanel() {
 
       <SessionInfoBar />
 
+      <AttachedFilesBar files={pendingFiles} onRemove={removePendingFile} />
+
       <div className="border-t p-2">
         <div className="flex items-start gap-2">
           <div className="relative flex-1">
+            {slashOpen && !mentionOpen && (
+              <SlashCommandPopover
+                commands={slashCandidates}
+                activeIndex={slashIndex}
+                onSelect={acceptSlashCommand}
+                onHover={setSlashIndex}
+              />
+            )}
             {mentionOpen && (
               <MentionPopover
                 items={mentionCandidates}
@@ -305,10 +601,11 @@ export function ClaudeChatPanel() {
               onKeyDown={onKeyDown}
               onSelect={onSelect}
               onBlur={onBlur}
-              placeholder="Ask Claude... (type @ to reference a file)"
+              onPaste={onPaste}
+              placeholder="Ask Claude... (@ files, / commands, drop files)"
               aria-label="Claude prompt input"
               aria-autocomplete="list"
-              aria-expanded={mentionOpen}
+              aria-expanded={mentionOpen || slashOpen}
               rows={2}
               className="w-full resize-none rounded-md border bg-background p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
             />
@@ -316,7 +613,7 @@ export function ClaudeChatPanel() {
           <Button
             size="icon"
             onClick={onSend}
-            disabled={isStreaming || !input.trim()}
+            disabled={isStreaming || uploading || !input.trim()}
             aria-label={isStreaming ? 'Stop' : 'Send prompt'}
           >
             {isStreaming ? (
@@ -329,6 +626,13 @@ export function ClaudeChatPanel() {
       </div>
 
       <SessionList open={sessionListOpen} onOpenChange={setSessionListOpen} />
+
+      <SlidePreferencesDialog
+        open={showSlideDialog}
+        onSubmit={handleSlideSubmit}
+        onSkip={handleSlideSkip}
+        onCancel={handleSlideCancel}
+      />
     </div>
   );
 }

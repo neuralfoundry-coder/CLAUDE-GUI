@@ -79,6 +79,27 @@ interface SdkSystemMessage {
   model?: string;
 }
 
+/** Raw Anthropic API stream event, forwarded by the SDK as `type: 'stream_event'`. */
+interface SdkPartialAssistantMessage {
+  type: 'stream_event';
+  event: {
+    type: string;
+    index?: number;
+    delta?: { type: string; text?: string; partial_json?: string };
+    content_block?: { type: string; id?: string; name?: string; input?: unknown; text?: string };
+  };
+  session_id: string;
+}
+
+/** Tool execution progress, emitted while a tool is running. */
+interface SdkToolProgressMessage {
+  type: 'tool_progress';
+  tool_use_id: string;
+  tool_name: string;
+  elapsed_time_seconds: number;
+  session_id: string;
+}
+
 interface SdkModelUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -255,7 +276,101 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
   handleServerMessage: (msg) => {
     switch (msg.type) {
       case 'message': {
-        const data = (msg as { data: SdkAssistantMessage | SdkUserMessage | SdkSystemMessage }).data;
+        const data = (msg as { data: SdkAssistantMessage | SdkUserMessage | SdkSystemMessage | SdkPartialAssistantMessage | SdkToolProgressMessage }).data;
+
+        // ---- Per-token streaming via stream_event ----
+        if (data.type === 'stream_event') {
+          const partial = data as SdkPartialAssistantMessage;
+          const evt = partial.event;
+
+          // Handle text deltas (per-token)
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+            const deltaText = evt.delta.text;
+            const extractor = ensureExtractor(partial.session_id ?? 'stream');
+            extractor.feedText(deltaText);
+
+            set((s) => {
+              const prev = s.messages;
+              const last = prev[prev.length - 1];
+
+              if (last && last.role === 'assistant' && last.kind === 'text' && last.isStreaming) {
+                // Append delta to existing streaming message
+                const chunks = s.streamingChunks;
+                chunks.push(deltaText);
+                const content = chunks.join('');
+                const updated: ChatMessage = { ...last, content, timestamp: Date.now() };
+                const nextMessages = prev.slice(0, -1);
+                nextMessages.push(updated);
+                return {
+                  messages: nextMessages,
+                  streamingChunks: chunks,
+                  activeSessionId: partial.session_id ?? s.activeSessionId,
+                };
+              }
+
+              // First text delta — create new streaming message
+              const newId = nextId('a');
+              return {
+                messages: [
+                  ...prev,
+                  {
+                    id: newId,
+                    role: 'assistant' as const,
+                    kind: 'text' as const,
+                    content: deltaText,
+                    timestamp: Date.now(),
+                    isStreaming: true,
+                  },
+                ],
+                streamingChunks: [deltaText],
+                streamingMessageId: newId,
+                activeSessionId: partial.session_id ?? s.activeSessionId,
+              };
+            });
+          }
+
+          // Handle content_block_start for tool_use
+          if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+            const block = evt.content_block;
+            set((s) => ({
+              messages: [
+                ...s.messages,
+                {
+                  id: nextId('t'),
+                  role: 'tool' as const,
+                  kind: 'tool_use' as const,
+                  content: block.name ? `Running ${block.name}...` : 'Running tool...',
+                  toolName: block.name ?? 'unknown',
+                  toolInput: block.input,
+                  timestamp: Date.now(),
+                  isStreaming: true,
+                },
+              ],
+            }));
+          }
+
+          return;
+        }
+
+        // ---- Tool progress (elapsed time updates) ----
+        if (data.type === 'tool_progress') {
+          const progress = data as SdkToolProgressMessage;
+          set((s) => {
+            // Find the last tool message with matching name and update its content
+            const idx = s.messages.findLastIndex(
+              (m) => m.role === 'tool' && m.toolName === progress.tool_name && m.isStreaming,
+            );
+            if (idx < 0) return s;
+            const nextMessages: ChatMessage[] = s.messages.slice();
+            const existing = nextMessages[idx];
+            nextMessages[idx] = {
+              ...existing,
+              content: `Running ${progress.tool_name}... (${Math.round(progress.elapsed_time_seconds)}s)`,
+            } as ChatMessage;
+            return { messages: nextMessages };
+          });
+          return;
+        }
 
         if (data.type === 'system') {
           const sys = data as SdkSystemMessage;
@@ -283,7 +398,15 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           const asst = data as SdkAssistantMessage;
           const { text, tools } = extractContent(asst.message?.content);
           const extractor = ensureExtractor(asst.session_id ?? 'stream');
-          if (text) extractor.feedText(text);
+          // Only feed extractor if stream_event didn't already provide per-token text.
+          // Check: if we have a streaming message, stream_event already fed the extractor.
+          const alreadyStreamedViaDeltas = (() => {
+            const s = useClaudeStore.getState();
+            return s.streamingMessageId !== null;
+          })();
+          if (!alreadyStreamedViaDeltas) {
+            if (text) extractor.feedText(text);
+          }
           for (const tool of tools) {
             extractor.feedToolUse(tool);
           }
@@ -302,40 +425,22 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           set((s) => {
             const prev = s.messages;
             const last = prev[prev.length - 1];
-            const isAppend =
-              text && last && last.role === 'assistant' && last.kind === 'text' && last.isStreaming;
-
-            if (isAppend && tools.length === 0) {
-              // Fast path: streaming text only — accumulate into chunks array
-              // instead of copying the messages array + concatenating strings.
-              // The full content is joined only on stream end (result handler).
-              const chunks = s.streamingChunks;
-              chunks.push(text);
-              const content = chunks.join('\n');
-              const updated: ChatMessage = { ...last, content, timestamp: Date.now() };
-              const nextMessages = prev.slice(0, -1);
-              nextMessages.push(updated);
-              newAssistantMessageId = updated.id;
-              return {
-                messages: nextMessages,
-                streamingChunks: chunks,
-                activeSessionId: asst.session_id ?? s.activeSessionId,
-              };
-            }
+            const hasStreamingAssistant =
+              last && last.role === 'assistant' && last.kind === 'text' && last.isStreaming;
 
             const nextMessages = prev.slice();
             let nextChunks = s.streamingChunks;
             let nextStreamingId = s.streamingMessageId;
+
             if (text) {
-              if (isAppend) {
-                const chunks = s.streamingChunks;
-                chunks.push(text);
-                const content = chunks.join('\n');
-                const updated: ChatMessage = { ...last, content, timestamp: Date.now() };
+              if (hasStreamingAssistant) {
+                // Replace streaming message content with authoritative SDK text
+                const updated: ChatMessage = { ...last, content: text, timestamp: Date.now() };
                 nextMessages[nextMessages.length - 1] = updated;
                 newAssistantMessageId = updated.id;
-                nextChunks = chunks;
+                nextChunks = [text];
               } else {
+                // No stream_event deltas preceded this — create new message
                 newAssistantMessageId = nextId('a');
                 nextStreamingId = newAssistantMessageId;
                 nextChunks = [text];
@@ -349,16 +454,33 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
                 });
               }
             }
+
+            // Finalize any streaming tool_use messages and add authoritative tool blocks
             for (const tool of tools) {
-              nextMessages.push({
-                id: nextId('t'),
-                role: 'tool',
-                kind: 'tool_use',
-                content: JSON.stringify(tool.input).slice(0, 300),
-                toolName: tool.name,
-                toolInput: tool.input,
-                timestamp: Date.now(),
-              });
+              // Check if a streaming tool message already exists for this tool
+              const existingIdx = nextMessages.findLastIndex(
+                (m) => m.role === 'tool' && m.toolName === tool.name && m.isStreaming,
+              );
+              if (existingIdx >= 0) {
+                // Update existing streaming tool message with final input
+                const prev = nextMessages[existingIdx];
+                nextMessages[existingIdx] = {
+                  ...prev,
+                  content: JSON.stringify(tool.input).slice(0, 300),
+                  toolInput: tool.input,
+                  isStreaming: false,
+                } as ChatMessage;
+              } else {
+                nextMessages.push({
+                  id: nextId('t'),
+                  role: 'tool',
+                  kind: 'tool_use',
+                  content: JSON.stringify(tool.input).slice(0, 300),
+                  toolName: tool.name,
+                  toolInput: tool.input,
+                  timestamp: Date.now(),
+                });
+              }
             }
 
             return {
