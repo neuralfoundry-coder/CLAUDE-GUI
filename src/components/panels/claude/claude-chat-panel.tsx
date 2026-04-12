@@ -1,15 +1,18 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Send, Square, History, Plus, FileStack } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 import { useClaudeStore } from '@/stores/use-claude-store';
 import { useArtifactStore } from '@/stores/use-artifact-store';
 import { getClaudeClient } from '@/lib/websocket/claude-client';
 import type { ProjectFileItem } from '@/lib/fs/list-project-files';
 import { SessionList } from './session-list';
 import { SessionInfoBar } from './session-info-bar';
+import { ChatFilterBar } from './chat-filter-bar';
+import { ChatMessageItem } from './chat-message-item';
+import { ModelSelector } from './model-selector';
 import {
   detectMention,
   filterMentionCandidates,
@@ -24,8 +27,14 @@ export function ClaudeChatPanel() {
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
   const messages = useClaudeStore((s) => s.messages);
+  const messageFilter = useClaudeStore((s) => s.messageFilter);
   const isStreaming = useClaudeStore((s) => s.isStreaming);
   const reset = useClaudeStore((s) => s.reset);
+
+  const filteredMessages = useMemo(
+    () => messages.filter((m) => m.role === 'user' || messageFilter.has(m.kind)),
+    [messages, messageFilter],
+  );
   const artifactCount = useArtifactStore((s) => s.artifacts.length);
   const openArtifacts = useArtifactStore((s) => s.open);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -39,9 +48,33 @@ export function ClaudeChatPanel() {
 
   const mentionOpen = mentionStart !== null && mentionCandidates.length > 0;
 
+  // Track whether the user has scrolled away from the bottom so we can
+  // auto-scroll only when they are near the end.
+  const stickToBottom = useRef(true);
+
+  const virtualizer = useVirtualizer({
+    count: filteredMessages.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 60,
+    overscan: 5,
+  });
+
+  // Auto-scroll to bottom when new messages arrive (only if user is near the bottom).
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+    if (!stickToBottom.current || filteredMessages.length === 0) return;
+    // Use requestAnimationFrame so the DOM has time to paint the new items
+    // before we measure and scroll.
+    requestAnimationFrame(() => {
+      virtualizer.scrollToIndex(filteredMessages.length - 1, { align: 'end' });
+    });
+  }, [filteredMessages.length, virtualizer]);
+
+  const onScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Consider "at bottom" when within 80px of the end.
+    stickToBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+  }, []);
 
   useEffect(() => {
     if (mentionIndex >= mentionCandidates.length) {
@@ -146,7 +179,10 @@ export function ClaudeChatPanel() {
   return (
     <div className="flex h-full flex-col border-l bg-background">
       <div className="flex h-7 items-center justify-between border-b bg-muted px-2">
-        <span className="text-xs font-semibold uppercase text-muted-foreground">Claude</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-semibold uppercase text-muted-foreground">Claude</span>
+          <ModelSelector />
+        </div>
         <div className="flex items-center gap-0.5">
           <Button
             variant="ghost"
@@ -189,31 +225,62 @@ export function ClaudeChatPanel() {
         </div>
       </div>
 
-      <div ref={scrollRef} className="scrollbar-thin flex-1 overflow-y-auto p-3 text-sm">
-        {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-center text-xs text-muted-foreground">
+      <ChatFilterBar />
+
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="scrollbar-thin flex-1 overflow-y-auto text-sm"
+      >
+        {filteredMessages.length === 0 ? (
+          <div className="flex h-full items-center justify-center p-3 text-center text-xs text-muted-foreground">
             Ask Claude to edit files, write code, or create presentations.
           </div>
         ) : (
-          <div className="space-y-3">
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={cn(
-                  'rounded-md px-3 py-2 text-xs',
-                  m.role === 'user' && 'bg-primary/10',
-                  m.role === 'assistant' && 'bg-muted',
-                  m.role === 'tool' && 'border border-accent bg-accent/30',
-                )}
-              >
-                {m.role === 'tool' && (
-                  <div className="mb-1 font-mono text-[10px] uppercase text-muted-foreground">
-                    Tool: {m.toolName}
+          <div
+            style={{ height: virtualizer.getTotalSize(), position: 'relative', width: '100%' }}
+          >
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const m = filteredMessages[virtualRow.index]!;
+              return (
+                <div
+                  key={m.id}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                >
+                  <div className="px-3 py-1.5">
+                    <ChatMessageItem message={m} />
                   </div>
-                )}
-                <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                </div>
+              );
+            })}
+            {isStreaming && !messages.some((m) => m.isStreaming) && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualizer.getTotalSize()}px)`,
+                }}
+              >
+                <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+                  <span className="flex gap-0.5">
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:0ms]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:150ms]" />
+                    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:300ms]" />
+                  </span>
+                  Claude is thinking...
+                </div>
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>

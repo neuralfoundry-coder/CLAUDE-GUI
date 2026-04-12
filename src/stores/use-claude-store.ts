@@ -3,16 +3,21 @@
 import { create } from 'zustand';
 import type { ClaudeServerMessage } from '@/types/websocket';
 import { sessionsApi, type SessionHistoryMessage } from '@/lib/api-client';
-import { HtmlStreamExtractor } from '@/lib/claude/html-stream-extractor';
+import { UniversalStreamExtractor } from '@/lib/claude/universal-stream-extractor';
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { useArtifactStore } from '@/stores/use-artifact-store';
+
+export type MessageKind = 'text' | 'tool_use' | 'tool_result' | 'system' | 'error' | 'auto_decision';
 
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'system';
+  kind: MessageKind;
   content: string;
   timestamp: number;
   toolName?: string;
+  toolInput?: unknown;
+  isStreaming?: boolean;
 }
 
 export interface SessionStats {
@@ -118,8 +123,14 @@ function pickModelUsage(
   return best;
 }
 
+const ALL_MESSAGE_KINDS: MessageKind[] = ['text', 'tool_use', 'tool_result', 'system', 'error', 'auto_decision'];
+
 interface ClaudeState {
   messages: ChatMessage[];
+  /** Chunks accumulated during streaming — joined on stream end to avoid O(n²) string concat. */
+  streamingChunks: string[];
+  /** ID of the assistant message currently being streamed into. */
+  streamingMessageId: string | null;
   isStreaming: boolean;
   activeSessionId: string | null;
   pendingPermission: Extract<ClaudeServerMessage, { type: 'permission_request' }> | null;
@@ -127,6 +138,7 @@ interface ClaudeState {
   tokenUsage: { input: number; output: number };
   currentRequestId: string | null;
   sessionStats: Record<string, SessionStats>;
+  messageFilter: Set<MessageKind>;
 
   pushUserMessage: (content: string) => string;
   handleServerMessage: (msg: ClaudeServerMessage) => void;
@@ -134,6 +146,7 @@ interface ClaudeState {
   reset: () => void;
   setActiveSessionId: (id: string | null) => void;
   setStreaming: (streaming: boolean) => void;
+  toggleFilter: (kind: MessageKind) => void;
   loadSession: (id: string) => Promise<void>;
 }
 
@@ -161,9 +174,9 @@ function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${msgCounter}`;
 }
 
-let currentExtractor: HtmlStreamExtractor | null = null;
+let currentExtractor: UniversalStreamExtractor | null = null;
 
-async function fetchHtmlFile(filePath: string): Promise<string | null> {
+async function fetchFileContent(filePath: string): Promise<string | null> {
   try {
     const res = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
     if (!res.ok) return null;
@@ -175,28 +188,39 @@ async function fetchHtmlFile(filePath: string): Promise<string | null> {
   }
 }
 
-function ensureExtractor(streamId: string): HtmlStreamExtractor {
+function ensureExtractor(streamId: string): UniversalStreamExtractor {
   if (currentExtractor) return currentExtractor;
   const live = useLivePreviewStore.getState();
   live.startStream(streamId);
-  currentExtractor = new HtmlStreamExtractor({
-    onChunk: (html, meta) => {
-      useLivePreviewStore.getState().appendChunk(html, meta.renderable);
+
+  currentExtractor = new UniversalStreamExtractor({
+    onPageStart: (page) => {
+      useLivePreviewStore.getState().addPage(page);
     },
-    onWritePath: (filePath) => {
+    onPageChunk: (pageId, content, renderable) => {
+      useLivePreviewStore.getState().updatePageContent(pageId, content, renderable);
+    },
+    onPageComplete: (pageId, content) => {
+      useLivePreviewStore.getState().completePage(pageId, content);
+    },
+    onWritePath: (_pageId, filePath) => {
       useLivePreviewStore.getState().setGeneratedFilePath(filePath);
     },
     onNeedBaseline: (filePath, apply) => {
-      void fetchHtmlFile(filePath).then((content) => {
+      void fetchFileContent(filePath).then((content) => {
         if (content) apply(content);
       });
     },
   });
-  // Seed the extractor with the previous render so Edit/MultiEdit in a
-  // follow-up stream can patch the last known full HTML instead of
-  // overwriting it with only the replacement snippet.
-  const existing = useLivePreviewStore.getState().buffer;
-  if (existing) currentExtractor.seedBaseline(existing);
+
+  // Seed the extractor with prior baselines from existing pages so
+  // Edit/MultiEdit in a follow-up stream can patch the last known content.
+  const pages = useLivePreviewStore.getState().pages;
+  for (const page of pages) {
+    if (page.filePath && page.content) {
+      currentExtractor.seedBaseline(page.filePath, page.content);
+    }
+  }
   return currentExtractor;
 }
 
@@ -209,6 +233,8 @@ function finalizeExtractor(): void {
 
 export const useClaudeStore = create<ClaudeState>((set) => ({
   messages: [],
+  streamingChunks: [],
+  streamingMessageId: null,
   isStreaming: false,
   activeSessionId: null,
   pendingPermission: null,
@@ -216,11 +242,12 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
   tokenUsage: { input: 0, output: 0 },
   currentRequestId: null,
   sessionStats: {},
+  messageFilter: new Set<MessageKind>(ALL_MESSAGE_KINDS),
 
   pushUserMessage: (content) => {
     const id = nextId('u');
     set((s) => ({
-      messages: [...s.messages, { id, role: 'user', content, timestamp: Date.now() }],
+      messages: [...s.messages, { id, role: 'user', kind: 'text', content, timestamp: Date.now() }],
     }));
     return id;
   },
@@ -273,27 +300,71 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           }
           let newAssistantMessageId: string | null = null;
           set((s) => {
-            const nextMessages = [...s.messages];
+            const prev = s.messages;
+            const last = prev[prev.length - 1];
+            const isAppend =
+              text && last && last.role === 'assistant' && last.kind === 'text' && last.isStreaming;
+
+            if (isAppend && tools.length === 0) {
+              // Fast path: streaming text only — accumulate into chunks array
+              // instead of copying the messages array + concatenating strings.
+              // The full content is joined only on stream end (result handler).
+              const chunks = s.streamingChunks;
+              chunks.push(text);
+              const content = chunks.join('\n');
+              const updated: ChatMessage = { ...last, content, timestamp: Date.now() };
+              const nextMessages = prev.slice(0, -1);
+              nextMessages.push(updated);
+              newAssistantMessageId = updated.id;
+              return {
+                messages: nextMessages,
+                streamingChunks: chunks,
+                activeSessionId: asst.session_id ?? s.activeSessionId,
+              };
+            }
+
+            const nextMessages = prev.slice();
+            let nextChunks = s.streamingChunks;
+            let nextStreamingId = s.streamingMessageId;
             if (text) {
-              newAssistantMessageId = nextId('a');
-              nextMessages.push({
-                id: newAssistantMessageId,
-                role: 'assistant',
-                content: text,
-                timestamp: Date.now(),
-              });
+              if (isAppend) {
+                const chunks = s.streamingChunks;
+                chunks.push(text);
+                const content = chunks.join('\n');
+                const updated: ChatMessage = { ...last, content, timestamp: Date.now() };
+                nextMessages[nextMessages.length - 1] = updated;
+                newAssistantMessageId = updated.id;
+                nextChunks = chunks;
+              } else {
+                newAssistantMessageId = nextId('a');
+                nextStreamingId = newAssistantMessageId;
+                nextChunks = [text];
+                nextMessages.push({
+                  id: newAssistantMessageId,
+                  role: 'assistant',
+                  kind: 'text',
+                  content: text,
+                  timestamp: Date.now(),
+                  isStreaming: true,
+                });
+              }
             }
             for (const tool of tools) {
               nextMessages.push({
                 id: nextId('t'),
                 role: 'tool',
+                kind: 'tool_use',
                 content: JSON.stringify(tool.input).slice(0, 300),
                 toolName: tool.name,
+                toolInput: tool.input,
                 timestamp: Date.now(),
               });
             }
+
             return {
               messages: nextMessages,
+              streamingChunks: nextChunks,
+              streamingMessageId: nextStreamingId,
               activeSessionId: asst.session_id ?? s.activeSessionId,
             };
           });
@@ -333,6 +404,7 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
             {
               id: nextId('ad'),
               role: 'system',
+              kind: 'auto_decision',
               content: label,
               timestamp: Date.now(),
               toolName: msg.tool,
@@ -348,7 +420,9 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         finalizeExtractor();
         useArtifactStore.getState().flushPendingOpen();
         set((s) => {
-          const nextMessages = [...s.messages];
+          const nextMessages = s.messages.map((m) =>
+            m.isStreaming ? { ...m, isStreaming: false } : m,
+          );
           if (data.subtype === 'success' && typeof data.result === 'string' && data.result.trim()) {
             const last = nextMessages[nextMessages.length - 1];
             if (!last || last.role !== 'assistant' || last.content !== data.result) {
@@ -381,6 +455,8 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           }
           return {
             messages: nextMessages,
+            streamingChunks: [],
+            streamingMessageId: null,
             isStreaming: false,
             activeSessionId: sid,
             totalCost: s.totalCost + (data.total_cost_usd || 0),
@@ -399,11 +475,14 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         finalizeExtractor();
         set((s) => ({
           isStreaming: false,
+          streamingChunks: [],
+          streamingMessageId: null,
           messages: [
-            ...s.messages,
+            ...s.messages.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
             {
               id: nextId('e'),
               role: 'assistant',
+              kind: 'error',
               content: `Error: ${msg.message}`,
               timestamp: Date.now(),
             },
@@ -418,6 +497,8 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
   reset: () =>
     set({
       messages: [],
+      streamingChunks: [],
+      streamingMessageId: null,
       isStreaming: false,
       activeSessionId: null,
       pendingPermission: null,
@@ -425,9 +506,20 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
       tokenUsage: { input: 0, output: 0 },
       currentRequestId: null,
       sessionStats: {},
+      messageFilter: new Set<MessageKind>(ALL_MESSAGE_KINDS),
     }),
   setActiveSessionId: (id) => set({ activeSessionId: id }),
   setStreaming: (streaming) => set({ isStreaming: streaming }),
+  toggleFilter: (kind) =>
+    set((s) => {
+      const next = new Set(s.messageFilter);
+      if (next.has(kind)) {
+        next.delete(kind);
+      } else {
+        next.add(kind);
+      }
+      return { messageFilter: next };
+    }),
 
   loadSession: async (id) => {
     try {
@@ -436,6 +528,7 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
       const messages: ChatMessage[] = history.map((m) => ({
         id: m.id,
         role: m.role,
+        kind: (m.role === 'tool' ? 'tool_use' : 'text') as MessageKind,
         content: m.content,
         timestamp: m.timestamp,
         toolName: m.toolName,

@@ -2,8 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
+import { useShallow } from 'zustand/shallow';
 import { cn } from '@/lib/utils';
 import { useClaudeStore, type SessionStats } from '@/stores/use-claude-store';
+import { useSettingsStore } from '@/stores/use-settings-store';
+import { findModelSpec } from '@/lib/claude/model-specs';
 
 const DASH = '-';
 const STORAGE_KEY = 'claudegui-session-info-expanded';
@@ -60,6 +63,19 @@ function contextColorClass(used: number | null, window: number | null): string {
   return 'text-emerald-500';
 }
 
+function progressBarColorClass(used: number | null, window: number | null): string {
+  if (used === null || window === null || window <= 0) return 'bg-muted-foreground';
+  const pct = (used / window) * 100;
+  if (pct >= 80) return 'bg-red-500';
+  if (pct >= 50) return 'bg-amber-500';
+  return 'bg-emerald-500';
+}
+
+function contextPercent(used: number | null, window: number | null): number {
+  if (used === null || window === null || window <= 0) return 0;
+  return Math.min(100, (used / window) * 100);
+}
+
 interface Row {
   label: string;
   value: string;
@@ -87,8 +103,13 @@ function expandedRows(stats: SessionStats | null, activeSessionId: string | null
 
 export function SessionInfoBar() {
   const activeSessionId = useClaudeStore((s) => s.activeSessionId);
-  const sessionStats = useClaudeStore((s) => s.sessionStats);
-  const stats = activeSessionId ? sessionStats[activeSessionId] ?? null : null;
+  // Subscribe only to the active session's stats — not the entire Record.
+  const stats = useClaudeStore(useShallow((s) => {
+    const sid = s.activeSessionId;
+    return sid ? s.sessionStats[sid] ?? null : null;
+  }));
+  const selectedModel = useSettingsStore((s) => s.selectedModel);
+  const modelSpec = findModelSpec(stats?.model ?? selectedModel ?? '');
 
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -150,10 +171,16 @@ export function SessionInfoBar() {
           <span aria-hidden="true">·</span>
           {summary.ctxAvailable ? (
             <span
-              className={cn('whitespace-nowrap font-medium', summary.ctxColor)}
+              className={cn('flex items-center gap-1 whitespace-nowrap font-medium', summary.ctxColor)}
               title={`Context: ${summary.ctxRatio} tokens (${summary.ctxPercent})`}
             >
-              ctx {summary.ctxRatio} ({summary.ctxPercent})
+              ctx {summary.ctxPercent}
+              <span className="inline-block h-[3px] w-10 overflow-hidden rounded-full bg-muted">
+                <span
+                  className={cn('block h-full rounded-full transition-all', progressBarColorClass(ctxUsed, ctxWindow))}
+                  style={{ width: `${contextPercent(ctxUsed, ctxWindow)}%` }}
+                />
+              </span>
             </span>
           ) : (
             <span className="whitespace-nowrap" title="Context window size not yet reported">
@@ -173,13 +200,62 @@ export function SessionInfoBar() {
         </div>
       </button>
       {expanded && (
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1 border-t px-2 py-1.5 font-mono">
-          {expandedRows(stats, activeSessionId, now).map((row) => (
-            <div key={row.label} className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground/70">{row.label}</span>
-              <span className="truncate text-right">{row.value}</span>
+        <div className="border-t px-2 py-1.5 font-mono">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+            {expandedRows(stats, activeSessionId, now).map((row) => (
+              <div key={row.label} className="flex items-center justify-between gap-2">
+                <span className="text-muted-foreground/70">{row.label}</span>
+                <span className="truncate text-right">{row.value}</span>
+              </div>
+            ))}
+          </div>
+          {/* Context progress bar */}
+          {stats?.contextWindow && stats.lastContextTokens !== null && (
+            <div className="mt-1.5">
+              <div className="mb-0.5 flex items-center justify-between text-[9px]">
+                <span className="text-muted-foreground/70">Context</span>
+                <span className={cn('font-medium', contextColorClass(stats.lastContextTokens, stats.contextWindow))}>
+                  {formatNumber(stats.lastContextTokens)} / {formatNumber(stats.contextWindow)} ({formatContextPercent(stats.lastContextTokens, stats.contextWindow)})
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all duration-300',
+                    progressBarColorClass(stats.lastContextTokens, stats.contextWindow),
+                  )}
+                  style={{ width: `${contextPercent(stats.lastContextTokens, stats.contextWindow)}%` }}
+                />
+              </div>
             </div>
-          ))}
+          )}
+          {/* Model spec info */}
+          {modelSpec && (
+            <div className="mt-1.5 border-t pt-1.5">
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground/70">Max output</span>
+                  <span>{formatNumber(modelSpec.maxOutput)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground/70">Price (in/out)</span>
+                  <span>${modelSpec.inputPricePer1M} / ${modelSpec.outputPricePer1M}</span>
+                </div>
+              </div>
+              {modelSpec.capabilities.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {modelSpec.capabilities.map((cap) => (
+                    <span
+                      key={cap}
+                      className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[8px] font-medium text-primary"
+                    >
+                      {cap}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

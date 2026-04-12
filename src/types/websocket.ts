@@ -61,10 +61,20 @@ export interface ClaudeAbortMessage {
   requestId: string;
 }
 
+export interface ClaudeCompletionRequest {
+  type: 'completion_request';
+  requestId: string;
+  filePath: string;
+  language: string;
+  prefix: string;
+  suffix: string;
+}
+
 export type ClaudeClientMessage =
   | ClaudeQueryMessage
   | ClaudePermissionResponse
-  | ClaudeAbortMessage;
+  | ClaudeAbortMessage
+  | ClaudeCompletionRequest;
 
 export interface ClaudeStreamMessage {
   type: 'message';
@@ -131,10 +141,17 @@ export interface ClaudeAutoDecisionMessage {
   source: 'settings';
 }
 
+export interface ClaudeCompletionResponse {
+  type: 'completion_response';
+  requestId: string;
+  completions: string[];
+}
+
 export type ClaudeServerMessage =
   | ClaudeStreamMessage
   | ClaudeToolCallMessage
   | ClaudePermissionRequest
   | ClaudeResultMessage
   | ClaudeErrorMessage
-  | ClaudeAutoDecisionMessage;
+  | ClaudeAutoDecisionMessage
+  | ClaudeCompletionResponse;

@@ -123,6 +123,70 @@ export default async function claudeHandler(ws, _req) {
     return { behavior: 'deny', message: 'Denied by user via ClaudeGUI' };
   };
 
+  const runCompletion = async (msg) => {
+    const { requestId, filePath, language, prefix, suffix } = msg;
+    const cwd = getActiveRoot();
+    if (!cwd) {
+      send({ type: 'error', requestId, code: 4412, message: 'No project is open.' });
+      return;
+    }
+    dbg.info('completion start', { requestId, filePath, language });
+
+    const abort = new AbortController();
+    // Allow aborting completions via the shared currentAbort reference
+    const prevAbort = currentAbort;
+    currentAbort = abort;
+
+    try {
+      const completionPrompt = [
+        `You are a code completion engine. Return ONLY the code that should be inserted at the cursor position. No markdown, no backticks, no explanation, no comments about what you're doing.`,
+        ``,
+        `File: ${filePath} (language: ${language})`,
+        ``,
+        `--- Code before cursor ---`,
+        prefix,
+        `--- Cursor is here ---`,
+        suffix,
+        `--- End of visible code ---`,
+        ``,
+        `Complete the code at the cursor position. Output ONLY the raw completion text.`,
+      ].join('\n');
+
+      const queryOptions = {
+        cwd,
+        abortController: abort,
+        permissionMode: 'default',
+        maxTurns: 1,
+        canUseTool: () => ({ behavior: 'deny', message: 'Completion mode: no tools' }),
+      };
+
+      const stream = sdk.query({ prompt: completionPrompt, options: queryOptions });
+      let resultText = '';
+
+      for await (const event of stream) {
+        if (abort.signal.aborted) break;
+        if (event.type === 'result' && event.result) {
+          resultText = event.result;
+        }
+      }
+
+      // Strip markdown code fences if the model wraps the output
+      resultText = resultText
+        .replace(/^```[\w]*\n?/, '')
+        .replace(/\n?```\s*$/, '')
+        .trim();
+
+      send({ type: 'completion_response', requestId, completions: resultText ? [resultText] : [] });
+    } catch (err) {
+      if (err?.name !== 'AbortError') {
+        dbg.error('completion failed', err);
+        send({ type: 'error', requestId, message: String(err?.message || err), code: 5502 });
+      }
+    } finally {
+      if (currentAbort === abort) currentAbort = prevAbort;
+    }
+  };
+
   const runQuery = async (msg) => {
     const { requestId, prompt, sessionId, options = {} } = msg;
     const abort = new AbortController();
@@ -204,6 +268,8 @@ export default async function claudeHandler(ws, _req) {
 
     if (msg.type === 'query') {
       runQuery(msg);
+    } else if (msg.type === 'completion_request') {
+      runCompletion(msg);
     } else if (msg.type === 'permission_response') {
       const resolver = pendingPermissions.get(msg.requestId);
       if (resolver) {
