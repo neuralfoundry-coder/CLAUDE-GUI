@@ -4,6 +4,14 @@ import { extensionFor, type ExtractedArtifact } from '@/lib/claude/artifact-extr
 
 export type ExportFormat = 'source' | 'md' | 'html' | 'pdf' | 'doc' | 'svg' | 'png' | 'txt' | 'file';
 
+export type PageOrientation = 'auto' | 'portrait' | 'landscape';
+export type PageSize = 'A4' | 'Letter' | 'Legal';
+
+export interface PdfExportOptions {
+  orientation: PageOrientation;
+  pageSize: PageSize;
+}
+
 export interface ExportOption {
   format: ExportFormat;
   label: string;
@@ -71,7 +79,11 @@ async function downloadBinaryFile(artifact: ExtractedArtifact): Promise<void> {
   triggerDownload(blob, `${safeName(artifact.title)}.${ext}`);
 }
 
-export function exportArtifact(artifact: ExtractedArtifact, format: ExportFormat): void {
+export function exportArtifact(
+  artifact: ExtractedArtifact,
+  format: ExportFormat,
+  pdfOptions?: PdfExportOptions,
+): void {
   switch (format) {
     case 'file': {
       void downloadBinaryFile(artifact).catch((err) => {
@@ -108,7 +120,7 @@ export function exportArtifact(artifact: ExtractedArtifact, format: ExportFormat
       return;
     }
     case 'pdf': {
-      printViaIframe(artifact);
+      printViaIframe(artifact, pdfOptions);
       return;
     }
     case 'svg': {
@@ -161,14 +173,34 @@ function triggerDownload(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-const PRINT_CSS = `
-@page { size: A4; margin: 15mm; }
+function buildPrintCss(options?: PdfExportOptions): string {
+  const size = options?.pageSize ?? 'A4';
+  const orientation = options?.orientation ?? 'auto';
+  // For 'auto', we don't inject @page size — let the HTML's own @page rules take effect.
+  // If HTML has no @page rules, the browser default (usually portrait A4/Letter) applies.
+  const pageRule =
+    orientation === 'auto'
+      ? '' // no @page override — respect existing rules
+      : `@page { size: ${size} ${orientation === 'landscape' ? 'landscape' : 'portrait'}; margin: 15mm; }`;
+
+  return `
+${pageRule}
 @media print {
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  pre, figure, table, img, svg { page-break-inside: avoid; break-inside: avoid; }
+  /* Avoid breaking inside key block elements */
+  pre, figure, table, img, svg, blockquote { page-break-inside: avoid; break-inside: avoid; }
+  /* Section-level page breaks: <hr>, slide/section boundaries */
+  hr { page-break-after: always; break-after: page; visibility: hidden; height: 0; margin: 0; border: 0; }
+  section, .slide, [data-page-break] { page-break-before: always; break-before: page; }
+  /* Heading orphan control */
+  h1, h2, h3, h4, h5, h6 { page-break-after: avoid; break-after: avoid; }
   a { color: inherit; text-decoration: none; }
 }
 `;
+}
+
+// Legacy constant kept for non-PDF uses (toStandaloneHtml for doc/html export).
+const PRINT_CSS = buildPrintCss();
 
 const BASE_STYLE = `
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.6; color: #111; }
@@ -182,11 +214,12 @@ figure { margin: 0; }
 blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 1rem; color: #555; }
 `;
 
-function toStandaloneHtml(artifact: ExtractedArtifact): string {
+function toStandaloneHtml(artifact: ExtractedArtifact, pdfOptions?: PdfExportOptions): string {
   const title = escapeHtml(artifact.title);
   if (artifact.kind === 'html') {
-    return injectPrintStyles(artifact.content);
+    return injectPrintStyles(artifact.content, pdfOptions);
   }
+  const printCss = pdfOptions ? buildPrintCss(pdfOptions) : PRINT_CSS;
   let body: string;
   if (artifact.kind === 'markdown') {
     body = markdownToHtml(artifact.content);
@@ -200,7 +233,7 @@ function toStandaloneHtml(artifact: ExtractedArtifact): string {
 <head>
 <meta charset="utf-8">
 <title>${title}</title>
-<style>${BASE_STYLE}${PRINT_CSS}</style>
+<style>${BASE_STYLE}${printCss}</style>
 </head>
 <body>
 ${body}
@@ -210,8 +243,9 @@ ${body}
 
 // Ensures user-supplied HTML documents pick up our @page / @media print rules.
 // Leaves the original markup untouched apart from a single injected <style> tag.
-function injectPrintStyles(html: string): string {
-  const styleTag = `<style data-artifact-print>${PRINT_CSS}</style>`;
+function injectPrintStyles(html: string, options?: PdfExportOptions): string {
+  const css = options ? buildPrintCss(options) : PRINT_CSS;
+  const styleTag = `<style data-artifact-print>${css}</style>`;
   if (/<\/head\s*>/i.test(html)) {
     return html.replace(/<\/head\s*>/i, `${styleTag}</head>`);
   }
@@ -226,9 +260,9 @@ function injectPrintStyles(html: string): string {
 
 const LARGE_HTML_THRESHOLD = 1_500_000;
 
-function printViaIframe(artifact: ExtractedArtifact): void {
+function printViaIframe(artifact: ExtractedArtifact, pdfOptions?: PdfExportOptions): void {
   try {
-    const html = toStandaloneHtml(artifact);
+    const html = toStandaloneHtml(artifact, pdfOptions);
     const iframe = document.createElement('iframe');
     iframe.setAttribute('aria-hidden', 'true');
     iframe.style.cssText =
@@ -334,6 +368,30 @@ async function svgToPng(artifact: ExtractedArtifact): Promise<Blob | null> {
     };
     img.src = url;
   });
+}
+
+/**
+ * Heuristically detect whether an HTML document is likely intended for
+ * landscape output (e.g. presentations, wide tables, explicit CSS).
+ */
+export function detectLandscapeHint(html: string): boolean {
+  // Explicit CSS @page landscape rule
+  if (/@page\s*\{[^}]*landscape/i.test(html)) return true;
+  // Reveal.js or slide-like structure
+  if (/class\s*=\s*["'][^"']*\breveal\b/i.test(html)) return true;
+  if (/<section[\s>]/i.test(html) && /<\/section>/i.test(html)) {
+    // Multiple <section> elements suggest a slide deck
+    const sectionCount = (html.match(/<section[\s>]/gi) ?? []).length;
+    if (sectionCount >= 3) return true;
+  }
+  // Viewport meta with width much larger than height (presentation hint)
+  const viewportMatch = html.match(/content\s*=\s*["'][^"']*width\s*=\s*(\d+)[^"']*height\s*=\s*(\d+)/i);
+  if (viewportMatch) {
+    const w = parseInt(viewportMatch[1]!, 10);
+    const h = parseInt(viewportMatch[2]!, 10);
+    if (w > h * 1.2) return true;
+  }
+  return false;
 }
 
 function escapeHtml(s: string): string {

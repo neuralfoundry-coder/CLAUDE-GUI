@@ -6,6 +6,7 @@ import {
   exportArtifact,
   type ExportOption,
   type ExportFormat,
+  type PdfExportOptions,
 } from '@/lib/claude/artifact-export';
 import type { PreviewType } from '@/stores/use-preview-store';
 
@@ -139,6 +140,10 @@ export function previewDownloadOptions(input: PreviewDownloadInput): ExportOptio
   return availableExports(toArtifact(input));
 }
 
-export function downloadPreview(input: PreviewDownloadInput, format: ExportFormat): void {
-  exportArtifact(toArtifact(input), format);
+export function downloadPreview(
+  input: PreviewDownloadInput,
+  format: ExportFormat,
+  pdfOptions?: PdfExportOptions,
+): void {
+  exportArtifact(toArtifact(input), format, pdfOptions);
 }

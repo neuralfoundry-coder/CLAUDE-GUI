@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { Code, Eye } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -55,6 +55,13 @@ function SvgRenderer({ content }: { content: string }) {
   );
 }
 
+function SafeImg(props: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const onError = useCallback((e: SyntheticEvent<HTMLImageElement>) => {
+    e.currentTarget.style.display = 'none';
+  }, []);
+  return <img {...props} onError={onError} />;
+}
+
 function MarkdownRenderer({ content }: { content: string }) {
   const [debounced, setDebounced] = useState(content);
 
@@ -66,7 +73,9 @@ function MarkdownRenderer({ content }: { content: string }) {
   return (
     <div className="h-full overflow-auto bg-background p-4">
       <div className="prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{debounced}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: SafeImg }}>
+          {debounced}
+        </ReactMarkdown>
       </div>
     </div>
   );

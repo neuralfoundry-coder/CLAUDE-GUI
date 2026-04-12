@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { filesApi } from '@/lib/api-client';
@@ -12,6 +12,11 @@ import {
   downloadPreview,
   type ExportFormat,
 } from '@/lib/preview/preview-download';
+import { detectLandscapeHint } from '@/lib/claude/artifact-export';
+import {
+  PdfExportDialog,
+  type PdfExportOptions,
+} from '@/components/panels/preview/pdf-export-dialog';
 
 const INLINE_TYPES: ReadonlySet<PreviewType> = new Set(['html', 'markdown', 'slides']);
 
@@ -39,6 +44,10 @@ export function PreviewDownloadMenu() {
 
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pdfDialogOpen, setPdfDialogOpen] = useState(false);
+  const [pdfLandscapeHint, setPdfLandscapeHint] = useState(false);
+  // Stash resolved content so we don't re-fetch after dialog closes.
+  const pendingPdfContentRef = useRef<string>('');
 
   useEffect(() => {
     if (!open) return;
@@ -100,6 +109,25 @@ export function PreviewDownloadMenu() {
     });
   }, [resolved]);
 
+  const handlePdfExport = useCallback(
+    (opts: PdfExportOptions) => {
+      if (!resolved) return;
+      setPdfDialogOpen(false);
+      downloadPreview(
+        { filePath: resolved.filePath, type: resolved.type, content: pendingPdfContentRef.current },
+        'pdf',
+        opts,
+      );
+      pendingPdfContentRef.current = '';
+    },
+    [resolved],
+  );
+
+  const handlePdfCancel = useCallback(() => {
+    setPdfDialogOpen(false);
+    pendingPdfContentRef.current = '';
+  }, []);
+
   if (!resolved || options.length === 0) return null;
 
   async function resolveContent(input: ResolvedInput): Promise<string> {
@@ -116,6 +144,23 @@ export function PreviewDownloadMenu() {
   async function onPick(format: ExportFormat) {
     if (!resolved) return;
     setOpen(false);
+
+    if (format === 'pdf') {
+      // For PDF, show options dialog first.
+      setBusy(true);
+      try {
+        const content = await resolveContent(resolved);
+        pendingPdfContentRef.current = content;
+        // Auto-detect landscape hint from HTML content.
+        const isHtml = resolved.type === 'html' || resolved.type === 'slides';
+        setPdfLandscapeHint(isHtml && detectLandscapeHint(content));
+        setPdfDialogOpen(true);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     setBusy(true);
     try {
       const content = await resolveContent(resolved);
@@ -131,47 +176,55 @@ export function PreviewDownloadMenu() {
   const streamingBadge = resolved.fromLive && liveMode === 'streaming';
 
   return (
-    <div className="relative" data-preview-download-menu>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-5 w-5"
-        onClick={() => setOpen((v) => !v)}
-        disabled={busy}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="Download preview"
-        title={
-          resolved.fromLive
-            ? 'Download live preview (current buffer)'
-            : 'Download preview'
-        }
-      >
-        <Download className="h-3 w-3" aria-hidden="true" />
-      </Button>
-      {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 min-w-[220px] rounded-md border bg-popover p-1 shadow-lg">
-          <div className="px-2 py-1 text-[10px] uppercase text-muted-foreground">
-            {resolved.fromLive
-              ? streamingBadge
-                ? 'Download (streaming…)'
-                : 'Download live buffer'
-              : 'Download as'}
+    <>
+      <div className="relative" data-preview-download-menu>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-5 w-5"
+          onClick={() => setOpen((v) => !v)}
+          disabled={busy}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="Download preview"
+          title={
+            resolved.fromLive
+              ? 'Download live preview (current buffer)'
+              : 'Download preview'
+          }
+        >
+          <Download className="h-3 w-3" aria-hidden="true" />
+        </Button>
+        {open && (
+          <div className="absolute right-0 top-full z-20 mt-1 min-w-[220px] rounded-md border bg-popover p-1 shadow-lg">
+            <div className="px-2 py-1 text-[10px] uppercase text-muted-foreground">
+              {resolved.fromLive
+                ? streamingBadge
+                  ? 'Download (streaming…)'
+                  : 'Download live buffer'
+                : 'Download as'}
+            </div>
+            {options.map((opt) => (
+              <button
+                key={opt.format}
+                type="button"
+                className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => {
+                  void onPick(opt.format);
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
-          {options.map((opt) => (
-            <button
-              key={opt.format}
-              type="button"
-              className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-              onClick={() => {
-                void onPick(opt.format);
-              }}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+      <PdfExportDialog
+        open={pdfDialogOpen}
+        suggestLandscape={pdfLandscapeHint}
+        onExport={handlePdfExport}
+        onCancel={handlePdfCancel}
+      />
+    </>
   );
 }

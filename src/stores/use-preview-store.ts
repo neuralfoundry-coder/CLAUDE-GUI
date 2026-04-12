@@ -21,6 +21,10 @@ interface PreviewState {
   zoom: number;
   fullscreen: boolean;
   viewMode: PreviewViewMode;
+  /** Slide edit mode: when true, selected slide shows HTML editor + prompt input */
+  slideEditMode: boolean;
+  /** Index of the currently selected slide (0-based) */
+  selectedSlideIndex: number;
   setFile: (path: string | null) => void;
   setPage: (page: number) => void;
   setZoom: (zoom: number) => void;
@@ -28,6 +32,9 @@ interface PreviewState {
   setFullscreen: (value: boolean) => void;
   setViewMode: (mode: PreviewViewMode) => void;
   toggleViewMode: () => void;
+  setSlideEditMode: (enabled: boolean) => void;
+  toggleSlideEditMode: () => void;
+  setSelectedSlideIndex: (index: number) => void;
 }
 
 export const usePreviewStore = create<PreviewState>((set) => ({
@@ -36,13 +43,18 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   zoom: 1,
   fullscreen: false,
   viewMode: 'rendered',
-  setFile: (currentFile) => set({ currentFile, pageNumber: 1, viewMode: 'rendered' }),
+  slideEditMode: false,
+  selectedSlideIndex: 0,
+  setFile: (currentFile) => set({ currentFile, pageNumber: 1, viewMode: 'rendered', slideEditMode: false, selectedSlideIndex: 0 }),
   setPage: (pageNumber) => set({ pageNumber }),
   setZoom: (zoom) => set({ zoom }),
   toggleFullscreen: () => set((s) => ({ fullscreen: !s.fullscreen })),
   setFullscreen: (fullscreen) => set({ fullscreen }),
   setViewMode: (viewMode) => set({ viewMode }),
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === 'source' ? 'rendered' : 'source' })),
+  setSlideEditMode: (slideEditMode) => set({ slideEditMode }),
+  toggleSlideEditMode: () => set((s) => ({ slideEditMode: !s.slideEditMode })),
+  setSelectedSlideIndex: (selectedSlideIndex) => set({ selectedSlideIndex }),
 }));
 
 export function isSourceToggleable(type: PreviewType): boolean {

@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, type SyntheticEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -11,6 +12,14 @@ interface MarkdownPreviewProps {
   content: string;
 }
 
+function MarkdownImage(props: React.ImgHTMLAttributes<HTMLImageElement>) {
+  const onError = useCallback((e: SyntheticEvent<HTMLImageElement>) => {
+    e.currentTarget.style.display = 'none';
+  }, []);
+
+  return <img {...props} onError={onError} />;
+}
+
 export function MarkdownPreview({ content }: MarkdownPreviewProps) {
   return (
     <div className="h-full w-full bg-muted p-2">
@@ -19,6 +28,7 @@ export function MarkdownPreview({ content }: MarkdownPreviewProps) {
           <ReactMarkdown
             remarkPlugins={[remarkGfm, remarkMath]}
             rehypePlugins={[rehypeSanitize, rehypeHighlight, rehypeKatex]}
+            components={{ img: MarkdownImage }}
           >
             {content}
           </ReactMarkdown>

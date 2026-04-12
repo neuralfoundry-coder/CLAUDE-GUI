@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { filesApi } from '@/lib/api-client';
 import { debounce } from '@/lib/utils';
 import { usePreviewStore, detectPreviewType } from '@/stores/use-preview-store';
@@ -20,10 +20,26 @@ export function PreviewRouter() {
   const viewMode = usePreviewStore((s) => s.viewMode);
   const activeTabId = useEditorStore((s) => s.activeTabId);
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
+  const updateTabContent = useEditorStore((s) => s.updateContent);
   const [content, setContent] = useState<string>('');
 
   const filePath = currentFile ?? activeTab?.path ?? null;
   const type = detectPreviewType(filePath);
+
+  const handleSlideContentChange = useCallback(
+    (newContent: string) => {
+      setContent(newContent);
+      // Sync back to editor tab if open
+      if (activeTab && filePath && activeTab.path === filePath) {
+        updateTabContent(activeTab.id, newContent);
+      }
+      // Also persist to disk
+      if (filePath) {
+        filesApi.write(filePath, newContent).catch(() => {});
+      }
+    },
+    [activeTab, filePath, updateTabContent],
+  );
 
   useEffect(() => {
     if (!filePath) {
@@ -70,7 +86,7 @@ export function PreviewRouter() {
     return viewMode === 'source' ? (
       <SourcePreview content={content} language="html" />
     ) : (
-      <SlidePreview content={content} />
+      <SlidePreview content={content} onContentChange={handleSlideContentChange} />
     );
   }
   if (type === 'image') return <ImagePreview path={filePath} />;
