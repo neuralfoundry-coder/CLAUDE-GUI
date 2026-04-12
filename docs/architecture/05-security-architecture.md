@@ -236,11 +236,13 @@ export function middleware(req: NextRequest) {
   const res = NextResponse.next();
   res.headers.set('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",  // Monaco CDN
-    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com",
+    "worker-src 'self' blob:",                                    // Monaco web workers
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
     "img-src 'self' data: blob:",
-    "connect-src 'self' ws://localhost:3000 wss://localhost:3000",
-    "frame-src 'self' data:",  // iframe srcdoc
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",       // Monaco 소스맵
+    "frame-src 'self' data: blob:",                                // iframe srcdoc + blob
   ].join('; '));
   return res;
 }
@@ -409,3 +411,36 @@ const BLOCKED_FILES = [
 - [ ] 속도 제한(rate limiting)이 적용되어 있는가?
 - [ ] 파일 크기 제한이 적용되어 있는가?
 - [ ] `.env.local`이 `.gitignore`에 포함되어 있는가?
+- [ ] 원격 접근 비활성화 시 `127.0.0.1`에만 바인딩되는가?
+- [ ] 원격 접근 활성화 시 토큰 인증이 동작하는가?
+- [ ] 서버 관리 API(`/api/server/*`)가 localhost에서만 접근 가능한가?
+
+---
+
+## 5.8 원격 접근 보안 (FR-1300)
+
+### 5.8.1 토큰 인증 미들웨어
+
+- 원격 접근 활성화 + 토큰 설정 시, 모든 HTTP/WebSocket 요청에 토큰 검증을 수행한다.
+- **HTTP**: `Authorization: Bearer <token>` 헤더 검증.
+- **WebSocket upgrade**: `?token=<token>` 쿼리 파라미터 검증 (브라우저에서 custom 헤더 불가).
+- **localhost 면제**: `127.0.0.1`, `::1`, `::ffff:127.0.0.1` 주소의 요청은 토큰 없이 통과.
+- 검증 실패 시 HTTP 401 또는 WebSocket `HTTP/1.1 401 Unauthorized` 응답.
+
+### 5.8.2 관리 API 접근 제어
+
+- `/api/server/status`, `/api/server/config`, `/api/server/restart`는 localhost에서만 접근 가능.
+- 원격 클라이언트가 서버 설정을 변경하거나 재시작할 수 없도록 한다.
+- 검증: `req.headers.host`가 `127.0.0.1`, `localhost`, `[::1]`로 시작하는지 확인.
+
+### 5.8.3 토큰 관리
+
+- 토큰은 `crypto.randomUUID()` (UUID v4)로 생성하며, 충분한 엔트로피(122비트)를 보장한다.
+- 토큰은 `~/.claudegui/server-config.json`에 평문으로 저장된다. 파일 권한은 사용자 전용(600)을 권장.
+- WebSocket URL의 `?token=` 파라미터는 프록시 로그에 노출될 수 있으므로, 프로덕션 환경에서는 SSH 터널 또는 TLS 프록시 사용을 권장한다.
+
+### 5.8.4 CORS 정책
+
+- 로컬 모드: 기존 `ALLOWED_ORIGINS` 검증 유지.
+- 원격 모드 + 토큰: 토큰 인증이 Origin 검증을 대체. 유효한 토큰을 가진 모든 Origin 허용.
+- 원격 모드 + 토큰 없음: 경고 로그 출력, 모든 Origin 허용 (개발/테스트 용도로만 권장).

@@ -121,9 +121,10 @@
 
 ### FR-208: 로컬 파일 드래그 앤 드롭 / 붙여넣기 업로드
 
-- 사용자는 로컬 OS 파일 탐색기(macOS Finder, Windows Explorer 등)에서 웹 파일 탐색기 패널로 파일을 **드래그 앤 드롭**하여 현재 프로젝트 루트에 복사할 수 있어야 한다.
+- 사용자는 로컬 OS 파일 탐색기(macOS Finder, Windows Explorer 등)에서 웹 파일 탐색기 패널로 파일을 **드래그 앤 드롭**하여 현재 프로젝트에 복사할 수 있어야 한다.
 - 사용자는 클립보드에 복사된 파일/이미지를 웹 파일 탐색기 패널에서 **붙여넣기**(`Cmd+V` / `Ctrl+V`)하여 프로젝트 루트에 복사할 수 있어야 한다. 패널에 포커스가 있을 때 `onPaste` 이벤트의 `clipboardData.files`를 소비한다.
 - 드래그 중에는 패널이 `ring-2 ring-primary` 경계와 "Drop files to upload to project root" 오버레이를 표시하여 사용자에게 시각적 피드백을 제공한다. `e.dataTransfer.types`에 `'Files'`가 포함된 경우에만 드롭을 수락하고, react-arborist의 내부 노드 드래그와는 구분되어야 한다.
+- **폴더 타겟팅**: 파일 트리 영역 내부에 드롭할 경우 커서 아래의 노드를 기준으로 대상 폴더를 결정한다. 디렉토리 노드 위에 드롭하면 해당 디렉토리에 업로드하고, 파일 노드 위에 드롭하면 해당 파일의 부모 디렉토리에 업로드하며, 빈 영역에 드롭하면 프로젝트 루트에 업로드한다. 트리 영역 밖(패널 헤더 등)에 드롭하면 프로젝트 루트에 업로드한다. 이 동작은 트리 컨테이너의 **캡처 페이즈** `drop` 이벤트 리스너로 구현되며, react-dnd의 HTML5Backend가 이벤트를 소비하기 전에 외부 파일 드롭을 가로챈다.
 - 업로드는 `POST /api/files/upload` 엔드포인트(04-api-design.md 참조)를 사용한다. 페이로드는 `multipart/form-data`이며 필드는 `destDir`(프로젝트 루트 기준 상대경로, 비어 있으면 루트) 및 반복되는 `files`로 구성된다.
 - 서버는 다음을 강제해야 한다:
   - `resolveSafe(destDir)`로 대상 디렉토리를 프로젝트 루트 샌드박스 내부로 제한한다.
@@ -132,7 +133,7 @@
   - 동일 파일명이 이미 존재하면 덮어쓰지 않고 ` (1)`, ` (2)` 접미사로 고유화한다.
 - 업로드 성공 후 클라이언트는 `refreshRoot()`로 파일 트리를 즉시 갱신한다. `/ws/files` 감시자도 이벤트를 발행하지만 디바운스 지연 없이 즉시 반영하기 위해 수동 갱신을 병행한다.
 - 실패 시 헤더의 상태 라벨이 `upload failed: <message>`로 표시되며 `text-destructive`로 강조된다.
-- 구현: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (드롭/페이스트 핸들러, 오버레이).
+- 구현: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (드롭/페이스트 핸들러, 오버레이), `src/components/panels/file-explorer/file-tree.tsx` (캡처 페이즈 외부 파일 드롭 핸들러, `onExternalFileDrop` 프롭).
 
 ### FR-209: 탐색기 루트 네비게이션 (상위/하위 재루팅)
 
@@ -622,8 +623,8 @@
 ### FR-512: 모델 선택
 
 - 사용자가 Claude 채팅 패널 헤더의 드롭다운을 통해 사용할 모델을 선택할 수 있어야 한다.
-- 선택지: `Auto`(기본, SDK 기본 모델) 및 지원 모델 목록(`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`).
-- 각 모델 항목은 모델명, 컨텍스트 윈도우 크기, 입력 가격 티어를 표시한다.
+- 선택지: `Auto`(기본, SDK 기본 모델) 및 지원 모델 목록(`claude-opus-4-6`(1M ctx), `claude-sonnet-4-6`(200K ctx), `claude-haiku-4-5-20251001`(200K ctx)).
+- 각 모델 항목은 모델명, 설명(예: "Most capable for complex work"), 컨텍스트 윈도우 크기, 입력 가격 티어를 표시한다.
 - 선택된 모델은 `useSettingsStore.selectedModel`에 저장되며 `localStorage`를 통해 persist된다.
 - 쿼리 전송 시 `ClaudeQueryMessage.options.model`에 선택된 모델 ID를 포함하여 서버에 전달한다.
 - 구현: `src/lib/claude/model-specs.ts`, `src/components/panels/claude/model-selector.tsx`, `src/stores/use-settings-store.ts`, `src/lib/websocket/claude-client.ts`.
@@ -652,6 +653,36 @@
 - 사용자 메시지(`role: 'user'`)는 필터와 무관하게 항상 표시된다.
 - 필터 상태는 `useClaudeStore.messageFilter`에 관리되며 세션 리셋 시 모든 필터가 활성화로 초기화된다.
 - 구현: `src/components/panels/claude/chat-filter-bar.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
+### FR-516: 슬래시 명령어 시스템
+
+- Claude 채팅 입력창에서 `/`로 시작하는 텍스트를 입력하면 사용 가능한 슬래시 명령어 목록을 팝오버로 표시해야 한다.
+- 슬래시 명령어는 두 유형으로 분류된다:
+  - **클라이언트 명령어**: GUI 내에서 직접 처리 (`/clear`, `/new`, `/usage`, `/context`, `/cost`, `/model`, `/help`)
+  - **패스스루 명령어**: 입력 전체를 Claude CLI에 전달 (`/compact`, `/plan`, `/review`)
+- 팝오버는 입력이 `/`로 시작하고 공백이 없는 동안 표시되며, 타이핑에 따라 prefix 매칭으로 필터링된다.
+- 키보드 조작: `ArrowUp`/`ArrowDown`으로 후보 이동, `Enter`로 즉시 실행, `Tab`으로 입력창에 명령어 이름을 채움, `Escape`로 닫기.
+- 명령어 카테고리별 그룹핑: Session (`/clear`, `/new`, `/compact`), Info (`/usage`, `/context`, `/cost`, `/model`, `/help`), Mode (`/plan`, `/review`).
+- 클라이언트 명령어는 채팅 영역에 시스템 메시지(`role: 'system'`, `kind: 'system'`)로 결과를 표시한다.
+- `/help`는 사용 가능한 모든 슬래시 명령어의 마크다운 테이블을 표시한다.
+- `/usage`, `/context`, `/cost`는 `useClaudeStore.sessionStats`의 현재 활성 세션 데이터를 조회하여 표시한다.
+- `/model`은 현재 모델 정보와 `src/lib/claude/model-specs.ts` 스펙을 조회하여 표시한다.
+- 별칭(alias) 지원: `/reset`은 `/new`의 별칭이다.
+- 구현: `src/lib/claude/slash-commands.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
+### FR-517: 파일/이미지 드래그 앤 드롭 입력
+
+- Claude 채팅 패널에 파일 또는 이미지를 드래그 앤 드롭하면 프로젝트 `uploads/` 디렉토리에 업로드한 후 `@uploads/filename` 참조를 입력창에 자동 삽입해야 한다.
+- 클립보드에서 이미지를 붙여넣기(Cmd+V / Ctrl+V)하면 동일한 업로드→참조 삽입 흐름이 작동해야 한다.
+  - 붙여넣기된 이미지는 `paste-{timestamp}.{ext}` 형식의 파일명으로 저장된다.
+- 드래그 중 채팅 패널 위에 시각적 오버레이(`DropOverlay`)를 표시하여 드롭 가능 영역임을 안내해야 한다.
+- 업로드된 파일은 입력창 상단에 파일 칩(`AttachedFilesBar`)으로 표시되며, 각 칩은 파일명·상태(업로드 중/완료/에러)·제거 버튼을 포함한다.
+- 파일 칩의 제거 버튼을 클릭하면 칩과 입력창의 `@` 참조가 함께 제거된다.
+- 업로드 중에는 전송 버튼이 비활성화된다.
+- 전송 시 모든 파일 칩이 초기화된다.
+- 기존 `/api/files/upload` 엔드포인트와 `filesApi.upload()`를 재사용하며, 파일 크기 제한(50MB/파일, 200MB/전체)이 적용된다.
+- 텍스트 또는 URL 드래그는 무시한다(`hasFilePayload` 검증).
+- 구현: `src/components/panels/claude/use-chat-drop.ts`, `src/components/panels/claude/drop-overlay.tsx`, `src/components/panels/claude/attached-files-bar.tsx`, `src/lib/fs/collect-files.ts`.
 
 ### FR-520: 네이티브 앱 실행 모드 (v0.3)
 
@@ -769,9 +800,15 @@
   | `pptx` | Original file |
 
 - 텍스트 기반 타입(`html`/`markdown`/`slides`, 그리고 `.svg` 이미지)은 에디터 탭의 in-memory 내용이 있으면 이를 사용하고, 없으면 `filesApi.read()`로 디스크에서 읽어 변환/다운로드한다. 파일 기반 바이너리 타입(`pdf`/`image`(SVG 제외)/`docx`/`xlsx`/`pptx`)은 `/api/files/raw?path=...`에서 원본 바이트를 스트리밍하여 다운로드한다.
-- PDF 내보내기는 `window.open()` + `window.print()`로 브라우저 인쇄 대화상자를 띄워 운영체제의 "PDF로 저장"으로 내보낸다(FR-1004의 아티팩트 내보내기와 동일 정책). 서버 측 PDF 렌더러(Puppeteer 등)는 요구하지 않는다.
+- **PDF 내보내기 설정 다이얼로그**: PDF 내보내기를 선택하면 브라우저 인쇄 대화상자를 띄우기 전에 `PdfExportDialog`를 표시하여 다음 옵션을 선택할 수 있다.
+  - **페이지 방향**: 자동 감지(기본, HTML 자체 `@page` 규칙 존중) / 세로(Portrait) / 가로(Landscape).
+  - **페이지 크기**: A4(기본) / Letter / Legal.
+  - 자동 감지 모드에서 HTML 콘텐츠가 프레젠테이션(reveal.js, 다수 `<section>`) 또는 `@page { … landscape }` 규칙을 포함하면 가로 방향을 권장 힌트로 표시한다(`detectLandscapeHint()`).
+- PDF 인쇄 CSS는 `buildPrintCss(options)`로 동적 생성되며, 선택된 방향·크기를 `@page { size: … }` 규칙에 반영한다. 자동 모드에서는 `@page` 규칙을 주입하지 않아 HTML 문서의 기존 레이아웃을 온전히 보존한다.
+- 페이지 구분 규칙 강화: `<hr>`은 `page-break-after: always`로 페이지 구분자 역할을 하고, `<section>`, `.slide`, `[data-page-break]`은 `page-break-before: always`를 적용한다. 제목(`h1`–`h6`)은 `page-break-after: avoid`로 본문과 분리되지 않도록 보호한다.
+- PDF 내보내기는 `window.print()`로 브라우저 인쇄 대화상자를 띄워 운영체제의 "PDF로 저장"으로 내보낸다(FR-1004의 아티팩트 내보내기와 동일 정책). 서버 측 PDF 렌더러(Puppeteer 등)는 요구하지 않는다.
 - DOCX/XLSX/PPTX 바이너리 타입은 프리뷰 뷰어가 이미 `/api/files/raw`로 원본을 읽으므로 "Original file" 한 가지만 노출한다. 트랜스코드(예: DOCX → PDF)는 v1.0 범위 외로 지원하지 않는다.
-- 구현: `src/lib/preview/preview-download.ts`(프리뷰 상태를 `ExtractedArtifact` 모양으로 어댑터해 `src/lib/claude/artifact-export.ts`의 기존 다운로드/인쇄 파이프라인을 재사용), `src/components/panels/preview/preview-download-menu.tsx`(헤더 드롭다운), `src/components/panels/preview/preview-panel.tsx`(헤더 배치).
+- 구현: `src/lib/preview/preview-download.ts`(프리뷰 상태를 `ExtractedArtifact` 모양으로 어댑터해 `src/lib/claude/artifact-export.ts`의 기존 다운로드/인쇄 파이프라인을 재사용), `src/components/panels/preview/preview-download-menu.tsx`(헤더 드롭다운 + PDF 다이얼로그 연동), `src/components/panels/preview/pdf-export-dialog.tsx`(PDF 내보내기 설정 다이얼로그), `src/components/panels/preview/preview-panel.tsx`(헤더 배치).
 
 ### FR-614: 프리뷰 소스/렌더 뷰 토글 (v0.5)
 
@@ -782,27 +819,53 @@
 - HTML 스트리밍 라이브 프리뷰(`FR-610`)는 **기존 내부 토글을 유지**하며, 헤더 토글 버튼은 `showLive === true`(= `autoSwitch && liveMode !== 'idle'`)일 때 숨겨진다. 두 경로는 상호 배타적으로 동작한다.
 - 구현: `src/stores/use-preview-store.ts`(`viewMode`, `setViewMode`, `toggleViewMode`, `isSourceToggleable` 헬퍼), `src/components/panels/preview/preview-panel.tsx`(헤더 토글 버튼), `src/components/panels/preview/preview-router.tsx`(소스 뷰 분기), `src/components/panels/preview/source-preview.tsx`(신규 구문 강조 뷰어), `src/app/layout.tsx`(하이라이트 테마 CSS).
 
+### FR-615: 프리뷰 TTS (Text-to-Speech) 읽기 (v0.6)
+
+- 텍스트 기반 프리뷰(`html`, `markdown`, `slides`)는 브라우저 내장 Web Speech API(`window.speechSynthesis`)를 사용하여 콘텐츠를 **소리내어 읽어주는** 기능을 제공해야 한다.
+- 프리뷰 패널 헤더에 `Volume2` / `VolumeX` 아이콘의 토글 버튼을 두어 재생/정지를 전환한다. 재생 중에는 `bg-accent`로 강조한다.
+- 토글 버튼은 다음 조건에서만 표시한다:
+  - 프리뷰 타입이 `html`, `markdown`, `slides` 중 하나
+  - 라이브 프리뷰 모드가 아닐 때 (`showLive === false`)
+  - 브라우저가 `speechSynthesis`를 지원할 때
+- 텍스트 추출 로직:
+  - **Markdown**: 원본 마크다운 텍스트를 그대로 사용
+  - **HTML**: `DOMParser`로 파싱 후 `body.textContent` 추출
+  - **Slides**: HTML `<section>` 요소를 파싱하여 `selectedSlideIndex`에 해당하는 슬라이드의 텍스트만 추출. 인덱스가 없으면 전체 슬라이드를 `.` 구분자로 연결
+- 파일이 변경되면 진행 중인 TTS를 자동으로 정지한다.
+- Chrome/Chromium의 15초 자동 일시정지 버그에 대응하여 10초 간격으로 `pause()`→`resume()`을 호출하는 keep-alive 로직을 포함한다.
+- 컴포넌트 언마운트 시 `speechSynthesis.cancel()`로 정리한다.
+- 시스템 기본 음성을 사용하며 별도의 음성 선택 UI는 제공하지 않는다.
+- 구현: `src/hooks/use-speech-synthesis.ts`(Web Speech API 래퍼 훅), `src/lib/preview/extract-preview-text.ts`(텍스트 추출 유틸리티), `src/components/panels/preview/preview-panel.tsx`(헤더 TTS 버튼).
+
 ---
 
 ## 3.7 프레젠테이션 기능 (FR-700)
 
-### FR-701: reveal.js 슬라이드 렌더링
+### FR-701: reveal.js 슬라이드 렌더링 (멀티페이지 세로 스크롤)
 
-- reveal.js 5.x를 iframe 내에서 실행하여 슬라이드를 렌더링해야 한다.
+- HTML 기반 슬라이드 렌더링 시 모든 `<section>` 요소를 파싱하여 **세로 스크롤** 형태로 페이지를 구분하여 표시해야 한다. 단일 페이지(reveal.js 기본 뷰)가 아닌 전체 슬라이드 목록을 한눈에 볼 수 있는 카드 레이아웃을 제공한다.
+- 각 슬라이드 카드는 reveal.js CSS를 적용한 축소 프리뷰(iframe `srcDoc`)로 렌더하며, 좌측 상단에 슬라이드 번호 배지를 표시한다.
+- 슬라이드 목록 상단에 전체 슬라이드 수와 현재 선택된 슬라이드 번호를 표시한다.
 - 데이터 모델: `[{ id, html, css, notes, transition, background }]` JSON 배열
 
-### FR-702: 슬라이드 CRUD
+### FR-702: 슬라이드 선택 및 네비게이션
 
-- 슬라이드 추가, 삭제, 재배열을 지원해야 한다.
-- 슬라이드 섬네일 리스트를 통한 네비게이션을 제공한다.
+- 각 슬라이드 카드는 **클릭으로 선택** 가능해야 한다. 선택된 슬라이드는 `border-primary` 강조 테두리와 `shadow-lg` 그림자로 시각적으로 구분한다.
+- 선택 상태는 `usePreviewStore.selectedSlideIndex`(0-based)로 관리하며, 파일 변경 시(`setFile`) 자동으로 0으로 리셋된다.
+- 슬라이드 수가 변경되면(`<section>` 파싱 결과) 선택 인덱스가 범위를 초과하지 않도록 자동 클램핑한다.
 
-### FR-703: 대화형 슬라이드 편집
+### FR-703: 대화형 슬라이드 편집 (Edit 모드)
 
-- 사용자가 자연어로 슬라이드 수정을 요청할 수 있어야 한다.
-  - 예: "슬라이드 3의 제목을 더 크게 만들어줘"
-  - 예: "2번 슬라이드에 아키텍처 다이어그램 추가"
-- Claude가 현재 슬라이드 HTML을 수신하고 수정된 HTML을 반환한다.
-- 수정 결과가 iframe에 즉시 반영된다.
+- 프리뷰 패널 헤더에 `Pencil` 아이콘의 Edit 토글 버튼을 제공하며, `slides` 타입이고 `viewMode === 'rendered'`일 때만 표시한다. 활성 시 `bg-accent`로 강조한다.
+- Edit 모드 상태는 `usePreviewStore.slideEditMode`로 관리하며, `setFile` 호출 시 자동으로 `false`로 리셋된다.
+- Edit 모드 진입 시 선택된 슬라이드에 대해 다음 UI를 제공한다:
+  1. **프롬프트 입력**: 상단에 텍스트 입력 필드와 `Send` 버튼을 제공하여 자연어로 슬라이드 수정을 요청할 수 있다. `Enter`로 전송하며, 현재 슬라이드 HTML 컨텍스트를 포함하여 Claude에게 `sendQuery`로 전달한다.
+     - 예: "제목을 더 크게 만들어줘"
+     - 예: "배경색을 파란색으로 변경"
+  2. **HTML 코드 편집기**: `<textarea>` 기반 코드 편집 영역에서 선택된 슬라이드의 `<section>` HTML을 직접 수정할 수 있다. `Cmd+S`/`Ctrl+S`로 저장한다.
+  3. **실시간 프리뷰**: 편집 영역 우측에 현재 편집 중인 HTML의 라이브 프리뷰를 표시한다.
+- 저장 시 수정된 `<section>` HTML을 원본 전체 HTML에 재조합(`reconstructHtml`)하여 에디터 탭과 디스크에 동기화한다.
+- 구현: `src/components/panels/preview/slide-preview.tsx`(`SlideCard`, `SlideEditor` 컴포넌트), `src/stores/use-preview-store.ts`(`slideEditMode`, `selectedSlideIndex`), `src/components/panels/preview/preview-panel.tsx`(Edit 버튼), `src/components/panels/preview/preview-router.tsx`(`onContentChange` 콜백).
 
 ### FR-704: 실시간 DOM 패치
 
@@ -1149,3 +1212,94 @@
 - Tauri 데스크톱 앱 아이콘도 동일한 SVG 소스에서 생성된다: `installer/tauri/src-tauri/icons/`에 `32x32.png`, `128x128.png`, `128x128@2x.png`(256×256), `icon.ico`, `icon.icns`(`iconutil`로 생성)를 출력한다.
 - 데스크톱 바로가기, Tauri 네이티브 앱, 브라우저 favicon이 모두 **동일한 마스코트**를 사용해 시각적 일관성을 유지한다.
 - 구현: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `installer/tauri/src-tauri/icons/`, `scripts/install/install.sh`, `scripts/install/install.ps1`.
+
+---
+
+## 3.12 스마트 프롬프트 인텐트 감지 (FR-1200)
+
+사용자의 채팅 입력에서 콘텐츠 생성 의도를 자동으로 감지하고, 최적화된 시스템 프롬프트를 주입하여 생성 품질을 높인다.
+
+### FR-1201: 슬라이드 생성 의도 감지
+
+- 사용자 입력에서 슬라이드/프레젠테이션 관련 키워드(슬라이드, 프레젠테이션, PPT, 발표자료, presentation, slides 등)를 감지한다.
+- 감지는 클라이언트 측에서 수행하여 지연 없이 즉시 반응한다.
+- 구현: `src/lib/claude/intent-detector.ts`.
+
+### FR-1202: 슬라이드 설정 다이얼로그
+
+- 슬라이드 의도가 감지되면 생성 전 확인 다이얼로그를 표시한다.
+- 수집 항목:
+  - **용도**: 사내 보고, 학회 발표, 수업 자료, 투자 제안, 기타(직접 입력)
+  - **텍스트 크기**: 작게 / 보통 / 크게
+  - **컬러톤**: Deep Navy, Corporate Blue, Warm, Minimal, Dark, Forest
+  - **추가 요청**: 자유 텍스트 (선택)
+- "기본 설정으로 생성" 버튼으로 기본값 적용 가능.
+- 취소 시 원래 입력이 텍스트 영역에 복원된다.
+- 구현: `src/components/panels/claude/slide-preferences-dialog.tsx`.
+
+### FR-1203: 서버 측 프롬프트 주입
+
+- 클라이언트는 WebSocket 메시지에 `intent` 메타데이터를 포함하여 전송한다.
+- 서버는 `intent.type`에 따라 레지스트리에서 프롬프트 템플릿을 조회하고, 사용자 프롬프트 앞에 디자인 가이드라인을 주입한다.
+- 주입된 시스템 프롬프트는 사용자 UI에 표시되지 않는다 (사용자는 원본 메시지만 확인).
+- 슬라이드 템플릿에 포함되는 가이드라인:
+  - 시각적 일관성 (컬러 팔레트, 폰트)
+  - Z-pattern 레이아웃, 60/40 비주얼/텍스트 비율
+  - 다양한 시각 요소 (아이콘, 차트, 다이어그램)
+  - Action Title 스타일
+- 구현: `server-handlers/prompt-templates/slides.mjs`, `server-handlers/prompt-templates/registry.mjs`.
+
+### FR-1204: 인텐트 레지스트리 확장성
+
+- 인텐트 레지스트리는 `{ type: () => import('./template.mjs') }` 패턴으로 구성된다.
+- 새로운 콘텐츠 유형(보고서, 다이어그램 등)을 레지스트리에 엔트리만 추가하면 지원 가능하다.
+- 구현: `server-handlers/prompt-templates/registry.mjs`, `src/types/intent.ts`.
+
+---
+
+## 3.13 원격 접근 (FR-1300)
+
+서버의 바인딩 주소를 `127.0.0.1`(로컬 전용)에서 `0.0.0.0`(모든 인터페이스)으로 전환하여, 같은 네트워크의 다른 기기에서 ClaudeGUI에 접속할 수 있도록 한다.
+
+### FR-1300: 원격 접근 토글
+
+- 사용자는 헤더의 Globe 아이콘 버튼을 클릭하여 원격 접근 설정 모달을 열 수 있다.
+- 모달에서 원격 접근 ON/OFF 토글 스위치를 제공한다.
+- 원격 접근 활성화 시 서버 바인딩 주소가 `0.0.0.0`으로 변경된다.
+- 비활성화 시 `127.0.0.1`로 복귀한다.
+- 설정 변경 후 "적용 및 재시작" 버튼으로 서버를 in-process 재시작한다.
+
+### FR-1301: 토큰 인증
+
+- 원격 접근 활성화 시 UUID v4 토큰이 자동 생성된다.
+- 원격 클라이언트는 `Authorization: Bearer <token>` 헤더 또는 `?token=<token>` URL 파라미터로 인증한다.
+- localhost(`127.0.0.1`, `::1`) 요청은 토큰 검증이 면제된다.
+- 토큰 복사 버튼과 재생성 버튼을 모달에서 제공한다.
+
+### FR-1302: 서버 설정 영속화
+
+- 설정은 `~/.claudegui/server-config.json`에 저장된다.
+- 설정 스키마: `{ "remoteAccess": boolean, "remoteAccessToken": string|null }`.
+- 서버 시작 시 설정 파일을 읽어 바인딩 주소와 토큰을 결정한다.
+- `HOST` 환경변수가 명시된 경우 설정 파일보다 우선한다.
+
+### FR-1303: 네트워크 정보 표시
+
+- 원격 접근 모달에서 현재 LAN IP 목록을 표시한다 (`os.networkInterfaces()`).
+- 상태바에 원격 접근 상태를 표시한다 (활성 시 "Remote (IP)" 텍스트).
+- 헤더의 Globe 아이콘이 활성 상태일 때 녹색으로 표시된다.
+
+### FR-1304: 서버 관리 API
+
+- `GET /api/server/status` — 서버 상태(hostname, port, remoteAccess, hasToken, localIPs, uptime) 반환.
+- `GET /api/server/config` — 현재 설정 반환.
+- `PUT /api/server/config` — 설정 저장 (remoteAccess, remoteAccessToken).
+- `POST /api/server/restart` — 서버 in-process 재시작 트리거.
+- 모든 관리 API는 localhost에서만 접근 가능하다.
+
+### FR-1305: Tauri 데스크탑 앱 통합
+
+- Tauri 런처는 시작 시 `~/.claudegui/server-config.json`을 읽어 HOST 환경변수를 결정한다.
+- Tauri IPC `restart_server` 커맨드로 sidecar 프로세스 재시작을 지원한다.
+- 웹 UI에서 `isTauri()` 감지를 통해 적절한 재시작 경로를 선택한다.
+- 구현: `installer/tauri/src-tauri/src/main.rs`, `src/lib/runtime.ts`.

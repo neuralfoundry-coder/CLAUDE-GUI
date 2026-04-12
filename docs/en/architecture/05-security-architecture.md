@@ -238,11 +238,13 @@ export function middleware(req: NextRequest) {
   const res = NextResponse.next();
   res.headers.set('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",  // Monaco CDN
-    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com",
+    "worker-src 'self' blob:",                                    // Monaco web workers
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com",
     "img-src 'self' data: blob:",
-    "connect-src 'self' ws://localhost:3000 wss://localhost:3000",
-    "frame-src 'self' data:",  // iframe srcdoc
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",       // Monaco source maps
+    "frame-src 'self' data: blob:",                                // iframe srcdoc + blob
   ].join('; '));
   return res;
 }
@@ -411,3 +413,36 @@ Verify the following before release:
 - [ ] Is rate limiting applied?
 - [ ] Are file-size limits enforced?
 - [ ] Is `.env.local` included in `.gitignore`?
+- [ ] Is the server bound to `127.0.0.1` only when remote access is disabled?
+- [ ] Does token authentication work when remote access is enabled?
+- [ ] Are server management APIs (`/api/server/*`) accessible only from localhost?
+
+---
+
+## 5.8 Remote Access Security (FR-1300)
+
+### 5.8.1 Token Authentication Middleware
+
+- When remote access is enabled with a token, all HTTP/WebSocket requests undergo token validation.
+- **HTTP**: validates `Authorization: Bearer <token>` header.
+- **WebSocket upgrade**: validates `?token=<token>` query parameter (browsers cannot send custom headers on upgrade).
+- **Localhost exemption**: requests from `127.0.0.1`, `::1`, `::ffff:127.0.0.1` pass without a token.
+- Validation failure returns HTTP 401 or WebSocket `HTTP/1.1 401 Unauthorized`.
+
+### 5.8.2 Management API Access Control
+
+- `/api/server/status`, `/api/server/config`, and `/api/server/restart` are accessible only from localhost.
+- Prevents remote clients from modifying server settings or triggering restarts.
+- Validation: checks that `req.headers.host` starts with `127.0.0.1`, `localhost`, or `[::1]`.
+
+### 5.8.3 Token Management
+
+- Tokens are generated with `crypto.randomUUID()` (UUID v4), ensuring sufficient entropy (122 bits).
+- Tokens are stored in plaintext in `~/.claudegui/server-config.json`. File permissions of 600 (user-only) are recommended.
+- The `?token=` parameter in WebSocket URLs may be visible in proxy logs; for production environments, SSH tunneling or a TLS proxy is recommended.
+
+### 5.8.4 CORS Policy
+
+- Local mode: existing `ALLOWED_ORIGINS` validation is maintained.
+- Remote mode + token: token authentication replaces Origin validation. Any origin with a valid token is allowed.
+- Remote mode + no token: warning logged, all origins allowed (recommended only for development/testing).

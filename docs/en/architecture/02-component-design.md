@@ -345,13 +345,15 @@ src/components/panels/preview/
 ├── pdf-preview.tsx                 # react-pdf
 ├── markdown-preview.tsx            # react-markdown
 ├── image-preview.tsx               # zoom/pan
-├── slide-preview.tsx               # reveal.js iframe
+├── slide-preview.tsx               # multi-page vertical scroll + selection + Edit mode
 ├── source-preview.tsx              # highlight.js-backed source view (FR-614)
 ├── live-html-preview.tsx           # streaming-only path
 └── preview-download-menu.tsx       # one-click download dropdown
 ```
 
 Beyond `currentFile`/`pageNumber`/`zoom`/`fullscreen`, `usePreviewStore` carries a `viewMode: 'rendered' | 'source'` field (FR-614). The default is `'rendered'`, and calling `setFile` resets `viewMode` to `'rendered'` so the source view never sticks across file switches. An `isSourceToggleable(type)` helper only allows the toggle for `html`/`markdown`/`slides`.
+
+For slide editing, `slideEditMode: boolean` and `selectedSlideIndex: number` (0-based) fields have been added (FR-702, FR-703). Both are reset (`false`, `0`) on `setFile` calls. The Edit toggle button is displayed in the header only when `type === 'slides' && viewMode !== 'source'`.
 
 ### Router logic
 
@@ -376,7 +378,7 @@ function PreviewRouter({ filePath, content }: Props) {
   if (type === 'slides')
     return viewMode === 'source'
       ? <SourcePreview content={content} language="html" />
-      : <SlidePreview content={content} />;
+      : <SlidePreview content={content} onContentChange={handleSlideContentChange} />;
 
   // Binary / render-only types
   if (type === 'pdf') return <PDFPreview path={filePath} />;
@@ -407,29 +409,30 @@ function HTMLPreview({ content }: Props) {
 }
 ```
 
-### SlidePreview implementation
+### SlidePreview implementation (multi-page vertical scroll + Edit mode)
 
 ```typescript
-function SlidePreview({ content }: Props) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+// 1. Parse <section> elements from HTML into individual slide array
+const sections = parseSections(content); // string[]
 
-  // Patch the DOM without reload when slides change
-  useEffect(() => {
-    iframeRef.current?.contentWindow?.postMessage({
-      type: 'UPDATE_SLIDE',
-      slides: content.slides,
-    }, '*');
-  }, [content.slides]);
+// 2. Render each slide as a card (vertical scroll, click to select)
+sections.map((sec, i) => (
+  <SlideCard
+    sectionHtml={sec}
+    index={i}
+    isSelected={i === selectedSlideIndex}
+    onSelect={handleSelect}
+  />
+));
 
-  return (
-    <iframe
-      ref={iframeRef}
-      src="/reveal-host.html"  // reveal.js host page
-      sandbox="allow-scripts"
-      className="w-full h-full border-0"
-    />
-  );
-}
+// 3. When Edit mode is active, show SlideEditor
+// - Prompt input → getClaudeClient().sendQuery(instruction)
+// - HTML code editing (<textarea>) + Cmd+S to save
+// - Live preview (iframe srcDoc)
+// - Save → reconstructHtml(original, updatedSections) → onContentChange
+```
+
+`SlideCard` renders each `<section>` as a scaled-down iframe with reveal.js CSS applied, with `border-primary` highlight based on selection state. `SlideEditor` provides a three-part layout: prompt input, HTML code editor, and live preview. On save, `reconstructHtml` reassembles the original HTML and synchronizes it to both the editor tab and disk.
 
 // Inside reveal-host.html
 window.addEventListener('message', (e) => {
@@ -533,6 +536,17 @@ Candidates are collected by `listProjectFiles()` (`src/lib/fs/list-project-files
 The dropdown (`MentionPopover`) is placed `absolute bottom-full` inside a `relative` wrapper around the textarea, so it floats above the edit area. Keyboard handling (↑/↓/Enter/Tab/Escape) in `claude-chat-panel.tsx`'s `onKeyDown` intercepts those keys only while the mention popover is open; when it is closed, `Enter` continues to submit the message as before. Accepting a candidate replaces the `@<query>` token with `@<project-relative path>` (with a trailing `/` for directories) and moves the caret past the insertion point.
 
 `@` references are forwarded to the Claude Agent SDK verbatim via `sendQuery(prompt)` — the GUI never expands the reference into file content itself. Reference resolution is delegated to the CLI / SDK's standard grammar.
+
+### ClaudeChatPanel — File/Image Drag-and-Drop (FR-517)
+
+The `useChatDrop` hook in `src/components/panels/claude/use-chat-drop.ts` manages drag-and-drop and clipboard paste for the Claude chat panel. It uses the shared utilities `collectFilesFromDataTransfer()` and `hasFilePayload()` from `src/lib/fs/collect-files.ts` to extract files from `DataTransfer` objects (the same utilities are shared with the file explorer panel).
+
+When files are dropped, the hook calls `filesApi.mkdir('uploads')` → `filesApi.upload('uploads', files)` to save them to the project `uploads/` directory, then inserts the server-returned `writtenPath` values as `@{path}` references into the input field. For clipboard paste, images are uploaded with filenames in `paste-{timestamp}.{ext}` format to the same directory.
+
+UI components:
+- `DropOverlay` (`drop-overlay.tsx`): displays a semi-transparent overlay across the entire panel during drag to indicate the droppable area.
+- `AttachedFilesBar` (`attached-files-bar.tsx`): shows uploaded/uploading files as chips above the input field; each chip includes a status icon (spinner/check/error) and a remove button.
+- The send button is disabled while uploads are in progress, and all chips are cleared when the message is sent.
 
 ## 2.8 State Management (Zustand Stores)
 
@@ -810,3 +824,49 @@ Session restore (`useClaudeStore.loadSession`) calls `extractFromMessage(..., { 
 - **Office viewers are dynamically imported** — `mammoth` (~800 KB), `xlsx`, and `jszip` are only fetched the first time the user opens a document of that kind, so the initial page load stays lean.
 - **Auto-popup only on `result`** — popping the dialog mid-stream would hurt readability, so `flushPendingOpen` is called exactly once per turn on the Agent SDK's `result` event.
 - **Recoverable failures** — if `window.open` is blocked or `<canvas>` rasterisation fails the export path falls back to downloading the source HTML. If previewing a binary artifact fails the viewer swaps to a metadata card with a single Export button.
+
+---
+
+## 2.10 Remote Access Module (FR-1300)
+
+Dynamically switches the server binding address and manages external access through token authentication.
+
+### Server-side components
+
+| File | Role |
+|------|------|
+| `src/lib/server-config.mjs` | Read/write `~/.claudegui/server-config.json` |
+| `src/lib/server-config-wrapper.ts` | TypeScript wrapper for API routes |
+| `src/app/api/server/status/route.ts` | Server status query (hostname, port, LAN IPs) |
+| `src/app/api/server/config/route.ts` | Configuration read/write |
+| `src/app/api/server/restart/route.ts` | In-process server restart trigger |
+
+### server.js changes
+
+- **Config loading**: reads `remoteAccess` and `remoteAccessToken` from `~/.claudegui/server-config.json` at startup.
+- **Dynamic hostname**: `0.0.0.0` when `remoteAccess: true`, otherwise `127.0.0.1`. The `HOST` env var takes precedence.
+- **Token middleware**: validates `Authorization: Bearer` header on HTTP requests and `?token=` query parameter on WebSocket upgrades. Localhost requests are exempt.
+- **In-process restart**: `global.__restartServer` function closes only the HTTP/WS servers and recreates them with new settings. The Next.js `app.prepare()` result is reused.
+
+### Client-side components
+
+| File | Role |
+|------|------|
+| `src/stores/use-remote-access-store.ts` | Remote access state management (Zustand, no localStorage) |
+| `src/components/modals/remote-access-modal.tsx` | Settings modal (toggle, token, network info) |
+| `src/components/layout/header.tsx` | Globe icon button (green when active) |
+| `src/components/layout/status-bar.tsx` | "Remote (IP)" status display |
+| `src/lib/runtime.ts` | Tauri runtime detection (`isTauri()`) |
+
+### Data flow
+
+```
+User → Globe button → RemoteAccessModal
+  ├─ Toggle change → PUT /api/server/config → ~/.claudegui/server-config.json
+  └─ Apply → POST /api/server/restart (standalone)
+           └─ invoke('restart_server') (Tauri)
+               ↓
+       Close HTTP+WS servers → Reload config → New server listen
+               ↓
+       Poll /api/health → Update status → Close modal
+```

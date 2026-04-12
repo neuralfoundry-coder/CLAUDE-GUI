@@ -51,6 +51,139 @@ User                Browser (React)           Server (Node.js)         Claude CL
 
 **Related FR**: FR-501, FR-502, FR-504, FR-505
 
+### 3.1.1 Intent Detection and Prompt Injection Flow
+
+When a user requests content generation (e.g., slides), the client detects the intent and the server injects an optimized system prompt.
+
+```
+User                Browser (React)           Server (Node.js)         Claude CLI
+  │                     │                          │                       │
+  │ 1. "Make a PPT"     │                          │                       │
+  │──────────────────▶│                          │                       │
+  │                     │ 2. detectIntent()        │                       │
+  │                     │    → 'slides' detected   │                       │
+  │                     │                          │                       │
+  │ 3. Slide preferences│                          │                       │
+  │    dialog shown     │                          │                       │
+  │◀──────────────────│                          │                       │
+  │                     │                          │                       │
+  │ 4. Select purpose/  │                          │                       │
+  │    size/color, OK   │                          │                       │
+  │──────────────────▶│                          │                       │
+  │                     │ 5. ws.send({             │                       │
+  │                     │   type: 'query',         │                       │
+  │                     │   prompt: (original),    │                       │
+  │                     │   intent: { type:        │                       │
+  │                     │     'slides', prefs }    │                       │
+  │                     │ })                       │                       │
+  │                     │─────────────────────────▶│                       │
+  │                     │                          │ 6. intentRegistry     │
+  │                     │                          │    .slides()          │
+  │                     │                          │    buildSlidePrompt() │
+  │                     │                          │ 7. sdk.query({        │
+  │                     │                          │   prompt: augmented })│
+  │                     │                          │──────────────────────▶│
+  │                     │                          │                       │
+  │                     │                          │◀──── response stream │
+  ��                     │◀─────────────────────────│                       │
+  │ 8. Slide result     │                          │                       │
+  │    displayed        │                          │                       │
+  │◀──────────────────│                          │                       │
+```
+
+- Only the original message is shown in the user UI (`pushUserMessage(prompt)`).
+- System prompt injection happens server-side only, never exposed to the client.
+- Falls back to a regular query if intent detection fails.
+
+**Related FR**: FR-1201, FR-1202, FR-1203, FR-1204
+
+### 3.1.2 Slash Command Processing Flow
+
+Processing flow when the user enters a command starting with `/`.
+
+```
+User                Browser (React)           Server (Node.js)         Claude CLI
+  │                     │                          │                       │
+  │ 1. Type "/"         │                          │                       │
+  │──────────────────▶│                          │                       │
+  │                     │ 2. detectSlashCommand()  │                       │
+  │                     │    → show popover        │                       │
+  │◀──────────────────│                          │                       │
+  │                     │                          │                       │
+  │ 3. Select/Enter     │                          │                       │
+  │──────────────────▶│                          │                       │
+  │                     │ 4. resolveSlashCommand() │                       │
+  │                     │                          │                       │
+  │                     │ [Client command?]        │                       │
+  │                     │ ──── Yes ────            │                       │
+  │                     │ 5a. executeSlashCommand() │                       │
+  │                     │   pushSystemMessage()    │                       │
+  │ 6a. System message  │                          │                       │
+  │     displayed       │                          │                       │
+  │◀──────────────────│                          │                       │
+  │                     │                          │                       │
+  │                     │ ──── No (passthrough) ── │                       │
+  │                     │ 5b. sendQuery(input)     │                       │
+  │                     │─────────────────────────▶│                       │
+  │                     │                          │ 6b. sdk.query()       │
+  │                     │                          │──────────────────────▶│
+  │                     │                          │◀──── response stream │
+  │                     │◀─────────────────────────│                       │
+  │ 7b. Response        │                          │                       │
+  │     displayed       │                          │                       │
+  │◀──────────────────│                          │                       │
+```
+
+- Client commands (`/clear`, `/new`, `/usage`, `/context`, `/cost`, `/model`, `/help`) are handled immediately without server communication.
+- Passthrough commands (`/compact`, `/plan`, `/review`) forward the entire input to Claude CLI.
+- The popover is shown only while the input starts with `/` and contains no spaces; candidates are filtered by prefix matching.
+
+**Related FR**: FR-509, FR-516
+
+### 3.1.3 File/Image Drag-and-Drop Flow
+
+Processing flow when a user drags and drops files or images onto the Claude chat panel, or pastes from the clipboard.
+
+```
+User                Browser (React)              Server (REST)          File System
+  │                     │                             │                     │
+  │ 1. Drag files       │                             │                     │
+  │──────────────────▶│                             │                     │
+  │                     │ 2. hasFilePayload() check   │                     │
+  │                     │    Show DropOverlay          │                     │
+  │◀──────────────────│                             │                     │
+  │                     │                             │                     │
+  │ 3. Drop files       │                             │                     │
+  │──────────────────▶│                             │                     │
+  │                     │ 4. collectFilesFromDataTransfer()                  │
+  │                     │ 5. filesApi.mkdir('uploads') │                     │
+  │                     │─────────────────────────────▶│                     │
+  │                     │                             │ 6. mkdir uploads/    │
+  │                     │                             │────────────────────▶│
+  │                     │ 7. filesApi.upload('uploads', files)               │
+  │                     │─────────────────────────────▶│                     │
+  │                     │                             │ 8. Save files        │
+  │                     │                             │────────────────────▶│
+  │                     │◀─────────────────────────────│ Return writtenPath  │
+  │                     │                             │                     │
+  │                     │ 9. insertReferences()        │                     │
+  │                     │    → setInput('@uploads/file.ext ')                │
+  │                     │    + Show AttachedFilesBar chips                    │
+  │◀──────────────────│                             │                     │
+  │                     │                             │                     │
+  │ 10. Enter (send)    │                             │                     │
+  │──────────────────▶│                             │                     │
+  │                     │ 11. sendQuery('@uploads/file.ext ...')             │
+  │                     │─────────────── (continues as existing 3.1 flow) ──│
+```
+
+- Drag-and-drop and clipboard paste (images) share the same `uploadAndInsert()` code path.
+- Pasted images are auto-named `paste-{timestamp}.{ext}`.
+- During upload, `AttachedFilesBar` shows a spinner and the send button is disabled.
+- `@` references are delegated to the CLI/SDK's standard grammar (same as FR-511).
+
+**Related FR**: FR-511, FR-517
+
 ---
 
 ## 3.2 File Edit and Sync Flow
@@ -268,7 +401,7 @@ PreviewRouter → type detection
   ├── PDF → PDFPreview (react-pdf)
   ├── MD → MarkdownPreview
   ├── Image → ImagePreview
-  └── Slides → SlidePreview (reveal.js)
+  └── Slides → SlidePreview (multi-page vertical scroll + Edit mode)
 ```
 
 ### On editor change

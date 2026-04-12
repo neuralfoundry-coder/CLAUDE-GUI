@@ -343,13 +343,15 @@ src/components/panels/preview/
 ├── pdf-preview.tsx                 # react-pdf
 ├── markdown-preview.tsx            # react-markdown
 ├── image-preview.tsx               # 줌/팬
-├── slide-preview.tsx               # reveal.js iframe
+├── slide-preview.tsx               # 멀티페이지 세로 스크롤 + 선택 + Edit 모드
 ├── source-preview.tsx              # highlight.js 기반 소스 뷰 (FR-614)
 ├── live-html-preview.tsx           # 스트리밍 전용 경로
 └── preview-download-menu.tsx       # 즉시 다운로드 드롭다운
 ```
 
 `usePreviewStore`는 `currentFile`/`pageNumber`/`zoom`/`fullscreen` 외에 `viewMode: 'rendered' | 'source'` 필드를 유지한다(FR-614). 기본값은 `'rendered'`이며 `setFile` 호출 시 자동으로 `'rendered'`로 리셋되어 파일 전환 시 소스 뷰가 고착되지 않는다. `isSourceToggleable(type)` 헬퍼가 `html`/`markdown`/`slides`에만 토글을 허용한다.
+
+슬라이드 편집을 위해 `slideEditMode: boolean`과 `selectedSlideIndex: number`(0-based) 필드가 추가되었다(FR-702, FR-703). `setFile` 호출 시 두 값 모두 초기화(`false`, `0`)된다. Edit 토글 버튼은 `type === 'slides' && viewMode !== 'source'`일 때만 헤더에 표시된다.
 
 ### 라우터 로직
 
@@ -373,7 +375,7 @@ function PreviewRouter({ filePath, content }: Props) {
   if (type === 'slides')
     return viewMode === 'source'
       ? <SourcePreview content={content} language="html" />
-      : <SlidePreview content={content} />;
+      : <SlidePreview content={content} onContentChange={handleSlideContentChange} />;
 
   // 바이너리/렌더 전용 타입
   if (type === 'pdf') return <PDFPreview path={filePath} />;
@@ -404,29 +406,30 @@ function HTMLPreview({ content }: Props) {
 }
 ```
 
-### SlidePreview 구현
+### SlidePreview 구현 (멀티페이지 세로 스크롤 + Edit 모드)
 
 ```typescript
-function SlidePreview({ content }: Props) {
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+// 1. HTML에서 <section> 요소를 파싱하여 개별 슬라이드 배열로 변환
+const sections = parseSections(content); // string[]
 
-  // 슬라이드 변경 시 리로드 없이 DOM 패치
-  useEffect(() => {
-    iframeRef.current?.contentWindow?.postMessage({
-      type: 'UPDATE_SLIDE',
-      slides: content.slides,
-    }, '*');
-  }, [content.slides]);
+// 2. 각 슬라이드를 카드로 렌더 (세로 스크롤, 클릭 선택)
+sections.map((sec, i) => (
+  <SlideCard
+    sectionHtml={sec}
+    index={i}
+    isSelected={i === selectedSlideIndex}
+    onSelect={handleSelect}
+  />
+));
 
-  return (
-    <iframe
-      ref={iframeRef}
-      src="/reveal-host.html"  // reveal.js 호스트 페이지
-      sandbox="allow-scripts"
-      className="w-full h-full border-0"
-    />
-  );
-}
+// 3. Edit 모드 진입 시 SlideEditor 표시
+// - 프롬프트 입력 → getClaudeClient().sendQuery(instruction)
+// - HTML 코드 편집 (<textarea>) + Cmd+S 저장
+// - 실시간 프리뷰 (iframe srcDoc)
+// - 저장 → reconstructHtml(original, updatedSections) → onContentChange
+```
+
+`SlideCard`는 각 `<section>`을 reveal.js CSS가 적용된 축소 iframe으로 렌더하며, 선택 상태에 따라 `border-primary` 강조를 적용한다. `SlideEditor`는 프롬프트 입력, HTML 코드 편집기, 실시간 프리뷰를 3분할로 제공하며, 저장 시 `reconstructHtml`로 원본 HTML을 재조합하여 에디터 탭과 디스크에 동기화한다.
 
 // reveal-host.html 내부
 window.addEventListener('message', (e) => {
@@ -530,6 +533,17 @@ export async function* handleQuery({
 드롭다운(`MentionPopover`)은 `textarea`의 `relative` 컨테이너 안에서 `absolute bottom-full`로 배치되어 편집 영역 위쪽에 떠 있는다. 키보드 처리(↑/↓/Enter/Tab/Escape)는 `claude-chat-panel.tsx`의 `onKeyDown`에서 멘션이 열려 있을 때만 가로채며, 닫혀 있을 때의 Enter는 기존대로 메시지를 제출한다. 선택 결과는 `@<project-relative path>` (디렉토리는 뒤에 `/`) 형태로 원 토큰을 치환한 뒤 커서를 삽입 지점 뒤로 이동시킨다.
 
 `@` 참조는 Claude Agent SDK(`sendQuery(prompt)`)에 원문 그대로 전달된다 — GUI는 참조를 파일 내용으로 미리 확장하지 않으며, 해석은 CLI/SDK의 표준 문법 처리에 위임한다.
+
+### ClaudeChatPanel — 파일/이미지 드래그 앤 드롭 (FR-517)
+
+`src/components/panels/claude/use-chat-drop.ts`의 `useChatDrop` 훅이 Claude 채팅 패널의 드래그 앤 드롭 및 클립보드 붙여넣기를 관리한다. 공유 유틸리티 `src/lib/fs/collect-files.ts`의 `collectFilesFromDataTransfer()`와 `hasFilePayload()`를 사용하여 `DataTransfer`에서 파일을 추출한다 (파일 탐색기 패널과 동일 유틸리티 공유).
+
+파일이 드롭되면 `filesApi.mkdir('uploads')` → `filesApi.upload('uploads', files)` 순서로 호출하여 프로젝트 `uploads/` 디렉토리에 저장한 뒤, 서버가 반환한 `writtenPath`를 `@{path}` 형식으로 입력창에 삽입한다. 클립보드 붙여넣기 시 이미지는 `paste-{timestamp}.{ext}` 파일명으로 동일 경로에 업로드된다.
+
+UI 구성:
+- `DropOverlay`(`drop-overlay.tsx`): 드래그 중 패널 전체에 반투명 오버레이를 표시하여 드롭 가능 영역을 안내한다.
+- `AttachedFilesBar`(`attached-files-bar.tsx`): 업로드된/업로드 중인 파일을 칩 형태로 입력창 위에 표시하며, 각 칩에 상태 아이콘(스피너/체크/에러)과 제거 버튼을 포함한다.
+- 업로드 중에는 전송 버튼이 비활성화되며, 메시지 전송 시 모든 칩이 초기화된다.
 
 ## 2.8 상태 관리 (Zustand Stores)
 
@@ -778,3 +792,49 @@ ArtifactsModal preview
 - **동적 import로 오피스 번들 지연 로드** — `mammoth`(≈800KB), `xlsx`, `jszip`은 해당 종류의 아티팩트를 처음 열람할 때만 번들링되어 초기 페이지 로드에 영향이 없다.
 - **`result` 시점에만 자동 팝업** — 스트리밍 중에 모달이 튀어오르면 가독성을 해치므로, Agent SDK의 `result` 이벤트에서 한 번만 `flushPendingOpen`을 호출한다.
 - **복구 가능한 실패** — PNG/PDF 경로에서 `window.open`이 차단되거나 `<canvas>` 변환이 실패하면 소스 HTML 다운로드로 폴백한다. 파일 기반 바이너리 아티팩트의 preview가 실패하면 Export 단일 버튼이 포함된 metadata 카드로 전환된다.
+
+---
+
+## 2.10 원격 접근 모듈 (FR-1300)
+
+서버의 바인딩 주소를 동적으로 전환하고 토큰 인증을 통해 외부 접속을 관리하는 모듈이다.
+
+### 서버 측 컴포넌트
+
+| 파일 | 역할 |
+|------|------|
+| `src/lib/server-config.mjs` | `~/.claudegui/server-config.json` 읽기/쓰기 |
+| `src/lib/server-config-wrapper.ts` | API route에서 사용하는 TypeScript 래퍼 |
+| `src/app/api/server/status/route.ts` | 서버 상태 조회 (hostname, port, LAN IPs) |
+| `src/app/api/server/config/route.ts` | 설정 읽기/쓰기 |
+| `src/app/api/server/restart/route.ts` | In-process 서버 재시작 트리거 |
+
+### server.js 변경사항
+
+- **설정 로드**: 시작 시 `~/.claudegui/server-config.json`에서 `remoteAccess`와 `remoteAccessToken` 읽기.
+- **동적 hostname**: `remoteAccess: true`이면 `0.0.0.0`, 아니면 `127.0.0.1`. `HOST` 환경변수가 우선.
+- **토큰 미들웨어**: HTTP 요청의 `Authorization: Bearer` 헤더와 WebSocket upgrade의 `?token=` 파라미터 검증. localhost 요청 면제.
+- **In-process 재시작**: `global.__restartServer` 함수로 HTTP/WS 서버만 닫고 새 설정으로 재생성. Next.js `app.prepare()`는 재사용.
+
+### 클라이언트 측 컴포넌트
+
+| 파일 | 역할 |
+|------|------|
+| `src/stores/use-remote-access-store.ts` | 원격 접근 상태 관리 (Zustand, localStorage 미사용) |
+| `src/components/modals/remote-access-modal.tsx` | 설정 모달 (토글, 토큰, 네트워크 정보) |
+| `src/components/layout/header.tsx` | Globe 아이콘 버튼 (활성 시 녹색) |
+| `src/components/layout/status-bar.tsx` | "Remote (IP)" 상태 표시 |
+| `src/lib/runtime.ts` | Tauri 런타임 감지 (`isTauri()`) |
+
+### 데이터 흐름
+
+```
+사용자 → Globe 버튼 → RemoteAccessModal
+  ├─ 토글 변경 → PUT /api/server/config → ~/.claudegui/server-config.json
+  └─ 적용 → POST /api/server/restart (standalone)
+           └─ invoke('restart_server') (Tauri)
+               ↓
+       HTTP+WS 서버 닫기 → 설정 재로드 → 새 서버 listen
+               ↓
+       /api/health 폴링 → 상태 갱신 → 모달 닫기
+```

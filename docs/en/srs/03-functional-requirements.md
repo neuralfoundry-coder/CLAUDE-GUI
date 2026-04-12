@@ -123,9 +123,10 @@
 
 ### FR-208: Local file drag-and-drop / paste upload
 
-- The user shall be able to **drag and drop** files from the local OS file manager (macOS Finder, Windows Explorer, etc.) onto the web file-explorer panel to copy them into the current project root.
+- The user shall be able to **drag and drop** files from the local OS file manager (macOS Finder, Windows Explorer, etc.) onto the web file-explorer panel to copy them into the current project.
 - The user shall be able to **paste** files/images from the clipboard into the web file-explorer panel (`Cmd+V` / `Ctrl+V`) to copy them into the project root. When the panel has focus, `clipboardData.files` from the `onPaste` event is consumed.
 - While dragging, the panel shall render a `ring-2 ring-primary` border together with a "Drop files to upload to project root" overlay to provide visual feedback. Only drags whose `e.dataTransfer.types` include `'Files'` are accepted, so the handler is distinguished from react-arborist's internal node drags.
+- **Folder targeting**: When files are dropped inside the file tree area, the target folder is determined from the node under the cursor. Dropping on a directory node uploads into that directory; dropping on a file node uploads into the file's parent directory; dropping on empty space uploads to the project root. Dropping outside the tree area (e.g. the panel header) also uploads to the project root. This behavior is implemented via a **capture-phase** `drop` event listener on the tree container that intercepts external file drops before react-dnd's HTML5Backend can consume the event.
 - Uploads use the `POST /api/files/upload` endpoint (see `04-api-design.md`). The payload is `multipart/form-data` with a `destDir` field (path relative to the project root, empty meaning root) and one or more repeated `files` fields.
 - The server shall enforce the following:
   - Use `resolveSafe(destDir)` to restrict the destination directory to the project-root sandbox.
@@ -134,7 +135,7 @@
   - If a filename already exists, do not overwrite — disambiguate by appending ` (1)`, ` (2)`, etc.
 - On success, the client calls `refreshRoot()` to refresh the tree immediately. The `/ws/files` watcher also emits a change event, but the manual refresh avoids waiting on the `@parcel/watcher` event batch.
 - On failure, the header status label renders `upload failed: <message>` highlighted with `text-destructive`.
-- Implementation: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (drop/paste handlers, overlay).
+- Implementation: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (drop/paste handlers, overlay), `src/components/panels/file-explorer/file-tree.tsx` (capture-phase external file drop handler, `onExternalFileDrop` prop).
 
 ### FR-209: Explorer root navigation (up / down re-rooting)
 
@@ -633,8 +634,8 @@
 ### FR-512: Model Selection
 
 - Users shall be able to select the Claude model via a dropdown in the Claude chat panel header.
-- Options: `Auto` (default, SDK default model) and supported models (`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`).
-- Each model item displays the model name, context window size, and input price tier.
+- Options: `Auto` (default, SDK default model) and supported models (`claude-opus-4-6` (1M ctx), `claude-sonnet-4-6` (200K ctx), `claude-haiku-4-5-20251001` (200K ctx)).
+- Each model item displays the model name, description (e.g. "Most capable for complex work"), context window size, and input price tier.
 - The selected model is stored in `useSettingsStore.selectedModel` and persisted via `localStorage`.
 - When sending a query, the selected model ID is included in `ClaudeQueryMessage.options.model` and forwarded to the server.
 - Implementation: `src/lib/claude/model-specs.ts`, `src/components/panels/claude/model-selector.tsx`, `src/stores/use-settings-store.ts`, `src/lib/websocket/claude-client.ts`.
@@ -663,6 +664,36 @@
 - User messages (`role: 'user'`) are always displayed regardless of filters.
 - Filter state is managed in `useClaudeStore.messageFilter` and all filters are reset to active on session reset.
 - Implementation: `src/components/panels/claude/chat-filter-bar.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
+### FR-516: Slash Command System
+
+- When the user types text starting with `/` in the Claude chat input, the system shall display a popover listing available slash commands.
+- Slash commands are classified into two types:
+  - **Client commands**: handled directly within the GUI (`/clear`, `/new`, `/usage`, `/context`, `/cost`, `/model`, `/help`)
+  - **Passthrough commands**: the entire input is forwarded to Claude CLI (`/compact`, `/plan`, `/review`)
+- The popover is shown while the input starts with `/` and contains no spaces; candidates are filtered by prefix matching as the user types.
+- Keyboard navigation: `ArrowUp`/`ArrowDown` to move between candidates, `Enter` to execute immediately, `Tab` to fill the command name into the input, `Escape` to dismiss.
+- Commands are grouped by category: Session (`/clear`, `/new`, `/compact`), Info (`/usage`, `/context`, `/cost`, `/model`, `/help`), Mode (`/plan`, `/review`).
+- Client commands display results as system messages (`role: 'system'`, `kind: 'system'`) in the chat area.
+- `/help` displays a Markdown table of all available slash commands.
+- `/usage`, `/context`, `/cost` query the active session data from `useClaudeStore.sessionStats`.
+- `/model` displays current model information and specs from `src/lib/claude/model-specs.ts`.
+- Alias support: `/reset` is an alias for `/new`.
+- Implementation: `src/lib/claude/slash-commands.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+
+### FR-517: File/Image Drag-and-Drop Input
+
+- When files or images are dragged and dropped onto the Claude chat panel, they shall be uploaded to the project `uploads/` directory and `@uploads/filename` references shall be automatically inserted into the input field.
+- Pasting images from the clipboard (Cmd+V / Ctrl+V) shall trigger the same upload→reference insertion flow.
+  - Pasted images are saved with filenames in `paste-{timestamp}.{ext}` format.
+- While dragging over the chat panel, a visual overlay (`DropOverlay`) shall be displayed to indicate the droppable area.
+- Uploaded files are shown as file chips (`AttachedFilesBar`) above the input field; each chip includes the filename, status (uploading/done/error), and a remove button.
+- Clicking the remove button on a file chip shall remove both the chip and the corresponding `@` reference from the input.
+- The send button shall be disabled while files are uploading.
+- All file chips are cleared upon sending a message.
+- The existing `/api/files/upload` endpoint and `filesApi.upload()` are reused; file size limits (50MB/file, 200MB/total) apply.
+- Text or URL drags are ignored (`hasFilePayload` validation).
+- Implementation: `src/components/panels/claude/use-chat-drop.ts`, `src/components/panels/claude/drop-overlay.tsx`, `src/components/panels/claude/attached-files-bar.tsx`, `src/lib/fs/collect-files.ts`.
 
 ### FR-520: Native application run mode (v0.3)
 
@@ -780,9 +811,15 @@
   | `pptx` | Original file |
 
 - Text-backed types (`html`/`markdown`/`slides`, plus `.svg` images) reuse the in-memory content from the editor tab when available; otherwise they fetch from disk via `filesApi.read()` before converting and downloading. File-backed binary types (`pdf`/`image` except SVG/`docx`/`xlsx`/`pptx`) stream the original bytes from `/api/files/raw?path=...`.
-- PDF export opens `window.open()` + `window.print()` to trigger the browser print dialog and lets the user save via the OS "Save as PDF" flow — the same policy as the artifact export pipeline (FR-1004). No server-side PDF renderer (Puppeteer, etc.) is required.
+- **PDF export options dialog**: When the user selects PDF export, a `PdfExportDialog` is shown before the browser print dialog, offering the following options:
+  - **Page orientation**: Auto-detect (default, respects the HTML document's own `@page` rules) / Portrait / Landscape.
+  - **Page size**: A4 (default) / Letter / Legal.
+  - In auto-detect mode, if the HTML content contains presentation structures (Reveal.js, multiple `<section>` elements) or `@page { … landscape }` rules, a landscape recommendation hint is displayed (`detectLandscapeHint()`).
+- Print CSS is dynamically generated via `buildPrintCss(options)`, reflecting the selected orientation and size in the `@page { size: … }` rule. In auto mode no `@page` rule is injected, fully preserving the HTML document's existing layout.
+- Enhanced page-break rules: `<hr>` acts as a page separator via `page-break-after: always`; `<section>`, `.slide`, and `[data-page-break]` elements trigger `page-break-before: always`. Headings (`h1`–`h6`) are protected with `page-break-after: avoid` to prevent orphaned titles.
+- PDF export opens `window.print()` to trigger the browser print dialog and lets the user save via the OS "Save as PDF" flow — the same policy as the artifact export pipeline (FR-1004). No server-side PDF renderer (Puppeteer, etc.) is required.
 - DOCX/XLSX/PPTX binary types expose only "Original file" because the viewer already reads the file via `/api/files/raw`. Transcoding (e.g. DOCX → PDF) is out of scope for v1.0.
-- Implementation: `src/lib/preview/preview-download.ts` (adapts the live preview state into an `ExtractedArtifact` shape and reuses the download/print pipeline in `src/lib/claude/artifact-export.ts`), `src/components/panels/preview/preview-download-menu.tsx` (header dropdown), `src/components/panels/preview/preview-panel.tsx` (header placement).
+- Implementation: `src/lib/preview/preview-download.ts` (adapts the live preview state into an `ExtractedArtifact` shape and reuses the download/print pipeline in `src/lib/claude/artifact-export.ts`), `src/components/panels/preview/preview-download-menu.tsx` (header dropdown + PDF dialog integration), `src/components/panels/preview/pdf-export-dialog.tsx` (PDF export options dialog), `src/components/panels/preview/preview-panel.tsx` (header placement).
 
 ### FR-614: Preview source/rendered view toggle (v0.5)
 
@@ -793,27 +830,53 @@
 - The live HTML streaming preview (`FR-610`) keeps its **existing internal toggle**; the header toggle is hidden when `showLive === true` (`autoSwitch && liveMode !== 'idle'`). The two toggle paths are mutually exclusive.
 - Implementation: `src/stores/use-preview-store.ts` (`viewMode`, `setViewMode`, `toggleViewMode`, `isSourceToggleable` helper), `src/components/panels/preview/preview-panel.tsx` (header toggle button), `src/components/panels/preview/preview-router.tsx` (source view branch), `src/components/panels/preview/source-preview.tsx` (new syntax-highlighted viewer), `src/app/layout.tsx` (highlight theme CSS).
 
+### FR-615: Preview TTS (Text-to-Speech) read-aloud (v0.6)
+
+- Text-based previews (`html`, `markdown`, `slides`) shall provide a **read-aloud** feature using the browser's built-in Web Speech API (`window.speechSynthesis`).
+- The preview panel header shall expose a `Volume2` / `VolumeX` icon toggle button for play/stop. While speaking, the button is highlighted with `bg-accent`.
+- The toggle button is shown only when:
+  - The preview type is one of `html`, `markdown`, or `slides`
+  - Live preview mode is inactive (`showLive === false`)
+  - The browser supports `speechSynthesis`
+- Text extraction logic:
+  - **Markdown**: raw markdown text is used as-is
+  - **HTML**: parsed via `DOMParser`, then `body.textContent` is extracted
+  - **Slides**: HTML `<section>` elements are parsed; only the text of the slide at `selectedSlideIndex` is extracted. If no index is provided, all slides are joined with `.` separators
+- Ongoing TTS is automatically stopped when the previewed file changes.
+- A keep-alive workaround for Chrome/Chromium's 15-second auto-pause bug calls `pause()`→`resume()` every 10 seconds.
+- On component unmount, `speechSynthesis.cancel()` is called for cleanup.
+- The system default voice is used; no voice selection UI is provided.
+- Implementation: `src/hooks/use-speech-synthesis.ts` (Web Speech API wrapper hook), `src/lib/preview/extract-preview-text.ts` (text extraction utility), `src/components/panels/preview/preview-panel.tsx` (header TTS button).
+
 ---
 
 ## 3.7 Presentation Features (FR-700)
 
-### FR-701: reveal.js slide rendering
+### FR-701: reveal.js slide rendering (multi-page vertical scroll)
 
-- Slides shall be rendered with reveal.js 5.x running inside an iframe.
+- When rendering HTML-based slides, all `<section>` elements shall be parsed and displayed in a **vertical scroll** layout with page separation. Instead of a single-page reveal.js default view, a card layout shall be provided so all slides are visible at a glance.
+- Each slide card shall render as a scaled-down preview (iframe `srcDoc`) with reveal.js CSS applied, showing a slide number badge in the top-left corner.
+- The slide list header shall display the total number of slides and the currently selected slide number.
 - Data model: a JSON array `[{ id, html, css, notes, transition, background }]`.
 
-### FR-702: Slide CRUD
+### FR-702: Slide selection and navigation
 
-- Adding, deleting, and reordering slides shall be supported.
-- Slide-thumbnail navigation shall be provided.
+- Each slide card shall be **selectable via click**. The selected slide shall be visually distinguished with a `border-primary` highlight border and `shadow-lg` shadow.
+- Selection state shall be managed via `usePreviewStore.selectedSlideIndex` (0-based) and automatically reset to 0 on file change (`setFile`).
+- When the number of slides changes (from `<section>` parsing), the selected index shall be automatically clamped to stay within bounds.
 
-### FR-703: Conversational slide editing
+### FR-703: Conversational slide editing (Edit mode)
 
-- Users shall be able to request slide edits in natural language.
-  - e.g., "Make the title on slide 3 larger"
-  - e.g., "Add an architecture diagram to slide 2"
-- Claude receives the current slide HTML and returns the modified HTML.
-- The result is reflected in the iframe immediately.
+- The preview panel header shall provide a `Pencil` icon Edit toggle button, displayed only when the type is `slides` and `viewMode === 'rendered'`. When active, it is highlighted with `bg-accent`.
+- Edit mode state shall be managed via `usePreviewStore.slideEditMode` and automatically reset to `false` on `setFile` calls.
+- When entering Edit mode, the following UI shall be provided for the selected slide:
+  1. **Prompt input**: A text input field with a `Send` button at the top allows users to request slide modifications in natural language. `Enter` submits the prompt, which includes the current slide HTML context and is sent to Claude via `sendQuery`.
+     - e.g., "Make the title larger"
+     - e.g., "Change the background color to blue"
+  2. **HTML code editor**: A `<textarea>`-based code editing area where users can directly modify the selected slide's `<section>` HTML. `Cmd+S`/`Ctrl+S` saves changes.
+  3. **Live preview**: A live preview of the currently edited HTML is displayed to the right of the editing area.
+- On save, the modified `<section>` HTML is reassembled into the full HTML (`reconstructHtml`) and synchronized to both the editor tab and disk.
+- Implementation: `src/components/panels/preview/slide-preview.tsx` (`SlideCard`, `SlideEditor` components), `src/stores/use-preview-store.ts` (`slideEditMode`, `selectedSlideIndex`), `src/components/panels/preview/preview-panel.tsx` (Edit button), `src/components/panels/preview/preview-router.tsx` (`onContentChange` callback).
 
 ### FR-704: Live DOM patching
 
@@ -1149,3 +1212,94 @@ The following shortcuts are active **only when the terminal panel has focus** (e
 - Tauri desktop app icons are also generated from the same SVG source: `installer/tauri/src-tauri/icons/` receives `32x32.png`, `128x128.png`, `128x128@2x.png` (256×256), `icon.ico`, and `icon.icns` (built via `iconutil`).
 - The desktop shortcut, Tauri native app, and the browser favicon all use the **same mascot**, ensuring visual consistency across every entry point.
 - Implementation: `public/branding/claudegui.svg`, `scripts/build-icons.mjs`, `src/app/icon.svg`, `src/app/apple-icon.png`, `installer/tauri/src-tauri/icons/`, `scripts/install/install.sh`, `scripts/install/install.ps1`.
+
+---
+
+## 3.12 Smart Prompt Intent Detection (FR-1200)
+
+Automatically detect content-generation intent from user chat input and inject optimized system prompts to improve generation quality.
+
+### FR-1201: Slide Generation Intent Detection
+
+- Detect slide/presentation-related keywords (슬라이드, 프레젠테이션, PPT, 발표자료, presentation, slides, etc.) in user input.
+- Detection runs client-side for zero-latency response.
+- Implementation: `src/lib/claude/intent-detector.ts`.
+
+### FR-1202: Slide Preferences Dialog
+
+- When slide intent is detected, display a confirmation dialog before generation.
+- Collected fields:
+  - **Purpose**: Internal report, academic presentation, teaching material, investor pitch, other (custom input)
+  - **Text size**: Small / Medium / Large
+  - **Color tone**: Deep Navy, Corporate Blue, Warm, Minimal, Dark, Forest
+  - **Additional notes**: Free-text (optional)
+- A "Generate with defaults" button applies default values.
+- On cancel, the original input is restored to the text area.
+- Implementation: `src/components/panels/claude/slide-preferences-dialog.tsx`.
+
+### FR-1203: Server-side Prompt Injection
+
+- The client includes `intent` metadata in the WebSocket message.
+- The server looks up a prompt template from the registry by `intent.type` and prepends design guidelines to the user's prompt.
+- The injected system prompt is never shown in the user UI (the user sees only their original message).
+- Slide template guidelines include:
+  - Visual consistency (color palette, fonts)
+  - Z-pattern layout, 60/40 visual-to-text ratio
+  - Diverse visual elements (icons, charts, diagrams)
+  - Action Title style
+- Implementation: `server-handlers/prompt-templates/slides.mjs`, `server-handlers/prompt-templates/registry.mjs`.
+
+### FR-1204: Intent Registry Extensibility
+
+- The intent registry uses a `{ type: () => import('./template.mjs') }` pattern.
+- New content types (reports, diagrams, etc.) can be supported by adding a single entry to the registry.
+- Implementation: `server-handlers/prompt-templates/registry.mjs`, `src/types/intent.ts`.
+
+---
+
+## 3.13 Remote Access (FR-1300)
+
+Allows switching the server binding address from `127.0.0.1` (local only) to `0.0.0.0` (all interfaces), enabling other devices on the same network to access ClaudeGUI.
+
+### FR-1300: Remote Access Toggle
+
+- The user can open the remote access settings modal by clicking the Globe icon button in the header.
+- The modal provides an ON/OFF toggle switch for remote access.
+- When enabled, the server binding address changes to `0.0.0.0`.
+- When disabled, it reverts to `127.0.0.1`.
+- After changing settings, the "Apply & Restart" button triggers an in-process server restart.
+
+### FR-1301: Token Authentication
+
+- A UUID v4 token is automatically generated when remote access is enabled.
+- Remote clients authenticate via `Authorization: Bearer <token>` header or `?token=<token>` URL parameter.
+- Localhost (`127.0.0.1`, `::1`) requests are exempt from token validation.
+- The modal provides copy and regenerate buttons for the token.
+
+### FR-1302: Server Configuration Persistence
+
+- Settings are stored in `~/.claudegui/server-config.json`.
+- Config schema: `{ "remoteAccess": boolean, "remoteAccessToken": string|null }`.
+- The server reads the config file at startup to determine the binding address and token.
+- The `HOST` environment variable takes precedence over the config file when explicitly set.
+
+### FR-1303: Network Information Display
+
+- The remote access modal displays the current LAN IP list (via `os.networkInterfaces()`).
+- The status bar shows remote access status (displays "Remote (IP)" text when active).
+- The Globe icon in the header turns green when remote access is active.
+
+### FR-1304: Server Management API
+
+- `GET /api/server/status` — returns server status (hostname, port, remoteAccess, hasToken, localIPs, uptime).
+- `GET /api/server/config` — returns current configuration.
+- `PUT /api/server/config` — saves configuration (remoteAccess, remoteAccessToken).
+- `POST /api/server/restart` — triggers in-process server restart.
+- All management APIs are accessible only from localhost.
+
+### FR-1305: Tauri Desktop App Integration
+
+- The Tauri launcher reads `~/.claudegui/server-config.json` at startup to determine the HOST environment variable.
+- Supports sidecar process restart via the Tauri IPC `restart_server` command.
+- The web UI uses `isTauri()` detection to select the appropriate restart path.
+- Implementation: `installer/tauri/src-tauri/src/main.rs`, `src/lib/runtime.ts`.
