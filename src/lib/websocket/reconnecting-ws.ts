@@ -32,6 +32,9 @@ export class ReconnectingWebSocket {
 
   private connect(): void {
     if (this.closed) return;
+    // Drop reference to the previous (already-closed) socket so it can be GC'd
+    // along with its event listeners — prevents memory accumulation across reconnects.
+    this.ws = null;
     try {
       this.ws = new WebSocket(this.url);
     } catch (err) {

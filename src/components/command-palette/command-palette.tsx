@@ -158,6 +158,12 @@ export function CommandPalette() {
                 Theme: Retro — Green Phosphor
               </Command.Item>
               <Command.Item
+                onSelect={() => runCommand(() => setTheme('system'))}
+                className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
+              >
+                Theme: System (Auto)
+              </Command.Item>
+              <Command.Item
                 onSelect={() => runCommand(() => resetClaude())}
                 className="cursor-pointer rounded px-3 py-2 text-sm data-[selected=true]:bg-accent"
               >

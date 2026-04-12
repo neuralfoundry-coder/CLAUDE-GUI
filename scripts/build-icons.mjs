@@ -15,6 +15,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC_SVG = join(ROOT, 'public/branding/claudegui.svg');
 const OUT_DIR = join(ROOT, 'public/branding');
 const APP_DIR = join(ROOT, 'src/app');
+const TAURI_ICONS = join(ROOT, 'installer/tauri/src-tauri/icons');
 
 const PNG_SIZES = [16, 32, 48, 64, 128, 180, 256, 512];
 const ICO_SIZES = [16, 32, 48, 64, 128, 256];
@@ -85,6 +86,33 @@ function packIco(pngPaths, outPath) {
   log(`ICO ${entries.length} sizes → ${outPath.replace(ROOT + '/', '')}`);
 }
 
+function buildIcns(pngs) {
+  // macOS .icns via iconutil. Requires an .iconset directory with specific names.
+  const iconset = join(work, 'icon.iconset');
+  mkdirSync(iconset, { recursive: true });
+
+  // iconutil expects these exact filenames (sizes in points × scale):
+  const entries = [
+    [16, 'icon_16x16.png'],
+    [32, 'icon_16x16@2x.png'],
+    [32, 'icon_32x32.png'],
+    [64, 'icon_32x32@2x.png'],
+    [128, 'icon_128x128.png'],
+    [256, 'icon_128x128@2x.png'],
+    [256, 'icon_256x256.png'],
+    [512, 'icon_256x256@2x.png'],
+    [512, 'icon_512x512.png'],
+  ];
+
+  for (const [px, name] of entries) {
+    if (pngs[px]) copyFileSync(pngs[px], join(iconset, name));
+  }
+
+  const icnsPath = join(TAURI_ICONS, 'icon.icns');
+  execFileSync('iconutil', ['-c', 'icns', '-o', icnsPath, iconset], { stdio: 'pipe' });
+  log(`tauri → installer/tauri/src-tauri/icons/icon.icns`);
+}
+
 try {
   log(`source: ${SRC_SVG.replace(ROOT + '/', '')}`);
   mkdirSync(OUT_DIR, { recursive: true });
@@ -102,6 +130,26 @@ try {
   // Apple touch icon (180×180)
   copyFileSync(pngs[180], join(APP_DIR, 'apple-icon.png'));
   log(`apple touch → src/app/apple-icon.png`);
+
+  // ── Tauri desktop icons (same mascot as favicon) ──
+  mkdirSync(TAURI_ICONS, { recursive: true });
+
+  // 32x32.png, 128x128.png
+  copyFileSync(pngs[32], join(TAURI_ICONS, '32x32.png'));
+  log(`tauri → installer/tauri/src-tauri/icons/32x32.png`);
+  copyFileSync(pngs[128], join(TAURI_ICONS, '128x128.png'));
+  log(`tauri → installer/tauri/src-tauri/icons/128x128.png`);
+
+  // 128x128@2x.png (256×256 rendered at 2× Retina)
+  copyFileSync(pngs[256], join(TAURI_ICONS, '128x128@2x.png'));
+  log(`tauri → installer/tauri/src-tauri/icons/128x128@2x.png`);
+
+  // icon.ico (reuse the one already built)
+  copyFileSync(join(OUT_DIR, 'claudegui.ico'), join(TAURI_ICONS, 'icon.ico'));
+  log(`tauri → installer/tauri/src-tauri/icons/icon.ico`);
+
+  // icon.icns (macOS app icon via iconutil)
+  buildIcns(pngs);
 
   log('done');
 } finally {
