@@ -28,7 +28,7 @@ function formatRelative(ts: number | null, now: number): string {
 }
 
 export function FileExplorerPanel() {
-  const { rootNodes, loading, error, refreshRoot, loadSubtree, lastSyncedAt } = useFileTree();
+  const { rootNodes, loading, error, refreshRoot, loadSubtree, lastSyncedAt, suppressWsRefreshRef } = useFileTree();
   const [now, setNow] = useState(() => Date.now());
   const [dragDepth, setDragDepth] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -151,19 +151,31 @@ export function FileExplorerPanel() {
 
   // After creating a file/folder and refreshing the tree, the node may not
   // be ready for editing immediately (react-arborist needs a render cycle).
-  // Retry a few times with a short delay to make sure it activates.
+  // Retry until the tree confirms it entered edit mode, then stop —
+  // calling edit() on an already-editing node cancels and restarts it,
+  // which resets the input and loses the user's keystrokes.
   const beginRenameWithRetry = useCallback((targetPath: string) => {
+    // Suppress WebSocket-driven tree refreshes while we try to enter
+    // edit mode and while the user is typing — data updates would reset
+    // the inline input.
+    suppressWsRefreshRef.current = true;
     let attempts = 0;
     const maxAttempts = 10;
     const tryRename = () => {
       attempts++;
-      treeRef.current?.beginRename(targetPath);
-      if (attempts < maxAttempts) {
-        requestAnimationFrame(tryRename);
+      const handle = treeRef.current;
+      if (!handle) {
+        if (attempts < maxAttempts) requestAnimationFrame(tryRename);
+        return;
       }
+      // Already in edit mode — stop retrying (calling edit() again
+      // would cancel the current edit and reset the input).
+      if (handle.isEditing()) return;
+      handle.beginRename(targetPath);
+      if (attempts < maxAttempts) requestAnimationFrame(tryRename);
     };
     requestAnimationFrame(tryRename);
-  }, []);
+  }, [suppressWsRefreshRef]);
 
   const onNewFile = useCallback(
     async (parentPath: string = '') => {
@@ -250,6 +262,8 @@ export function FileExplorerPanel() {
 
   const onRenameInline = useCallback(
     async ({ id, name }: { id: string; name: string }) => {
+      // Editing is finished — resume WebSocket-driven refreshes.
+      suppressWsRefreshRef.current = false;
       const trimmed = name.trim();
       if (!trimmed || trimmed === '.' || trimmed === '..' || /[\\/\0]/.test(trimmed)) {
         alert('Invalid name');
@@ -265,7 +279,7 @@ export function FileExplorerPanel() {
         alert(`Rename failed: ${(err as Error).message}`);
       }
     },
-    [refreshRoot],
+    [refreshRoot, suppressWsRefreshRef],
   );
 
   useFileKeyboard({

@@ -129,6 +129,8 @@ export interface FileTreeHandle {
   deselectAll: () => void;
   getSelectedIds: () => string[];
   focusFirst: () => void;
+  /** True when any node is in inline-edit mode. */
+  isEditing: () => boolean;
 }
 
 interface FileTreeProps {
@@ -181,6 +183,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
         const first = treeApiRef.current?.visibleNodes[0];
         if (first) treeApiRef.current?.focus(first.id);
       },
+      isEditing: () => treeApiRef.current?.isEditing ?? false,
     }),
     [],
   );

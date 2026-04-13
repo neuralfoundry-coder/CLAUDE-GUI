@@ -153,8 +153,18 @@ export function useFileTree() {
     [loadDirectory],
   );
 
+  // When true, WebSocket-triggered refreshes are deferred until the flag
+  // is cleared.  This prevents tree data updates while the user is
+  // editing a node name inline (which would reset the input).
+  const suppressWsRefreshRef = useRef(false);
+
   const flushPending = useCallback(() => {
     flushFrameRef.current = null;
+    if (suppressWsRefreshRef.current) {
+      // Re-schedule so pending paths are flushed once editing ends.
+      flushFrameRef.current = requestAnimationFrame(flushPending);
+      return;
+    }
     const paths = Array.from(pendingPathsRef.current);
     pendingPathsRef.current.clear();
     const seenParents = new Set<string>();
@@ -199,5 +209,5 @@ export function useFileTree() {
     scheduleRefresh(event.path);
   });
 
-  return { rootNodes, loading, error, refreshRoot, loadSubtree, lastSyncedAt };
+  return { rootNodes, loading, error, refreshRoot, loadSubtree, lastSyncedAt, suppressWsRefreshRef };
 }
