@@ -6,6 +6,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from 'react';
 import {
   Tree,
@@ -31,12 +32,23 @@ function Node({ node, style, dragHandle, onOpenDir, onActivateFile }: NodeProps)
   const isCut = useFileClipboardStore((s) => s.isCut(node.data.path));
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Use controlled input so that re-renders (from timer ticks, WS refreshes,
+  // react-arborist context updates) cannot reset the user's typed text.
+  const [editValue, setEditValue] = useState(node.data.name);
+
+  // Reset the edit value when entering edit mode (may be for a different name).
+  const wasEditing = useRef(false);
   useEffect(() => {
-    if (node.isEditing && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
+    if (node.isEditing && !wasEditing.current) {
+      setEditValue(node.data.name);
+      // Focus and select on the next frame so the DOM input is mounted.
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
     }
-  }, [node.isEditing]);
+    wasEditing.current = node.isEditing;
+  }, [node.isEditing, node.data.name]);
 
   const onClick = (e: React.MouseEvent) => {
     if (node.isEditing) return;
@@ -100,19 +112,20 @@ function Node({ node, style, dragHandle, onOpenDir, onActivateFile }: NodeProps)
       {node.isEditing ? (
         <input
           ref={inputRef}
-          defaultValue={node.data.name}
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
           className="flex-1 rounded-sm border border-primary bg-background px-1 text-sm outline-none"
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
-              node.submit(e.currentTarget.value);
+              node.submit(editValue);
             } else if (e.key === 'Escape') {
               e.preventDefault();
               node.reset();
             }
           }}
-          onBlur={(e) => node.submit(e.currentTarget.value)}
+          onBlur={() => node.submit(editValue)}
         />
       ) : (
         <span className="flex-1 truncate">{node.data.name}</span>
