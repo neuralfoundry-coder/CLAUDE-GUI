@@ -149,6 +149,22 @@ export function FileExplorerPanel() {
     [],
   );
 
+  // After creating a file/folder and refreshing the tree, the node may not
+  // be ready for editing immediately (react-arborist needs a render cycle).
+  // Retry a few times with a short delay to make sure it activates.
+  const beginRenameWithRetry = useCallback((targetPath: string) => {
+    let attempts = 0;
+    const maxAttempts = 10;
+    const tryRename = () => {
+      attempts++;
+      treeRef.current?.beginRename(targetPath);
+      if (attempts < maxAttempts) {
+        requestAnimationFrame(tryRename);
+      }
+    };
+    requestAnimationFrame(tryRename);
+  }, []);
+
   const onNewFile = useCallback(
     async (parentPath: string = '') => {
       try {
@@ -156,16 +172,12 @@ export function FileExplorerPanel() {
         const targetPath = parentPath ? `${parentPath}/${name}` : name;
         await filesApi.write(targetPath, '');
         await refreshRoot();
-        // Immediately enter inline rename on the new node so the user can
-        // type a meaningful name. Wait one frame for the tree to mount it.
-        requestAnimationFrame(() => {
-          treeRef.current?.beginRename(targetPath);
-        });
+        beginRenameWithRetry(targetPath);
       } catch (err) {
         alert(`Create failed: ${(err as Error).message}`);
       }
     },
-    [generateUniqueName, refreshRoot],
+    [generateUniqueName, refreshRoot, beginRenameWithRetry],
   );
 
   const onNewFolder = useCallback(
@@ -175,14 +187,12 @@ export function FileExplorerPanel() {
         const targetPath = parentPath ? `${parentPath}/${name}` : name;
         await filesApi.mkdir(targetPath);
         await refreshRoot();
-        requestAnimationFrame(() => {
-          treeRef.current?.beginRename(targetPath);
-        });
+        beginRenameWithRetry(targetPath);
       } catch (err) {
         alert(`Create failed: ${(err as Error).message}`);
       }
     },
-    [generateUniqueName, refreshRoot],
+    [generateUniqueName, refreshRoot, beginRenameWithRetry],
   );
 
   const onTreeContextMenu = useCallback(

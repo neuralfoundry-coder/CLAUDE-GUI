@@ -51,11 +51,19 @@ export function useFileTree() {
   const activeRoot = useProjectStore((s) => s.activeRoot);
   const pendingPathsRef = useRef<Set<string>>(new Set());
   const flushFrameRef = useRef<number | null>(null);
+  const loadedPathsRef = useRef<Set<string>>(new Set(['']));
+
+  // Keep the ref in sync with state so refreshRoot can read it synchronously.
+  useEffect(() => {
+    loadedPathsRef.current = loadedPaths;
+  }, [loadedPaths]);
 
   const loadDirectory = useCallback(async (dirPath: string): Promise<TreeNode[]> => {
     const res = await filesApi.list(dirPath);
     return res.entries.map((e) => entryToNode(e, dirPath));
   }, []);
+
+  const initialLoadDone = useRef(false);
 
   const refreshRoot = useCallback(async () => {
     if (!activeRoot) {
@@ -63,19 +71,52 @@ export function useFileTree() {
       setLoadedPaths(new Set(['']));
       setLoading(false);
       setError(null);
+      initialLoadDone.current = false;
       return;
     }
-    setLoading(true);
+    // Only show the loading spinner on the very first load so that
+    // subsequent refreshes don't unmount the tree (which destroys
+    // react-arborist's internal open/edit state).
+    if (!initialLoadDone.current) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const nodes = await loadDirectory('');
       setRootNodes(nodes);
-      setLoadedPaths(new Set(['']));
+      // Preserve previously loaded subtree paths so open folders stay
+      // populated after a refresh instead of collapsing to empty children.
+      setLoadedPaths((prev) => {
+        const next = new Set(prev);
+        next.add('');
+        return next;
+      });
       setLastSyncedAt(Date.now());
+
+      // Re-load any previously expanded subtrees so their children are
+      // still present in the new tree data.
+      const prevLoaded = loadedPathsRef.current;
+      for (const p of prevLoaded) {
+        if (p === '') continue;
+        try {
+          const children = await loadDirectory(p);
+          setRootNodes((prev) =>
+            updateNodeInTree(prev, p, (node) => ({ ...node, children })),
+          );
+        } catch {
+          // Subtree may have been deleted — drop it from loaded set.
+          setLoadedPaths((prev) => {
+            const next = new Set(prev);
+            next.delete(p);
+            return next;
+          });
+        }
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setLoading(false);
+      initialLoadDone.current = true;
     }
   }, [loadDirectory, activeRoot]);
 
@@ -134,7 +175,14 @@ export function useFileTree() {
     [flushPending],
   );
 
+  // Reset initial load flag when project root changes so the new project
+  // shows a loading spinner on its first load.
+  const prevActiveRoot = useRef(activeRoot);
   useEffect(() => {
+    if (prevActiveRoot.current !== activeRoot) {
+      initialLoadDone.current = false;
+      prevActiveRoot.current = activeRoot;
+    }
     refreshRoot();
   }, [refreshRoot, activeRoot]);
 

@@ -9,6 +9,11 @@ export function isFocusInsideFileExplorer(): boolean {
   if (typeof document === 'undefined') return false;
   const el = document.activeElement;
   if (!el) return false;
+  // Don't intercept keystrokes while the user is typing in an inline
+  // rename/create input — otherwise Backspace/Delete would trigger the
+  // "delete selected items" shortcut instead of editing the text.
+  const tag = (el as HTMLElement).tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return false;
   return Boolean((el as Element).closest?.('[data-file-explorer-panel="true"]'));
 }
 
