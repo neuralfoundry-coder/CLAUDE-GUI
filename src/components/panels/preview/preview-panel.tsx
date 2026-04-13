@@ -86,14 +86,14 @@ export function PreviewPanel() {
   return (
     <div
       className={cn(
-        'flex h-full flex-col border-l bg-background',
-        fullscreen && 'fixed inset-0 z-[9999] border-l-0',
+        'flex h-full flex-col panel-container panel-container-restore-border-l bg-background',
+        fullscreen && 'fixed inset-0 z-[9999] !border-0 !rounded-none',
       )}
       data-panel-id="preview"
       onMouseDown={panelFocus.onMouseDown}
       onFocus={panelFocus.onFocus}
     >
-      <div className="flex h-7 items-center justify-between border-b bg-muted px-3">
+      <div className="flex h-7 items-center justify-between border-b glass-surface glass-highlight relative px-3">
         <span className="text-xs font-semibold uppercase text-muted-foreground">Preview</span>
         <div className="flex items-center gap-2">
           <PanelZoomControls panelId="preview" />

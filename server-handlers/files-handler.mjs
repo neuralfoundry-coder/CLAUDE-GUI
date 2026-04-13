@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { getActiveRoot, onActiveRootChange } from '../src/lib/project/project-context.mjs';
+import { getActiveRoot } from '../src/lib/project/project-context.mjs';
+import { browserSessionRegistry } from '../src/lib/project/browser-session-registry.mjs';
 import { createDebug } from '../src/lib/debug.mjs';
 
 const dbg = createDebug('files');
@@ -72,15 +73,39 @@ async function loadWatcher(rootAbs, onEvents, onError) {
   );
 }
 
-const connections = new Set();
-let sharedSubscription = null;
-let watcherRoot = null;
-let rootChangeUnsubscribe = null;
+// ---------------------------------------------------------------------------
+// Multi-browser connection & watcher management
+// ---------------------------------------------------------------------------
 
-function broadcastAll(message) {
+/** @type {Map<WebSocket, { browserId: string|null, root: string|null }>} */
+const connections = new Map();
+
+/**
+ * Per-root watcher registry.  Multiple tabs on the same project share one
+ * OS-level watcher to save file descriptors.
+ * @type {Map<string, { subscription: any, refCount: number, gcTimer: NodeJS.Timeout|null }>}
+ */
+const watchers = new Map();
+
+/** Grace period before tearing down an unused watcher (covers quick project switches). */
+const WATCHER_GC_MS = 5000;
+
+/** Send a JSON message to a single ws if it's still open. */
+function sendTo(ws, message) {
+  if (ws.readyState === ws.OPEN) {
+    try {
+      ws.send(typeof message === 'string' ? message : JSON.stringify(message));
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Broadcast a message to all connections watching a specific root. */
+function broadcastToRoot(root, message) {
   const msg = typeof message === 'string' ? message : JSON.stringify(message);
-  for (const ws of connections) {
-    if (ws.readyState === ws.OPEN) {
+  for (const [ws, meta] of connections) {
+    if (meta.root === root && ws.readyState === ws.OPEN) {
       try {
         ws.send(msg);
       } catch {
@@ -90,34 +115,46 @@ function broadcastAll(message) {
   }
 }
 
-async function rebuildWatcher() {
-  const root = getActiveRoot();
-  if (sharedSubscription && watcherRoot === root) return sharedSubscription;
-  if (sharedSubscription) {
-    dbg.info('closing existing watcher on', watcherRoot);
-    try {
-      await sharedSubscription.unsubscribe();
-    } catch (err) {
-      dbg.error('unsubscribe failed', err);
+/** Broadcast to connections with a specific browserId. */
+function broadcastToBrowser(browserId, message) {
+  const msg = typeof message === 'string' ? message : JSON.stringify(message);
+  for (const [ws, meta] of connections) {
+    if (meta.browserId === browserId && ws.readyState === ws.OPEN) {
+      try {
+        ws.send(msg);
+      } catch {
+        /* ignore */
+      }
     }
-    sharedSubscription = null;
-    watcherRoot = null;
   }
-  if (!root) {
-    dbg.info('no active project root; watcher idle');
-    return null;
+}
+
+/**
+ * Acquire (or increment refcount on) a watcher for the given root.
+ * Returns the subscription.
+ */
+async function acquireWatcher(root) {
+  const existing = watchers.get(root);
+  if (existing) {
+    // Cancel pending GC if any.
+    if (existing.gcTimer) {
+      clearTimeout(existing.gcTimer);
+      existing.gcTimer = null;
+    }
+    existing.refCount += 1;
+    dbg.info('acquireWatcher reuse', { root, refCount: existing.refCount });
+    return existing.subscription;
   }
-  dbg.info('starting watcher on', root);
+
+  dbg.info('acquireWatcher new', { root });
 
   const handleEvents = (events) => {
-    const currentRoot = watcherRoot;
-    if (!currentRoot) return;
     for (const ev of events) {
       if (isIgnoredByWatcher(ev.path)) continue;
-      const rel = path.relative(currentRoot, ev.path) || '.';
+      const rel = path.relative(root, ev.path) || '.';
       const mapped = mapEvent(ev.type);
       dbg.trace(mapped, rel);
-      broadcastAll({
+      broadcastToRoot(root, {
         type: 'change',
         event: mapped,
         path: rel,
@@ -127,8 +164,8 @@ async function rebuildWatcher() {
   };
 
   const handleError = (err) => {
-    dbg.error('watcher error', err);
-    broadcastAll({
+    dbg.error('watcher error', { root, err });
+    broadcastToRoot(root, {
       type: 'change',
       event: 'error',
       path: '.',
@@ -137,61 +174,141 @@ async function rebuildWatcher() {
     });
   };
 
-  sharedSubscription = await loadWatcher(root, handleEvents, handleError);
-  watcherRoot = root;
-
-  broadcastAll({
-    type: 'change',
-    event: 'ready',
-    path: '.',
-    timestamp: new Date().toISOString(),
-  });
-
-  return sharedSubscription;
+  const subscription = await loadWatcher(root, handleEvents, handleError);
+  watchers.set(root, { subscription, refCount: 1, gcTimer: null });
+  return subscription;
 }
 
-async function ensureWatcher() {
-  if (!rootChangeUnsubscribe) {
-    rootChangeUnsubscribe = onActiveRootChange(async (newRoot) => {
-      dbg.info('active root changed ->', newRoot);
-      try {
-        await rebuildWatcher();
-      } catch (err) {
-        dbg.error('rebuild watcher failed', err);
+/**
+ * Release (decrement refcount on) a watcher.  When refCount hits 0, schedule
+ * a delayed teardown so quick project switches don't churn OS handles.
+ */
+function releaseWatcher(root) {
+  const entry = watchers.get(root);
+  if (!entry) return;
+  entry.refCount = Math.max(0, entry.refCount - 1);
+  dbg.info('releaseWatcher', { root, refCount: entry.refCount });
+  if (entry.refCount === 0) {
+    entry.gcTimer = setTimeout(async () => {
+      // Re-check: someone may have acquired during the grace period.
+      if (entry.refCount === 0) {
+        dbg.info('tearing down idle watcher', { root });
+        try {
+          await entry.subscription.unsubscribe();
+        } catch (err) {
+          dbg.error('watcher unsubscribe failed', err);
+        }
+        watchers.delete(root);
       }
-      broadcastAll({
-        type: 'project-changed',
-        root: newRoot,
+    }, WATCHER_GC_MS);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Global registry listener — reacts when any browser session's root changes
+// (triggered by POST /api/project).  Updates connection metadata, switches
+// watchers, and sends project-changed to the right browser tabs.
+// ---------------------------------------------------------------------------
+
+let _registryListenerInstalled = false;
+
+function ensureRegistryListener() {
+  if (_registryListenerInstalled) return;
+  _registryListenerInstalled = true;
+
+  browserSessionRegistry.onAnyRootChange(async (browserId, newRoot, oldRoot) => {
+    dbg.info('registry root change', { browserId: browserId?.slice(0, 8), from: oldRoot, to: newRoot });
+
+    // Update connection metadata and switch watchers.
+    for (const [, meta] of connections) {
+      if (meta.browserId === browserId) {
+        const prev = meta.root;
+        meta.root = newRoot;
+        if (prev && prev !== newRoot) releaseWatcher(prev);
+        if (newRoot && newRoot !== prev) {
+          try {
+            await acquireWatcher(newRoot);
+          } catch (err) {
+            dbg.error('failed to acquire watcher for new root', err);
+          }
+        }
+      }
+    }
+
+    // Send project-changed only to this browser's connections.
+    broadcastToBrowser(browserId, {
+      type: 'project-changed',
+      root: newRoot,
+      timestamp: new Date().toISOString(),
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+export default async function filesHandler(ws, req) {
+  ensureRegistryListener();
+  const browserId = req.browserId || null;
+
+  // Ensure the registry knows about this browser.
+  if (browserId) {
+    browserSessionRegistry.ensureSession(browserId);
+  }
+
+  const root = browserSessionRegistry.getRoot(browserId);
+
+  connections.set(ws, { browserId, root });
+  dbg.log('client connected', { browserId: browserId?.slice(0, 8), root, total: connections.size });
+
+  // Acquire a watcher for this connection's root.
+  if (root) {
+    try {
+      await acquireWatcher(root);
+      sendTo(ws, { type: 'ready', root });
+
+      // Send initial ready event for this root.
+      sendTo(ws, {
+        type: 'change',
+        event: 'ready',
+        path: '.',
         timestamp: new Date().toISOString(),
       });
-    });
-  }
-  return rebuildWatcher();
-}
-
-export default async function filesHandler(ws, _req) {
-  connections.add(ws);
-  dbg.log('client connected, total=', connections.size);
-  try {
-    await ensureWatcher();
-    ws.send(
-      JSON.stringify({
-        type: 'ready',
-        root: getActiveRoot(),
-      }),
-    );
-  } catch (err) {
-    dbg.error('handler init failed', err);
-    ws.send(JSON.stringify({ type: 'error', message: String(err?.message || err) }));
+    } catch (err) {
+      dbg.error('handler init failed', err);
+      sendTo(ws, { type: 'error', message: String(err?.message || err) });
+    }
+  } else {
+    sendTo(ws, { type: 'ready', root: null });
   }
 
   ws.on('close', () => {
+    const meta = connections.get(ws);
     connections.delete(ws);
-    dbg.log('client disconnected, total=', connections.size);
+    dbg.log('client disconnected', { browserId: browserId?.slice(0, 8), total: connections.size });
+
+    // Release watcher for the old root.
+    if (meta?.root) {
+      releaseWatcher(meta.root);
+    }
+
+    // Check if any other connections remain for this browserId.
+    if (browserId) {
+      const hasOthers = [...connections.values()].some((c) => c.browserId === browserId);
+      if (!hasOthers) {
+        browserSessionRegistry.scheduleGc(browserId);
+      }
+    }
   });
 
   ws.on('error', (err) => {
     dbg.error('ws error', err);
+    const meta = connections.get(ws);
     connections.delete(ws);
+    if (meta?.root) {
+      releaseWatcher(meta.root);
+    }
   });
 }
+

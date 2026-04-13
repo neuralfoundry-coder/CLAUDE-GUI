@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import url from 'node:url';
 import { Buffer } from 'node:buffer';
 import { getActiveRoot } from '../src/lib/project/project-context.mjs';
+import { browserSessionRegistry } from '../src/lib/project/browser-session-registry.mjs';
 import { createDebug } from '../src/lib/debug.mjs';
 import { resolveShell, buildPtyEnv } from './terminal/shell-resolver.mjs';
 import { terminalSessionRegistry } from './terminal/session-registry.mjs';
@@ -42,8 +43,9 @@ function sendControl(ws, msg) {
  *   3. The user's home directory.
  */
 function resolveInitialCwd(req) {
+  const browserId = req?.browserId || null;
   const fallback = () => {
-    const root = getActiveRoot();
+    const root = browserSessionRegistry.getRoot(browserId);
     return root ?? path.resolve(os.homedir());
   };
   try {
@@ -51,7 +53,7 @@ function resolveInitialCwd(req) {
     const parsed = url.parse(req.url, true);
     const raw = parsed.query?.cwd;
     if (typeof raw !== 'string' || raw.length === 0) return fallback();
-    const root = getActiveRoot();
+    const root = browserSessionRegistry.getRoot(browserId);
     const abs = path.isAbsolute(raw) ? path.resolve(raw) : root ? path.resolve(root, raw) : null;
     if (!abs) return fallback();
     if (root && !(abs === root || abs.startsWith(root + path.sep))) {

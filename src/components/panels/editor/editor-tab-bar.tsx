@@ -24,7 +24,7 @@ export function EditorTabBar() {
 
   return (
     <div
-      className="scrollbar-thin flex h-8 items-center overflow-x-auto border-b bg-muted"
+      className="scrollbar-thin flex h-8 items-center overflow-x-auto border-b glass-surface"
       aria-label="Open files"
     >
       {tabs.map((tab, index) => {

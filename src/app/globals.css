@@ -45,6 +45,11 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
     --radius: 0.5rem;
+    --glass-bg: hsl(0 0% 100% / 0.8);
+    --glass-border: hsl(214.3 31.8% 91.4% / 0.5);
+    --glass-blur: 12px;
+    --panel-radius: var(--radius);
+    --panel-gap: 4px;
   }
 
   .light {
@@ -69,6 +74,11 @@
     --border: 214.3 31.8% 91.4%;
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
+    --glass-bg: hsl(0 0% 100% / 0.8);
+    --glass-border: hsl(214.3 31.8% 91.4% / 0.5);
+    --glass-blur: 12px;
+    --panel-radius: var(--radius);
+    --panel-gap: 4px;
     color-scheme: light;
   }
 
@@ -94,6 +104,11 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 212.7 26.8% 83.9%;
+    --glass-bg: hsl(222.2 84% 4.9% / 0.85);
+    --glass-border: hsl(217.2 32.6% 30% / 0.3);
+    --glass-blur: 12px;
+    --panel-radius: var(--radius);
+    --panel-gap: 4px;
     color-scheme: dark;
   }
 
@@ -117,6 +132,11 @@
     --border: 0 0% 50%;
     --input: 0 0% 20%;
     --ring: 60 100% 50%;
+    --glass-bg: hsl(0 0% 0% / 0.95);
+    --glass-border: hsl(0 0% 50% / 0.5);
+    --glass-blur: 0px;
+    --panel-radius: var(--radius);
+    --panel-gap: 4px;
     color-scheme: dark;
   }
 
@@ -142,6 +162,11 @@
     --border: 120 60% 22%;
     --input: 120 30% 12%;
     --ring: 120 100% 60%;
+    --glass-bg: hsl(120 100% 3% / 0.88);
+    --glass-border: hsl(120 60% 22% / 0.4);
+    --glass-blur: 12px;
+    --panel-radius: var(--radius);
+    --panel-gap: 4px;
     color-scheme: dark;
   }
 
@@ -179,6 +204,9 @@
     @apply bg-background text-foreground;
     font-feature-settings: 'rlig' 1, 'calt' 1;
     overflow: hidden;
+  }
+  html {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
   }
   html,
   body,
@@ -259,6 +287,57 @@
 
 .claude-status-dot {
   animation: status-pulse 1.5s ease-in-out infinite;
+}
+
+/* Liquid Glass design system */
+@layer components {
+  .glass-surface {
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border-color: var(--glass-border);
+  }
+
+  .glass-highlight {
+    position: relative;
+  }
+  .glass-highlight::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+      180deg,
+      hsl(var(--foreground) / 0.04) 0%,
+      transparent 40%
+    );
+    z-index: 1;
+  }
+
+  .panel-container {
+    border-radius: var(--panel-radius);
+    overflow: hidden;
+    border: 1px solid var(--glass-border);
+  }
+
+  .no-panel-rounding .panel-container {
+    border-radius: 0;
+    border: none;
+  }
+
+  .no-panel-rounding .panel-container-restore-border-r {
+    border-right: 1px solid hsl(var(--border));
+  }
+  .no-panel-rounding .panel-container-restore-border-l {
+    border-left: 1px solid hsl(var(--border));
+  }
+
+  .no-liquid-glass .glass-surface {
+    background: hsl(var(--muted));
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 @layer utilities {

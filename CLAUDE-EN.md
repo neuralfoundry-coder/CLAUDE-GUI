@@ -129,7 +129,7 @@ src/
 ├── lib/                    # Utility functions, helpers
 │   ├── websocket/          # WS client manager
 │   ├── fs/                 # File system utilities (server-side)
-│   ├── project/            # Runtime ProjectContext singleton (ADR-016)
+│   ├── project/            # ProjectContext singleton (ADR-016) + BrowserSessionRegistry (ADR-027)
 │   ├── claude/             # Agent SDK wrapper + html-stream-extractor
 │   ├── diff/               # LCS-based line diff for AI diff view
 │   ├── editor/             # Language map and editor helpers

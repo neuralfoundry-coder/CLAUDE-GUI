@@ -213,7 +213,7 @@ export function TerminalPanel() {
 
   return (
     <div
-      className="flex h-full flex-col bg-background"
+      className="flex h-full flex-col panel-container bg-background"
       data-terminal-panel="true"
       data-panel-id="terminal"
       onMouseDown={panelFocus.onMouseDown}
@@ -248,7 +248,7 @@ export function TerminalPanel() {
           </div>
         </div>
       )}
-      <div className="flex h-7 items-center border-b bg-muted" aria-label="Terminal sessions">
+      <div className="flex h-7 items-center border-b glass-surface glass-highlight relative" aria-label="Terminal sessions">
         {sessions.map((sess) => (
           <TerminalTab
             key={sess.id}

@@ -23,6 +23,7 @@ import { TERMINAL_THEMES, resolveTheme } from './terminal-themes';
 import { useLayoutStore, type Theme as AppTheme } from '@/stores/use-layout-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useConnectionStore } from '@/stores/use-connection-store';
+import { getBrowserId } from '@/lib/browser-session';
 import { isMacPlatform } from '@/hooks/use-keyboard-shortcut';
 import {
   parseServerControlFrame,
@@ -353,14 +354,14 @@ class TerminalManager {
   }
 
   private buildSocketUrl(inst: TerminalInstance): string {
-    const params: string[] = [];
+    const params: string[] = [`browserId=${encodeURIComponent(getBrowserId())}`];
     if (inst.serverSessionId) {
       params.push(`sessionId=${encodeURIComponent(inst.serverSessionId)}`);
     } else if (inst.initialCwd) {
       // `initialCwd` only applies on the very first connect (no serverSessionId yet).
       params.push(`cwd=${encodeURIComponent(inst.initialCwd)}`);
     }
-    return params.length > 0 ? `${inst.baseUrl}?${params.join('&')}` : inst.baseUrl;
+    return `${inst.baseUrl}?${params.join('&')}`;
   }
 
   private createSocket(inst: TerminalInstance): TerminalSocket {

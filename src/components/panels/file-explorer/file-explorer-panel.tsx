@@ -279,7 +279,7 @@ export function FileExplorerPanel() {
       data-file-explorer-panel="true"
       data-panel-id="fileExplorer"
       className={cn(
-        'relative flex h-full flex-col border-r bg-background outline-none',
+        'relative flex h-full flex-col panel-container panel-container-restore-border-r bg-background outline-none',
         isDragOver && 'ring-2 ring-inset ring-primary',
       )}
       onDragEnter={onDragEnter}
@@ -291,7 +291,7 @@ export function FileExplorerPanel() {
       onFocus={panelFocus.onFocus}
       aria-label="File explorer"
     >
-      <div className="flex items-center justify-between border-b px-2 py-1">
+      <div className="flex items-center justify-between border-b glass-surface glass-highlight relative px-2 py-1">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold uppercase text-muted-foreground">Explorer</span>
           <PanelZoomControls panelId="fileExplorer" />

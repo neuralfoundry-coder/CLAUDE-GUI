@@ -7,6 +7,7 @@ import { EditorPanel } from '@/components/panels/editor/editor-panel';
 import { TerminalPanel } from '@/components/panels/terminal/terminal-panel';
 import { ClaudeChatPanel } from '@/components/panels/claude/claude-chat-panel';
 import { PreviewPanel } from '@/components/panels/preview/preview-panel';
+import { useSwipeNavigation } from '@/hooks/use-swipe-navigation';
 
 interface TabDef {
   id: PanelId;
@@ -35,12 +36,29 @@ export function MobileShell() {
   const setActivePanel = useLayoutStore((s) => s.setMobileActivePanel);
   const ActiveComponent = PANEL_COMPONENTS[activePanel];
 
+  const TAB_IDS = TABS.map((t) => t.id);
+
+  const swipeRef = useSwipeNavigation({
+    onSwipeLeft: () => {
+      const idx = TAB_IDS.indexOf(activePanel);
+      if (idx < TAB_IDS.length - 1) setActivePanel(TAB_IDS[idx + 1]!);
+    },
+    onSwipeRight: () => {
+      const idx = TAB_IDS.indexOf(activePanel);
+      if (idx > 0) setActivePanel(TAB_IDS[idx - 1]!);
+    },
+  });
+
   return (
     <div className="flex h-full flex-col">
-      <div className="flex-1 overflow-hidden">
+      <div ref={swipeRef} className="flex-1 overflow-hidden">
         <ActiveComponent />
       </div>
-      <nav className="flex h-12 shrink-0 items-center border-t bg-background" role="tablist">
+      <nav
+        className="flex h-12 shrink-0 items-center border-t glass-surface"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        role="tablist"
+      >
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -48,7 +66,7 @@ export function MobileShell() {
             role="tab"
             aria-selected={activePanel === id}
             onClick={() => setActivePanel(id)}
-            className={`flex flex-1 flex-col items-center justify-center gap-0.5 py-1 text-[10px] transition-colors ${
+            className={`flex flex-1 flex-col items-center justify-center gap-0.5 min-h-[44px] py-1 text-[10px] transition-colors ${
               activePanel === id
                 ? 'text-primary'
                 : 'text-muted-foreground hover:text-foreground'

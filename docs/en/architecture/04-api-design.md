@@ -322,6 +322,7 @@ Deletes a session.
 - Control messages are discriminated by the `type` field
 - Heartbeat: server sends ping every 29 seconds; client responds with pong
 - Reconnection: exponential backoff (1s → 2s → 4s → ... → 30s)
+- **`browserId` routing (ADR-027)**: all WebSocket endpoints accept an optional `?browserId=<uuid>` query parameter. When present, the server resolves the project root from `BrowserSessionRegistry` instead of the global `ProjectContext` singleton. HTTP REST endpoints send the same value via the `X-Browser-Id` request header. Clients that omit `browserId` fall back to the global singleton for backward compatibility.
 
 ### 4.2.2 `/ws/terminal`
 
@@ -330,10 +331,10 @@ Connects to a terminal PTY session. A single PTY is spawned per connection; mult
 #### On connect
 
 ```
-ws://localhost:3000/ws/terminal
+ws://localhost:3000/ws/terminal?browserId=<uuid>
 ```
 
-The server immediately spawns a new `node-pty` process with `getActiveRoot()` as `cwd` (default 120×30). The client sends the real dimensions via a `resize` control frame right after the first attach.
+When `browserId` is present, the server looks up the per-tab project root from `BrowserSessionRegistry` (ADR-027) and uses it as the PTY `cwd`. When absent, the server falls back to `getActiveRoot()` from the global `ProjectContext` singleton. The default terminal size is 120x30; the client sends the real dimensions via a `resize` control frame right after the first attach.
 
 #### Frame rules
 
@@ -399,7 +400,7 @@ Error codes:
 
 ### 4.2.3 `/ws/claude`
 
-Connects to the Claude Agent SDK.
+Connects to the Claude Agent SDK. When the connection URL includes `?browserId=<uuid>`, the handler resolves the project root from `BrowserSessionRegistry` (ADR-027) so that each tab's Claude session operates against its own project directory.
 
 #### Client → server
 
@@ -533,7 +534,7 @@ Messages wrap the Agent SDK's `SDKMessage` union type as-is. The client branches
 
 ### 4.2.4 `/ws/files`
 
-Broadcasts file-change events collected by `@parcel/watcher` (see ADR-024).
+Broadcasts file-change events collected by `@parcel/watcher` (see ADR-024). When `?browserId=<uuid>` is present, the connection is associated with that tab's project root from `BrowserSessionRegistry` (ADR-027). File watchers are ref-counted per project root: the first tab to open a given root starts the `@parcel/watcher` subscription, subsequent tabs share it, and the subscription is torn down only when the last tab referencing that root disconnects or switches away. `project-changed` events are sent only to the originating tab, not broadcast to all clients.
 
 #### Client → server
 

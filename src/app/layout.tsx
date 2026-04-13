@@ -8,6 +8,12 @@ export const metadata: Metadata = {
   description: 'Web-based IDE wrapping Claude CLI',
 };
 
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover' as const,
+};
+
 interface RootLayoutProps {
   children: React.ReactNode;
 }

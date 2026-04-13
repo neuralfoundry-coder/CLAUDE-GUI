@@ -53,6 +53,42 @@ function emptyStats(sessionId: string): SessionStats {
   };
 }
 
+// ── Tab types ──
+
+export interface ClaudeTab {
+  id: string;
+  name: string;
+  createdAt: number;
+  sessionId: string | null;
+  customName: boolean;
+}
+
+export interface ClaudeTabState {
+  messages: ChatMessage[];
+  streamingChunks: string[];
+  streamingMessageId: string | null;
+  isStreaming: boolean;
+  pendingPermission: Extract<ClaudeServerMessage, { type: 'permission_request' }> | null;
+  currentRequestId: string | null;
+  messageFilter: Set<MessageKind>;
+}
+
+const ALL_MESSAGE_KINDS: MessageKind[] = ['text', 'tool_use', 'tool_result', 'system', 'error', 'auto_decision'];
+
+function emptyTabState(): ClaudeTabState {
+  return {
+    messages: [],
+    streamingChunks: [],
+    streamingMessageId: null,
+    isStreaming: false,
+    pendingPermission: null,
+    currentRequestId: null,
+    messageFilter: new Set<MessageKind>(ALL_MESSAGE_KINDS),
+  };
+}
+
+// ── SDK message types ──
+
 interface SdkContentBlock {
   type: string;
   text?: string;
@@ -82,7 +118,6 @@ interface SdkSystemMessage {
   model?: string;
 }
 
-/** Raw Anthropic API stream event, forwarded by the SDK as `type: 'stream_event'`. */
 interface SdkPartialAssistantMessage {
   type: 'stream_event';
   event: {
@@ -94,7 +129,6 @@ interface SdkPartialAssistantMessage {
   session_id: string;
 }
 
-/** Tool execution progress, emitted while a tool is running. */
 interface SdkToolProgressMessage {
   type: 'tool_progress';
   tool_use_id: string;
@@ -147,32 +181,53 @@ function pickModelUsage(
   return best;
 }
 
-const ALL_MESSAGE_KINDS: MessageKind[] = ['text', 'tool_use', 'tool_result', 'system', 'error', 'auto_decision'];
+// ── Store interface ──
 
 interface ClaudeState {
-  messages: ChatMessage[];
-  /** Chunks accumulated during streaming — joined on stream end to avoid O(n²) string concat. */
-  streamingChunks: string[];
-  /** ID of the assistant message currently being streamed into. */
-  streamingMessageId: string | null;
-  isStreaming: boolean;
-  activeSessionId: string | null;
-  pendingPermission: Extract<ClaudeServerMessage, { type: 'permission_request' }> | null;
+  // Tab management
+  tabs: ClaudeTab[];
+  activeTabId: string | null;
+  tabStates: Record<string, ClaudeTabState>;
+
+  // Global state (shared across tabs)
   totalCost: number;
   tokenUsage: { input: number; output: number };
-  currentRequestId: string | null;
   sessionStats: Record<string, SessionStats>;
-  messageFilter: Set<MessageKind>;
 
+  // Tab actions
+  createTab: (opts?: { name?: string; sessionId?: string | null }) => string;
+  closeTab: (tabId: string) => void;
+  setActiveTab: (tabId: string) => void;
+  renameTab: (tabId: string, name: string) => void;
+
+  // Per-tab message/streaming actions (operate on active tab)
   pushUserMessage: (content: string) => string;
   handleServerMessage: (msg: ClaudeServerMessage) => void;
   setPendingPermission: (req: Extract<ClaudeServerMessage, { type: 'permission_request' }> | null) => void;
-  reset: () => void;
-  setActiveSessionId: (id: string | null) => void;
+  resetActiveTab: () => void;
   setStreaming: (streaming: boolean) => void;
   setCurrentRequestId: (id: string | null) => void;
   toggleFilter: (kind: MessageKind) => void;
   loadSession: (id: string) => Promise<void>;
+
+  // Backward compat aliases
+  /** @deprecated Use activeTab's sessionId instead */
+  activeSessionId: string | null;
+  /** @deprecated Use tabStates[activeTabId].messages */
+  messages: ChatMessage[];
+  /** @deprecated Use tabStates[activeTabId].isStreaming */
+  isStreaming: boolean;
+  /** @deprecated Use tabStates[activeTabId].pendingPermission */
+  pendingPermission: Extract<ClaudeServerMessage, { type: 'permission_request' }> | null;
+  /** @deprecated Use tabStates[activeTabId].currentRequestId */
+  currentRequestId: string | null;
+  /** @deprecated Use tabStates[activeTabId].messageFilter */
+  messageFilter: Set<MessageKind>;
+
+  /** @deprecated Use resetActiveTab() */
+  reset: () => void;
+  /** @deprecated Tab's sessionId is set automatically */
+  setActiveSessionId: (id: string | null) => void;
 }
 
 function extractContent(blocks: SdkContentBlock[] | string | undefined): {
@@ -199,7 +254,23 @@ function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${msgCounter}`;
 }
 
-let currentExtractor: UniversalStreamExtractor | null = null;
+let tabCounter = 0;
+function nextTabId(): string {
+  tabCounter += 1;
+  return `claude-tab-${Date.now()}-${tabCounter}`;
+}
+
+// Per-tab extractors and streaming tool inputs
+const perTabExtractors = new Map<string, UniversalStreamExtractor>();
+const perTabStreamingToolInputs = new Map<string, Map<number, StreamingToolInput>>();
+
+/**
+ * Maps requestId → tabId so server responses can be routed to the tab
+ * that originated the request, even before session_id is assigned.
+ * Entries are added when setCurrentRequestId is called and removed
+ * on result/error or when the tab is closed.
+ */
+const requestToTabMap = new Map<string, string>();
 
 async function fetchFileContent(filePath: string): Promise<string | null> {
   try {
@@ -220,17 +291,13 @@ interface StreamingToolInput {
   lastFlushAt: number;
   filePath: string | null;
 }
-const streamingToolInputs = new Map<number, StreamingToolInput>();
 const STREAMING_EDIT_FLUSH_INTERVAL = 500; // ms
 
 function tryParsePartialJson(chunks: string[]): Record<string, unknown> | null {
   const raw = chunks.join('');
-  // Try to parse the accumulated JSON; the SDK streams partial JSON that may
-  // not be valid yet, so wrap in braces and attempt recovery.
   try {
     return JSON.parse(raw) as Record<string, unknown>;
   } catch { /* not parseable yet */ }
-  // Try adding a closing brace — the SDK often streams valid-up-to-the-cursor JSON
   try {
     return JSON.parse(raw + '"}') as Record<string, unknown>;
   } catch { /* still not parseable */ }
@@ -247,7 +314,6 @@ function extractFilePath(parsed: Record<string, unknown>): string | null {
 
 const FILE_EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 
-/** Forward a tool_use result to the editor as a streaming or final diff. */
 async function forwardToolToEditor(
   tool: { name: string; input: unknown },
   mode: 'streaming' | 'final',
@@ -261,30 +327,25 @@ async function forwardToolToEditor(
   const editorStore = useEditorStore.getState();
   const layoutStore = useLayoutStore.getState();
 
-  // Auto-expand editor panel
   if (layoutStore.editorCollapsed) {
     layoutStore.setCollapsed('editor', false);
   }
 
-  // Auto-expand preview panel for previewable file types
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
   const PREVIEWABLE_EXTS = new Set(['html', 'htm', 'svg', 'md', 'markdown']);
   if (PREVIEWABLE_EXTS.has(ext) && layoutStore.previewCollapsed) {
     layoutStore.setCollapsed('preview', false);
   }
 
-  // Ensure the file is open in the editor
   const existingTab = editorStore.tabs.find((t) => t.path === filePath);
   if (!existingTab) {
     await editorStore.openFile(filePath);
   }
 
-  // Compute modified content
   let modified: string | undefined;
   if (tool.name === 'Write') {
     modified = typeof input.content === 'string' ? input.content : undefined;
   } else {
-    // Edit / MultiEdit — apply ops against baseline
     const tab = useEditorStore.getState().tabs.find((t) => t.path === filePath);
     const baseline = tab?.diff?.original ?? tab?.content;
     if (baseline) {
@@ -313,12 +374,23 @@ async function forwardToolToEditor(
   }
 }
 
-function ensureExtractor(streamId: string): UniversalStreamExtractor {
-  if (currentExtractor) return currentExtractor;
+function getStreamingToolInputs(tabId: string): Map<number, StreamingToolInput> {
+  let map = perTabStreamingToolInputs.get(tabId);
+  if (!map) {
+    map = new Map();
+    perTabStreamingToolInputs.set(tabId, map);
+  }
+  return map;
+}
+
+function ensureExtractor(tabId: string, streamId: string): UniversalStreamExtractor {
+  const existing = perTabExtractors.get(tabId);
+  if (existing) return existing;
+
   const live = useLivePreviewStore.getState();
   live.startStream(streamId);
 
-  currentExtractor = new UniversalStreamExtractor({
+  const extractor = new UniversalStreamExtractor({
     onPageStart: (page) => {
       useLivePreviewStore.getState().addPage(page);
     },
@@ -338,46 +410,239 @@ function ensureExtractor(streamId: string): UniversalStreamExtractor {
     },
   });
 
-  // Seed the extractor with prior baselines from existing pages so
-  // Edit/MultiEdit in a follow-up stream can patch the last known content.
   const pages = useLivePreviewStore.getState().pages;
   for (const page of pages) {
     if (page.filePath && page.content) {
-      currentExtractor.seedBaseline(page.filePath, page.content);
+      extractor.seedBaseline(page.filePath, page.content);
     }
   }
-  return currentExtractor;
+
+  perTabExtractors.set(tabId, extractor);
+  return extractor;
 }
 
-function finalizeExtractor(): void {
-  if (!currentExtractor) return;
-  currentExtractor.finalize();
-  currentExtractor = null;
+function finalizeExtractor(tabId: string): void {
+  const extractor = perTabExtractors.get(tabId);
+  if (!extractor) return;
+  extractor.finalize();
+  perTabExtractors.delete(tabId);
+  perTabStreamingToolInputs.delete(tabId);
   useLivePreviewStore.getState().finalize();
 }
 
+// ── Helper: get active tab state from store state (non-reactive) ──
+
+function updateTabState(
+  s: ClaudeState,
+  tabId: string,
+  updater: (ts: ClaudeTabState) => Partial<ClaudeTabState>,
+): Partial<ClaudeState> {
+  const ts = s.tabStates[tabId] ?? emptyTabState();
+  const patch = updater(ts);
+  const nextTs = { ...ts, ...patch };
+  return {
+    tabStates: { ...s.tabStates, [tabId]: nextTs },
+    // Backward compat: if this is the active tab, mirror to top-level
+    ...(tabId === s.activeTabId ? derivedFromTab(nextTs) : {}),
+  };
+}
+
+/** Derive backward-compat top-level fields from active tab state.
+ *  NOTE: Does NOT set activeSessionId — use assignSessionToTab or set it explicitly. */
+function derivedFromTab(
+  ts: ClaudeTabState,
+): Partial<ClaudeState> {
+  return {
+    messages: ts.messages,
+    isStreaming: ts.isStreaming,
+    pendingPermission: ts.pendingPermission,
+    currentRequestId: ts.currentRequestId,
+    messageFilter: ts.messageFilter,
+  };
+}
+
+/** Derive all backward-compat fields when switching active tab (including activeSessionId). */
+function derivedFromActiveTab(s: ClaudeState, tabId: string): Partial<ClaudeState> {
+  const ts = s.tabStates[tabId] ?? emptyTabState();
+  const tab = s.tabs.find((t) => t.id === tabId);
+  return {
+    ...derivedFromTab(ts),
+    activeSessionId: tab?.sessionId ?? null,
+  };
+}
+
+// ── Initial tab ──
+
+const initialTabId = nextTabId();
+const initialTab: ClaudeTab = {
+  id: initialTabId,
+  name: 'Chat 1',
+  createdAt: Date.now(),
+  sessionId: null,
+  customName: false,
+};
+
+// ── Create store ──
+
 export const useClaudeStore = create<ClaudeState>((set) => ({
+  // Tab state
+  tabs: [initialTab],
+  activeTabId: initialTabId,
+  tabStates: { [initialTabId]: emptyTabState() },
+
+  // Global state
+  totalCost: 0,
+  tokenUsage: { input: 0, output: 0 },
+  sessionStats: {},
+
+  // Backward-compat derived (from initial empty tab)
   messages: [],
   streamingChunks: [],
   streamingMessageId: null,
   isStreaming: false,
   activeSessionId: null,
   pendingPermission: null,
-  totalCost: 0,
-  tokenUsage: { input: 0, output: 0 },
   currentRequestId: null,
-  sessionStats: {},
   messageFilter: new Set<MessageKind>(ALL_MESSAGE_KINDS),
+
+  // ── Tab actions ──
+
+  createTab: (opts) => {
+    const id = nextTabId();
+    const existingCount = useClaudeStore.getState().tabs.length;
+    const name = opts?.name ?? `Chat ${existingCount + 1}`;
+    const tab: ClaudeTab = {
+      id,
+      name,
+      createdAt: Date.now(),
+      sessionId: opts?.sessionId ?? null,
+      customName: !!opts?.name,
+    };
+    set((s) => {
+      const ts = emptyTabState();
+      return {
+        tabs: [...s.tabs, tab],
+        activeTabId: id,
+        tabStates: { ...s.tabStates, [id]: ts },
+        ...derivedFromTab(ts),
+        activeSessionId: tab.sessionId ?? null,
+      };
+    });
+    return id;
+  },
+
+  closeTab: (tabId) => {
+    set((s) => {
+      // Abort streaming if active
+      const ts = s.tabStates[tabId];
+      if (ts?.isStreaming && ts.currentRequestId) {
+        // Import getClaudeClient lazily to avoid circular deps
+        import('@/lib/websocket/claude-client').then(({ getClaudeClient }) => {
+          getClaudeClient().abort(ts.currentRequestId!);
+        });
+      }
+
+      // Clean up request → tab mapping
+      if (ts?.currentRequestId) {
+        requestToTabMap.delete(ts.currentRequestId);
+      }
+
+      const nextTabs = s.tabs.filter((t) => t.id !== tabId);
+      const nextTabStates = { ...s.tabStates };
+      delete nextTabStates[tabId];
+
+      // Clean up per-tab extractors
+      finalizeExtractor(tabId);
+
+      // If closing last tab, create a new one
+      if (nextTabs.length === 0) {
+        const newId = nextTabId();
+        const newTab: ClaudeTab = {
+          id: newId,
+          name: 'Chat 1',
+          createdAt: Date.now(),
+          sessionId: null,
+          customName: false,
+        };
+        const newTs = emptyTabState();
+        return {
+          tabs: [newTab],
+          activeTabId: newId,
+          tabStates: { [newId]: newTs },
+          ...derivedFromTab(newTs),
+          activeSessionId: null,
+        };
+      }
+
+      // If closing the active tab, switch to adjacent tab
+      let nextActiveId = s.activeTabId;
+      if (s.activeTabId === tabId) {
+        const closedIdx = s.tabs.findIndex((t) => t.id === tabId);
+        const newIdx = Math.min(closedIdx, nextTabs.length - 1);
+        nextActiveId = nextTabs[newIdx]!.id;
+      }
+
+      return {
+        tabs: nextTabs,
+        activeTabId: nextActiveId,
+        tabStates: nextTabStates,
+        ...derivedFromActiveTab({ ...s, tabs: nextTabs, tabStates: nextTabStates }, nextActiveId!),
+      };
+    });
+  },
+
+  setActiveTab: (tabId) => {
+    set((s) => {
+      if (s.activeTabId === tabId) return s;
+      return {
+        activeTabId: tabId,
+        ...derivedFromActiveTab(s, tabId),
+      };
+    });
+  },
+
+  renameTab: (tabId, name) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId ? { ...t, name, customName: true } : t,
+      ),
+    }));
+  },
+
+  // ── Per-tab message/streaming actions ──
 
   pushUserMessage: (content) => {
     const id = nextId('u');
-    set((s) => ({
-      messages: [...s.messages, { id, role: 'user', kind: 'text', content, timestamp: Date.now() }],
-    }));
+    set((s) => {
+      const tabId = s.activeTabId;
+      if (!tabId) return s;
+
+      // Auto-rename tab from first user message
+      let nextTabs = s.tabs;
+      const tab = s.tabs.find((t) => t.id === tabId);
+      const ts = s.tabStates[tabId] ?? emptyTabState();
+      if (tab && !tab.customName && ts.messages.filter((m) => m.role === 'user').length === 0) {
+        const truncated = content.length > 30 ? content.slice(0, 30) + '...' : content;
+        nextTabs = s.tabs.map((t) =>
+          t.id === tabId ? { ...t, name: truncated } : t,
+        );
+      }
+
+      return {
+        tabs: nextTabs,
+        ...updateTabState(s, tabId, (ts) => ({
+          messages: [...ts.messages, { id, role: 'user', kind: 'text', content, timestamp: Date.now() }],
+        })),
+      };
+    });
     return id;
   },
 
   handleServerMessage: (msg) => {
+    // Extract session_id and requestId from the message to route to the correct tab
+    const sessionId = extractSessionId(msg);
+    const reqId = extractRequestId(msg);
+
     switch (msg.type) {
       case 'message': {
         const data = (msg as { data: SdkAssistantMessage | SdkUserMessage | SdkSystemMessage | SdkPartialAssistantMessage | SdkToolProgressMessage }).data;
@@ -387,126 +652,129 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           const partial = data as SdkPartialAssistantMessage;
           const evt = partial.event;
 
-          // Handle text deltas (per-token)
-          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
-            const deltaText = evt.delta.text;
-            const extractor = ensureExtractor(partial.session_id ?? 'stream');
-            extractor.feedText(deltaText);
+          set((s) => {
+            const tabId = resolveTabId(s, partial.session_id, reqId);
+            if (!tabId) return s;
 
-            set((s) => {
-              const prev = s.messages;
+            // Handle text deltas (per-token)
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+              const deltaText = evt.delta.text;
+              const extractor = ensureExtractor(tabId, partial.session_id ?? 'stream');
+              extractor.feedText(deltaText);
+
+              const ts = s.tabStates[tabId] ?? emptyTabState();
+              const prev = ts.messages;
               const last = prev[prev.length - 1];
 
               if (last && last.role === 'assistant' && last.kind === 'text' && last.isStreaming) {
-                // Append delta to existing streaming message
-                const chunks = s.streamingChunks;
+                const chunks = ts.streamingChunks;
                 chunks.push(deltaText);
                 const content = chunks.join('');
                 const updated: ChatMessage = { ...last, content, timestamp: Date.now() };
                 const nextMessages = prev.slice(0, -1);
                 nextMessages.push(updated);
                 return {
-                  messages: nextMessages,
-                  streamingChunks: chunks,
-                  activeSessionId: partial.session_id ?? s.activeSessionId,
+                  ...assignSessionToTab(s, tabId, partial.session_id),
+                  ...updateTabState(s, tabId, () => ({
+                    messages: nextMessages,
+                    streamingChunks: chunks,
+                  })),
                 };
               }
 
-              // First text delta — create new streaming message
               const newId = nextId('a');
               return {
+                ...assignSessionToTab(s, tabId, partial.session_id),
+                ...updateTabState(s, tabId, () => ({
+                  messages: [
+                    ...prev,
+                    {
+                      id: newId,
+                      role: 'assistant' as const,
+                      kind: 'text' as const,
+                      content: deltaText,
+                      timestamp: Date.now(),
+                      isStreaming: true,
+                    },
+                  ],
+                  streamingChunks: [deltaText],
+                  streamingMessageId: newId,
+                })),
+              };
+            }
+
+            // Handle content_block_start for tool_use
+            if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+              const block = evt.content_block;
+              const blockIndex = evt.index ?? -1;
+              if (block.name && FILE_EDIT_TOOLS.has(block.name) && blockIndex >= 0) {
+                getStreamingToolInputs(tabId).set(blockIndex, {
+                  toolName: block.name,
+                  chunks: [],
+                  lastFlushAt: Date.now(),
+                  filePath: null,
+                });
+              }
+              return updateTabState(s, tabId, (ts) => ({
                 messages: [
-                  ...prev,
+                  ...ts.messages,
                   {
-                    id: newId,
-                    role: 'assistant' as const,
-                    kind: 'text' as const,
-                    content: deltaText,
+                    id: nextId('t'),
+                    role: 'tool' as const,
+                    kind: 'tool_use' as const,
+                    content: block.name ? `Running ${block.name}...` : 'Running tool...',
+                    toolName: block.name ?? 'unknown',
+                    toolInput: block.input,
                     timestamp: Date.now(),
                     isStreaming: true,
                   },
                 ],
-                streamingChunks: [deltaText],
-                streamingMessageId: newId,
-                activeSessionId: partial.session_id ?? s.activeSessionId,
-              };
-            });
-          }
-
-          // Handle content_block_start for tool_use
-          if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
-            const block = evt.content_block;
-            const blockIndex = evt.index ?? -1;
-            // Start tracking streaming input for file-edit tools
-            if (block.name && FILE_EDIT_TOOLS.has(block.name) && blockIndex >= 0) {
-              streamingToolInputs.set(blockIndex, {
-                toolName: block.name,
-                chunks: [],
-                lastFlushAt: Date.now(),
-                filePath: null,
-              });
+              }));
             }
-            set((s) => ({
-              messages: [
-                ...s.messages,
-                {
-                  id: nextId('t'),
-                  role: 'tool' as const,
-                  kind: 'tool_use' as const,
-                  content: block.name ? `Running ${block.name}...` : 'Running tool...',
-                  toolName: block.name ?? 'unknown',
-                  toolInput: block.input,
-                  timestamp: Date.now(),
-                  isStreaming: true,
-                },
-              ],
-            }));
-          }
 
-          // Handle input_json_delta — accumulate partial tool input for streaming edits
-          if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
-            const blockIndex = evt.index ?? -1;
-            const tracker = streamingToolInputs.get(blockIndex);
-            if (tracker) {
-              tracker.chunks.push(evt.delta.partial_json);
-              const now = Date.now();
-              // Throttle: flush to editor every STREAMING_EDIT_FLUSH_INTERVAL ms
-              if (now - tracker.lastFlushAt >= STREAMING_EDIT_FLUSH_INTERVAL) {
-                tracker.lastFlushAt = now;
-                const parsed = tryParsePartialJson(tracker.chunks);
-                if (parsed) {
-                  // Extract file path early for UI display
-                  const fp = extractFilePath(parsed);
-                  if (fp) tracker.filePath = fp;
-                  // For Write tools, stream partial content to editor
-                  if (tracker.toolName === 'Write' && typeof parsed.content === 'string' && tracker.filePath) {
-                    void forwardToolToEditor(
-                      { name: 'Write', input: { file_path: tracker.filePath, content: parsed.content } },
-                      'streaming',
-                    );
+            // Handle input_json_delta
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && evt.delta.partial_json) {
+              const blockIndex = evt.index ?? -1;
+              const tracker = getStreamingToolInputs(tabId).get(blockIndex);
+              if (tracker) {
+                tracker.chunks.push(evt.delta.partial_json);
+                const now = Date.now();
+                if (now - tracker.lastFlushAt >= STREAMING_EDIT_FLUSH_INTERVAL) {
+                  tracker.lastFlushAt = now;
+                  const parsed = tryParsePartialJson(tracker.chunks);
+                  if (parsed) {
+                    const fp = extractFilePath(parsed);
+                    if (fp) tracker.filePath = fp;
+                    if (tracker.toolName === 'Write' && typeof parsed.content === 'string' && tracker.filePath) {
+                      void forwardToolToEditor(
+                        { name: 'Write', input: { file_path: tracker.filePath, content: parsed.content } },
+                        'streaming',
+                      );
+                    }
                   }
                 }
               }
             }
-          }
 
-          // Handle content_block_stop — finalize streaming tool input
-          if (evt.type === 'content_block_stop') {
-            const blockIndex = evt.index ?? -1;
-            const tracker = streamingToolInputs.get(blockIndex);
-            if (tracker) {
-              streamingToolInputs.delete(blockIndex);
-              // Parse final accumulated JSON and forward to editor as final diff
-              const parsed = tryParsePartialJson(tracker.chunks);
-              if (parsed && tracker.filePath) {
-                void forwardToolToEditor(
-                  { name: tracker.toolName, input: parsed },
-                  'final',
-                );
+            // Handle content_block_stop
+            if (evt.type === 'content_block_stop') {
+              const blockIndex = evt.index ?? -1;
+              const toolInputs = getStreamingToolInputs(tabId);
+              const tracker = toolInputs.get(blockIndex);
+              if (tracker) {
+                toolInputs.delete(blockIndex);
+                const parsed = tryParsePartialJson(tracker.chunks);
+                if (parsed && tracker.filePath) {
+                  void forwardToolToEditor(
+                    { name: tracker.toolName, input: parsed },
+                    'final',
+                  );
+                }
               }
             }
-          }
 
+            return s;
+          });
           return;
         }
 
@@ -514,18 +782,21 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         if (data.type === 'tool_progress') {
           const progress = data as SdkToolProgressMessage;
           set((s) => {
-            // Find the last tool message with matching name and update its content
-            const idx = s.messages.findLastIndex(
-              (m) => m.role === 'tool' && m.toolName === progress.tool_name && m.isStreaming,
-            );
-            if (idx < 0) return s;
-            const nextMessages: ChatMessage[] = s.messages.slice();
-            const existing = nextMessages[idx];
-            nextMessages[idx] = {
-              ...existing,
-              content: `Running ${progress.tool_name}... (${Math.round(progress.elapsed_time_seconds)}s)`,
-            } as ChatMessage;
-            return { messages: nextMessages };
+            const tabId = resolveTabId(s, progress.session_id, reqId);
+            if (!tabId) return s;
+            return updateTabState(s, tabId, (ts) => {
+              const idx = ts.messages.findLastIndex(
+                (m) => m.role === 'tool' && m.toolName === progress.tool_name && m.isStreaming,
+              );
+              if (idx < 0) return {};
+              const nextMessages: ChatMessage[] = ts.messages.slice();
+              const existing = nextMessages[idx];
+              nextMessages[idx] = {
+                ...existing,
+                content: `Running ${progress.tool_name}... (${Math.round(progress.elapsed_time_seconds)}s)`,
+              } as ChatMessage;
+              return { messages: nextMessages };
+            });
           });
           return;
         }
@@ -535,25 +806,29 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
           if (sys.session_id) {
             const sid = sys.session_id;
             set((s) => {
+              const tabId = resolveTabId(s, sid, reqId);
+              if (!tabId) return s;
+              const ts = s.tabStates[tabId] ?? emptyTabState();
               const prev = s.sessionStats[sid] ?? emptyStats(sid);
-              // Insert a thinking placeholder if no streaming assistant message yet
-              const hasStreamingAssistant = s.streamingMessageId !== null;
-              const shouldInsertThinking = !hasStreamingAssistant && s.isStreaming;
+              const hasStreamingAssistant = ts.streamingMessageId !== null;
+              const shouldInsertThinking = !hasStreamingAssistant && ts.isStreaming;
               const thinkingId = shouldInsertThinking ? nextId('a') : null;
               return {
-                activeSessionId: sid,
-                messages: shouldInsertThinking
-                  ? [...s.messages, {
-                      id: thinkingId!,
-                      role: 'assistant' as const,
-                      kind: 'text' as const,
-                      content: '',
-                      timestamp: Date.now(),
-                      isStreaming: true,
-                    }]
-                  : s.messages,
-                streamingMessageId: thinkingId ?? s.streamingMessageId,
-                streamingChunks: shouldInsertThinking ? [] : s.streamingChunks,
+                ...assignSessionToTab(s, tabId, sid),
+                ...updateTabState(s, tabId, (ts) => ({
+                  messages: shouldInsertThinking
+                    ? [...ts.messages, {
+                        id: thinkingId!,
+                        role: 'assistant' as const,
+                        kind: 'text' as const,
+                        content: '',
+                        timestamp: Date.now(),
+                        isStreaming: true,
+                      }]
+                    : ts.messages,
+                  streamingMessageId: thinkingId ?? ts.streamingMessageId,
+                  streamingChunks: shouldInsertThinking ? [] : ts.streamingChunks,
+                })),
                 sessionStats: {
                   ...s.sessionStats,
                   [sid]: {
@@ -571,58 +846,48 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         if (data.type === 'assistant') {
           const asst = data as SdkAssistantMessage;
           const { text, tools } = extractContent(asst.message?.content);
-          const extractor = ensureExtractor(asst.session_id ?? 'stream');
-          // Only feed extractor if stream_event didn't already provide per-token text.
-          // Check: if we have a streaming message, stream_event already fed the extractor.
-          const alreadyStreamedViaDeltas = (() => {
-            const s = useClaudeStore.getState();
-            return s.streamingMessageId !== null;
-          })();
-          if (!alreadyStreamedViaDeltas) {
-            if (text) extractor.feedText(text);
-          }
-          for (const tool of tools) {
-            extractor.feedToolUse(tool);
-          }
-          // Ingest Write/Edit/MultiEdit tool_use blocks into the artifact
-          // gallery so any file Claude writes — not just `.html` — shows up
-          // in "Generated Content" regardless of whether it was ever printed
-          // inline as a fenced code block. See FR-1008.
-          {
-            const artifactStore = useArtifactStore.getState();
-            const toolSessionId = asst.session_id ?? null;
-            for (const tool of tools) {
-              artifactStore.ingestToolUse(nextId('tool'), toolSessionId, tool);
-            }
-          }
-          // Forward Write/Edit/MultiEdit results to editor as final diffs.
-          // If content_block_stop already handled this, applyClaudeEdit will
-          // simply recompute identical hunks (idempotent).
-          for (const tool of tools) {
-            if (FILE_EDIT_TOOLS.has(tool.name)) {
-              void forwardToolToEditor(tool, 'final');
-            }
-          }
-          let newAssistantMessageId: string | null = null;
           set((s) => {
-            const prev = s.messages;
+            const tabId = resolveTabId(s, asst.session_id, reqId);
+            if (!tabId) return s;
+            const extractor = ensureExtractor(tabId, asst.session_id ?? 'stream');
+            const ts = s.tabStates[tabId] ?? emptyTabState();
+            const alreadyStreamedViaDeltas = ts.streamingMessageId !== null;
+            if (!alreadyStreamedViaDeltas) {
+              if (text) extractor.feedText(text);
+            }
+            for (const tool of tools) {
+              extractor.feedToolUse(tool);
+            }
+            {
+              const artifactStore = useArtifactStore.getState();
+              const toolSessionId = asst.session_id ?? null;
+              for (const tool of tools) {
+                artifactStore.ingestToolUse(nextId('tool'), toolSessionId, tool);
+              }
+            }
+            for (const tool of tools) {
+              if (FILE_EDIT_TOOLS.has(tool.name)) {
+                void forwardToolToEditor(tool, 'final');
+              }
+            }
+
+            let newAssistantMessageId: string | null = null;
+            const prev = ts.messages;
             const last = prev[prev.length - 1];
             const hasStreamingAssistant =
               last && last.role === 'assistant' && last.kind === 'text' && last.isStreaming;
 
             const nextMessages = prev.slice();
-            let nextChunks = s.streamingChunks;
-            let nextStreamingId = s.streamingMessageId;
+            let nextChunks = ts.streamingChunks;
+            let nextStreamingId = ts.streamingMessageId;
 
             if (text) {
               if (hasStreamingAssistant) {
-                // Replace streaming message content with authoritative SDK text
                 const updated: ChatMessage = { ...last, content: text, timestamp: Date.now() };
                 nextMessages[nextMessages.length - 1] = updated;
                 newAssistantMessageId = updated.id;
                 nextChunks = [text];
               } else {
-                // No stream_event deltas preceded this — create new message
                 newAssistantMessageId = nextId('a');
                 nextStreamingId = newAssistantMessageId;
                 nextChunks = [text];
@@ -637,14 +902,11 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
               }
             }
 
-            // Finalize any streaming tool_use messages and add authoritative tool blocks
             for (const tool of tools) {
-              // Check if a streaming tool message already exists for this tool
               const existingIdx = nextMessages.findLastIndex(
                 (m) => m.role === 'tool' && m.toolName === tool.name && m.isStreaming,
               );
               if (existingIdx >= 0) {
-                // Update existing streaming tool message with final input
                 const prev = nextMessages[existingIdx];
                 nextMessages[existingIdx] = {
                   ...prev,
@@ -665,66 +927,82 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
               }
             }
 
+            if (text && newAssistantMessageId) {
+              useArtifactStore
+                .getState()
+                .extractFromMessage(newAssistantMessageId, asst.session_id ?? null, text);
+            }
+
             return {
-              messages: nextMessages,
-              streamingChunks: nextChunks,
-              streamingMessageId: nextStreamingId,
-              activeSessionId: asst.session_id ?? s.activeSessionId,
+              ...assignSessionToTab(s, tabId, asst.session_id),
+              ...updateTabState(s, tabId, () => ({
+                messages: nextMessages,
+                streamingChunks: nextChunks,
+                streamingMessageId: nextStreamingId,
+              })),
             };
           });
-          if (text && newAssistantMessageId) {
-            useArtifactStore
-              .getState()
-              .extractFromMessage(newAssistantMessageId, asst.session_id ?? null, text);
-          }
           return;
         }
 
         if (data.type === 'user') {
-          // Tool result messages — omit from chat UI
           return;
         }
         return;
       }
 
       case 'tool_call': {
-        // Legacy path (unused with current handler): ignore
         return;
       }
 
       case 'permission_request': {
-        set({ pendingPermission: msg });
+        set((s) => {
+          const tabId = s.activeTabId;
+          if (!tabId) return { pendingPermission: msg };
+          return updateTabState(s, tabId, () => ({
+            pendingPermission: msg,
+          }));
+        });
         return;
       }
 
       case 'auto_decision': {
-        const label =
-          msg.decision === 'allow'
-            ? `Auto-allowed ${msg.tool} (persistent rule)`
-            : `Auto-denied ${msg.tool} (persistent rule)`;
-        set((s) => ({
-          messages: [
-            ...s.messages,
-            {
-              id: nextId('ad'),
-              role: 'system',
-              kind: 'auto_decision',
-              content: label,
-              timestamp: Date.now(),
-              toolName: msg.tool,
-            },
-          ],
-        }));
+        set((s) => {
+          const tabId = resolveTabId(s, sessionId, reqId);
+          if (!tabId) return s;
+          const label =
+            msg.decision === 'allow'
+              ? `Auto-allowed ${msg.tool} (persistent rule)`
+              : `Auto-denied ${msg.tool} (persistent rule)`;
+          return updateTabState(s, tabId, (ts) => ({
+            messages: [
+              ...ts.messages,
+              {
+                id: nextId('ad'),
+                role: 'system',
+                kind: 'auto_decision',
+                content: label,
+                timestamp: Date.now(),
+                toolName: msg.tool,
+              },
+            ],
+          }));
+        });
         return;
       }
 
       case 'result': {
         const m = msg as { data: SdkResultMessage };
         const data = m.data;
-        finalizeExtractor();
-        useArtifactStore.getState().flushPendingOpen();
+        // Clean up request → tab mapping since the request is complete
+        if (reqId) requestToTabMap.delete(reqId);
         set((s) => {
-          const nextMessages = s.messages.map((m) =>
+          const tabId = resolveTabId(s, data.session_id, reqId);
+          if (!tabId) return s;
+          finalizeExtractor(tabId);
+          useArtifactStore.getState().flushPendingOpen();
+          const ts = s.tabStates[tabId] ?? emptyTabState();
+          const nextMessages = ts.messages.map((m) =>
             m.isStreaming ? { ...m, isStreaming: false } : m,
           );
           if (data.subtype === 'success' && typeof data.result === 'string' && data.result.trim()) {
@@ -733,7 +1011,7 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
               // result field contains the final assistant text; avoid duplicates
             }
           }
-          const sid = data.session_id ?? s.activeSessionId;
+          const sid = data.session_id ?? s.tabs.find((t) => t.id === tabId)?.sessionId;
           const nextStats = { ...s.sessionStats };
           if (sid) {
             const prev = nextStats[sid] ?? emptyStats(sid);
@@ -758,17 +1036,19 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
             };
           }
           return {
-            messages: nextMessages,
-            streamingChunks: [],
-            streamingMessageId: null,
-            isStreaming: false,
-            activeSessionId: sid,
+            ...assignSessionToTab(s, tabId, data.session_id),
+            ...updateTabState(s, tabId, () => ({
+              messages: nextMessages,
+              streamingChunks: [],
+              streamingMessageId: null,
+              isStreaming: false,
+              currentRequestId: null,
+            })),
             totalCost: s.totalCost + (data.total_cost_usd || 0),
             tokenUsage: {
               input: s.tokenUsage.input + (data.usage?.input_tokens || 0),
               output: s.tokenUsage.output + (data.usage?.output_tokens || 0),
             },
-            currentRequestId: null,
             sessionStats: nextStats,
           };
         });
@@ -776,56 +1056,123 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
       }
 
       case 'error': {
-        finalizeExtractor();
-        useArtifactStore.getState().flushPendingOpen();
-        set((s) => ({
-          isStreaming: false,
-          streamingChunks: [],
-          streamingMessageId: null,
-          messages: [
-            ...s.messages.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
-            {
-              id: nextId('e'),
-              role: 'assistant',
-              kind: 'error',
-              content: `Error: ${msg.message}`,
-              timestamp: Date.now(),
-            },
-          ],
-        }));
+        if (reqId) requestToTabMap.delete(reqId);
+        set((s) => {
+          const tabId = resolveTabId(s, sessionId, reqId);
+          if (!tabId) return s;
+          finalizeExtractor(tabId);
+          useArtifactStore.getState().flushPendingOpen();
+          return updateTabState(s, tabId, (ts) => ({
+            isStreaming: false,
+            streamingChunks: [],
+            streamingMessageId: null,
+            currentRequestId: null,
+            messages: [
+              ...ts.messages.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m)),
+              {
+                id: nextId('e'),
+                role: 'assistant',
+                kind: 'error',
+                content: `Error: ${msg.message}`,
+                timestamp: Date.now(),
+              },
+            ],
+          }));
+        });
         return;
       }
     }
   },
 
-  setPendingPermission: (req) => set({ pendingPermission: req }),
-  reset: () =>
-    set({
-      messages: [],
-      streamingChunks: [],
-      streamingMessageId: null,
-      isStreaming: false,
-      activeSessionId: null,
-      pendingPermission: null,
+  setPendingPermission: (req) => {
+    set((s) => {
+      const tabId = s.activeTabId;
+      if (!tabId) return { pendingPermission: req };
+      return updateTabState(s, tabId, () => ({ pendingPermission: req }));
+    });
+  },
+
+  resetActiveTab: () => {
+    set((s) => {
+      const tabId = s.activeTabId;
+      if (!tabId) return s;
+      finalizeExtractor(tabId);
+      const ts = emptyTabState();
+      return {
+        tabs: s.tabs.map((t) =>
+          t.id === tabId ? { ...t, sessionId: null, customName: false, name: t.name } : t,
+        ),
+        tabStates: { ...s.tabStates, [tabId]: ts },
+        ...derivedFromTab(ts),
+        activeSessionId: null,
+      };
+    });
+  },
+
+  // Backward-compat: reset() calls resetActiveTab() and clears global counters
+  reset: () => {
+    const store = useClaudeStore.getState();
+    store.resetActiveTab();
+    useClaudeStore.setState({
       totalCost: 0,
       tokenUsage: { input: 0, output: 0 },
-      currentRequestId: null,
       sessionStats: {},
-      messageFilter: new Set<MessageKind>(ALL_MESSAGE_KINDS),
-    }),
-  setActiveSessionId: (id) => set({ activeSessionId: id }),
-  setStreaming: (streaming) => set({ isStreaming: streaming }),
-  setCurrentRequestId: (id) => set({ currentRequestId: id }),
-  toggleFilter: (kind) =>
+    });
+  },
+
+  setActiveSessionId: (id) => {
     set((s) => {
-      const next = new Set(s.messageFilter);
+      const tabId = s.activeTabId;
+      if (!tabId) return { activeSessionId: id };
+      return {
+        tabs: s.tabs.map((t) =>
+          t.id === tabId ? { ...t, sessionId: id } : t,
+        ),
+        activeSessionId: id,
+      };
+    });
+  },
+
+  setStreaming: (streaming) => {
+    set((s) => {
+      const tabId = s.activeTabId;
+      if (!tabId) return { isStreaming: streaming };
+      return updateTabState(s, tabId, () => ({ isStreaming: streaming }));
+    });
+  },
+
+  setCurrentRequestId: (id) => {
+    set((s) => {
+      const tabId = s.activeTabId;
+      if (!tabId) return { currentRequestId: id };
+      // Track requestId → tabId so server responses route to the originating tab
+      if (id) {
+        requestToTabMap.set(id, tabId);
+      }
+      return updateTabState(s, tabId, (ts) => {
+        // Clean up old mapping when replacing request
+        if (ts.currentRequestId && ts.currentRequestId !== id) {
+          requestToTabMap.delete(ts.currentRequestId);
+        }
+        return { currentRequestId: id };
+      });
+    });
+  },
+
+  toggleFilter: (kind) => {
+    set((s) => {
+      const tabId = s.activeTabId;
+      if (!tabId) return s;
+      const ts = s.tabStates[tabId] ?? emptyTabState();
+      const next = new Set(ts.messageFilter);
       if (next.has(kind)) {
         next.delete(kind);
       } else {
         next.add(kind);
       }
-      return { messageFilter: next };
-    }),
+      return updateTabState(s, tabId, () => ({ messageFilter: next }));
+    });
+  },
 
   loadSession: async (id) => {
     try {
@@ -846,15 +1193,28 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         }
       }
       set((s) => {
+        const tabId = s.activeTabId;
+        if (!tabId) return s;
         const prev = s.sessionStats[id] ?? emptyStats(id);
-        return {
+        const ts: ClaudeTabState = {
           messages,
-          activeSessionId: id,
-          totalCost: detail.totalCost ?? 0,
-          tokenUsage: { input: 0, output: 0 },
+          streamingChunks: [],
+          streamingMessageId: null,
           isStreaming: false,
           pendingPermission: null,
           currentRequestId: null,
+          messageFilter: new Set<MessageKind>(ALL_MESSAGE_KINDS),
+        };
+        const nextTabs = s.tabs.map((t) =>
+          t.id === tabId ? { ...t, sessionId: id } : t,
+        );
+        return {
+          tabs: nextTabs,
+          tabStates: { ...s.tabStates, [tabId]: ts },
+          ...derivedFromTab(ts),
+          activeSessionId: id,
+          totalCost: detail.totalCost ?? 0,
+          tokenUsage: { input: 0, output: 0 },
           sessionStats: {
             ...s.sessionStats,
             [id]: {
@@ -870,3 +1230,91 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
     }
   },
 }));
+
+// ── Helpers for routing messages to the correct tab ──
+
+function extractSessionId(msg: ClaudeServerMessage): string | undefined {
+  // Try common patterns from server messages
+  const data = (msg as { data?: { session_id?: string } }).data;
+  if (data?.session_id) return data.session_id;
+  const msgAny = msg as { session_id?: string };
+  return msgAny.session_id;
+}
+
+function extractRequestId(msg: ClaudeServerMessage): string | undefined {
+  return (msg as { requestId?: string }).requestId;
+}
+
+/**
+ * Resolve which tab should receive a message.
+ * Priority:
+ *   1. Tab that owns the session_id (already assigned)
+ *   2. Tab that initiated the requestId (before session_id assignment)
+ *   3. Active tab (last resort)
+ */
+function resolveTabId(
+  s: ClaudeState,
+  sessionId: string | undefined | null,
+  requestId?: string | undefined,
+): string | null {
+  // 1. Match by session_id
+  if (sessionId) {
+    const tab = s.tabs.find((t) => t.sessionId === sessionId);
+    if (tab) return tab.id;
+  }
+  // 2. Match by requestId → tabId mapping (set when query was sent)
+  if (requestId) {
+    const tabId = requestToTabMap.get(requestId);
+    if (tabId && s.tabStates[tabId]) return tabId;
+  }
+  // 3. Fall back to active tab
+  return s.activeTabId;
+}
+
+/**
+ * If a tab doesn't have a sessionId yet, assign it from the server response.
+ * Returns partial state to merge.
+ */
+function assignSessionToTab(
+  s: ClaudeState,
+  tabId: string,
+  sessionId: string | undefined | null,
+): Partial<ClaudeState> {
+  if (!sessionId) return {};
+  const tab = s.tabs.find((t) => t.id === tabId);
+  if (!tab || tab.sessionId === sessionId) return {};
+  // Only assign if the tab doesn't have a session yet
+  if (tab.sessionId && tab.sessionId !== sessionId) return {};
+  return {
+    tabs: s.tabs.map((t) =>
+      t.id === tabId ? { ...t, sessionId } : t,
+    ),
+    // Update backward-compat field if this is the active tab
+    ...(tabId === s.activeTabId ? { activeSessionId: sessionId } : {}),
+  };
+}
+
+// ── Convenience hooks for tab-aware selectors ──
+
+export function useActiveTabMessages(): ChatMessage[] {
+  return useClaudeStore((s) => {
+    const tabId = s.activeTabId;
+    return tabId ? (s.tabStates[tabId]?.messages ?? []) : [];
+  });
+}
+
+export function useActiveTabStreaming(): boolean {
+  return useClaudeStore((s) => {
+    const tabId = s.activeTabId;
+    return tabId ? (s.tabStates[tabId]?.isStreaming ?? false) : false;
+  });
+}
+
+export function useActiveTabSessionId(): string | null {
+  return useClaudeStore((s) => {
+    const tabId = s.activeTabId;
+    if (!tabId) return null;
+    const tab = s.tabs.find((t) => t.id === tabId);
+    return tab?.sessionId ?? null;
+  });
+}

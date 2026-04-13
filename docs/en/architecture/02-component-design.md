@@ -40,7 +40,11 @@
         <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
         <Panel id="claude" ref={claudeRef} collapsible collapsedSize={0}>
-          <ClaudeChatPanel />
+          <ClaudeChatPanel>
+            <ClaudeTabBar />          {/* tab create/close/rename/context menu */}
+            <ClaudeChatView />        {/* messages, input, streaming for the active tab */}
+            <SessionInfoBar tabId={activeTabId} />
+          </ClaudeChatPanel>
         </Panel>
 
         <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
@@ -84,11 +88,14 @@ server.js
 │   │
 │   └── WebSocket Upgrade Handler
 │       ├── /_next/webpack-hmr          → Next.js HMR (dev only)
-│       ├── /ws/terminal                → PTY Session Handler
-│       ├── /ws/claude                  → Agent SDK Handler
-│       └── /ws/files                   → Chokidar Broadcaster
+│       ├── /ws/terminal?browserId=     → PTY Session Handler (per-tab root via BrowserSessionRegistry)
+│       ├── /ws/claude?browserId=       → Agent SDK Handler (per-tab root via BrowserSessionRegistry)
+│       └── /ws/files?browserId=        → File Watcher Broadcaster (ref-counted per root)
 │
 └── lib/
+    ├── project/                        ← Project context
+    │   ├── project-context.mjs         (global singleton, ADR-016)
+    │   └── browser-session-registry.mjs (per-tab roots, ADR-027)
     ├── fs/                             ← Sandboxed file system
     │   ├── resolve-safe.ts
     │   ├── file-operations.ts
@@ -669,6 +676,19 @@ interface TerminalState {
 ### useClaudeStore
 
 ```typescript
+interface ClaudeTab {
+  id: string;            // unique tab ID (UUID)
+  name: string;          // display name (auto-named from first message)
+  sessionId: string | null;  // null before the first message is sent
+}
+
+interface ClaudeTabState {
+  messages: ClaudeMessage[];
+  isStreaming: boolean;
+  pendingPermissionRequest: PermissionRequest | null;
+  sessionStats: SessionStats | null;
+}
+
 interface SessionStats {
   sessionId: string;
   model: string | null;
@@ -682,22 +702,30 @@ interface SessionStats {
 }
 
 interface ClaudeState {
+  // Multi-tab structure
+  tabs: ClaudeTab[];                         // list of open tabs
+  activeTabId: string;                       // currently active tab ID
+  tabStates: Record<string, ClaudeTabState>; // tabId → per-tab state
+
+  // Legacy compat (session list management)
   sessions: ClaudeSession[];
-  activeSessionId: string | null;
-  messages: Record<string, ClaudeMessage[]>;  // sessionId → messages
-  pendingPermissionRequest: PermissionRequest | null;
   totalCost: Record<string, number>;
   tokenUsage: Record<string, { input: number; output: number }>;
-  // Per-session context / usage snapshot, populated only from values the SDK
-  // actually emits.
-  sessionStats: Record<string, SessionStats>;
 
   sendQuery(prompt: string): Promise<void>;
   resumeSession(id: string): void;
   forkSession(id: string): string;
   respondToPermission(approved: boolean): void;
+
+  // Tab management actions
+  createTab(): string;
+  closeTab(tabId: string): void;
+  setActiveTab(tabId: string): void;
+  renameTab(tabId: string, name: string): void;
 }
 ```
+
+The multi-tab refactor replaced the former flat state (`activeSessionId`, `messages: Record<string, ClaudeMessage[]>`) with a `tabs` + `tabStates` structure. Each tab owns an independent session and message list, and streaming responses are routed to the correct `ClaudeTabState` by `session_id`. New tabs are created with `sessionId: null`; the backend session is automatically created when the first message is sent.
 
 `sessionStats` is accumulated only from values that the Agent SDK actually
 sends: the `model` field from the `system.init` event, and `num_turns`,
@@ -752,9 +780,9 @@ rendering based on the `ChatMessage.kind` field.
 
 #### SessionInfoBar (Claude panel)
 
-`src/components/panels/claude/session-info-bar.tsx` subscribes to the active
-session's `SessionStats` from `useClaudeStore` and renders a collapsible bar
-at the bottom of the Claude chat panel.
+`src/components/panels/claude/session-info-bar.tsx` accepts a `tabId` prop and
+subscribes to the corresponding tab's `ClaudeTabState.sessionStats` from
+`useClaudeStore`, rendering a collapsible bar at the bottom of the Claude chat panel.
 
 - Collapsed (default): a single line (h-6) —
   `{model} · {turns} turns · ctx {percent} [progress bar] · {tokens} tok · {updated}`.

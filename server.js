@@ -281,7 +281,11 @@ async function startServer(nextHandler, upgradeHandler) {
   setupPong(wssFiles);
 
   server.on('upgrade', (req, socket, head) => {
-    const { pathname } = parse(req.url || '/');
+    const parsed = parse(req.url || '/', true);
+    const pathname = parsed.pathname;
+
+    // Attach browserId from query string so handlers can isolate per-tab state.
+    req.browserId = (parsed.query && parsed.query.browserId) || null;
 
     // Preserve Next.js HMR WebSocket in dev
     if (pathname && pathname.startsWith('/_next')) {

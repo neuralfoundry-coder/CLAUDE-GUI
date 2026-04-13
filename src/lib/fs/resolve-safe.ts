@@ -1,6 +1,8 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { headers } from 'next/headers';
 import { getActiveRoot } from '@/lib/project/project-context.mjs';
+import { browserSessionRegistry } from '@/lib/project/browser-session-registry.mjs';
 
 export class SandboxError extends Error {
   readonly code: number;
@@ -25,8 +27,24 @@ const DENIED_SEGMENTS = new Set([
   'credentials',
 ]);
 
-export function getProjectRoot(): string {
-  const root = getActiveRoot();
+/**
+ * Get the project root for the given browser session.
+ * When called from a Next.js API route, automatically reads the
+ * `x-browser-id` header to resolve the correct per-tab root.
+ * Falls back to the global singleton when browserId is absent.
+ */
+export function getProjectRoot(browserId?: string | null): string {
+  let bid = browserId ?? null;
+  if (!bid) {
+    // Attempt to read from Next.js request headers (works inside API routes).
+    try {
+      const hdrs = headers();
+      bid = hdrs.get('x-browser-id') || null;
+    } catch {
+      // Not in a Next.js request context — fall through to global root.
+    }
+  }
+  const root = bid ? browserSessionRegistry.getRoot(bid) : getActiveRoot();
   if (!root) {
     throw new SandboxError('No project is open', 4412);
   }

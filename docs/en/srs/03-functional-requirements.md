@@ -191,6 +191,19 @@
 - All shortcuts reuse the existing `useKeyboardShortcut`/`hasPrimaryModifier` infrastructure and automatically map the platform-specific modifier (`Cmd` on macOS, `Ctrl` elsewhere).
 - Implementation: `src/components/panels/file-explorer/use-file-keyboard.ts`, `src/hooks/use-keyboard-shortcut.ts` (reused).
 
+### FR-215: Multi-browser independent project context
+
+- Each browser tab can open and work on an independent project. Changing the project in one tab does not affect other tabs.
+- The client generates a UUID `browserId` per tab and stores it in `sessionStorage`. This ensures each tab (including duplicated tabs) gets its own identity.
+- `browserId` is sent in all HTTP requests via the `X-Browser-Id` header and in WebSocket connections via the `?browserId=` query parameter.
+- The server maintains a `BrowserSessionRegistry` (`src/lib/project/browser-session-registry.mjs`) that maps each `browserId` to `{ root, lastSeen }`.
+- File watchers are ref-counted per project root: when multiple tabs open the same project, a single `@parcel/watcher` subscription is shared; the subscription is torn down only when the last tab referencing that root disconnects or switches away.
+- `project-changed` WebSocket events are sent only to the specific browser tab that triggered the change, not broadcast to all connected clients.
+- Terminal and Claude handlers resolve the project root from the per-tab `BrowserSessionRegistry` entry instead of the global `ProjectContext` singleton.
+- Disconnected sessions are garbage-collected after 30 minutes of inactivity (same pattern as `TerminalSessionRegistry` in ADR-020).
+- **Backward compatibility**: if a client does not send `browserId`, the server falls back to the global `ProjectContext` singleton, preserving full compatibility with older clients.
+- Implementation: `src/lib/project/browser-session-registry.mjs`, `src/lib/websocket/browser-id.ts`, `server-handlers/claude-handler.mjs`, `server-handlers/terminal-handler.mjs`, `server-handlers/files-handler.mjs`, `server.js`.
+
 ---
 
 ## 3.3 Code Editor (FR-300)
@@ -543,6 +556,13 @@
 
 ### FR-503: Session management
 
+- **Multi-tab**: The Claude chat panel supports multiple tabs. Each tab maintains its own independent session, messages, and streaming state.
+  - Tab creation: a new tab can be created via the `+` button or the `/new` slash command.
+  - Tab close/rename: close button, double-click rename, and right-click context menu are supported.
+  - Tab auto-naming: when the user sends the first message in a tab, the tab name is automatically set based on the message content.
+  - Auto session creation: sending the first message in a new tab automatically creates a backend session.
+  - `/clear` clears only the active tab's messages.
+  - Streaming responses are routed to the correct tab by `session_id`.
 - **Create new session**: start a new conversation scoped to the project directory
 - **Resume session**: continue an existing conversation by session ID
 - **Fork session**: branch from an existing session into a new conversation

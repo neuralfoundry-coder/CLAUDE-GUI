@@ -541,6 +541,13 @@
 
 ### FR-503: 세션 관리
 
+- **멀티탭**: Claude 채팅 패널은 다중 탭을 지원한다. 각 탭은 독립된 세션, 메시지, 스트리밍 상태를 가진다.
+  - 탭 생성: `+` 버튼 또는 `/new` 슬래시 명령으로 새 탭을 생성한다.
+  - 탭 닫기/이름 변경: 탭 닫기 버튼, 더블클릭 이름 변경, 우클릭 컨텍스트 메뉴를 지원한다.
+  - 탭 자동 명명: 사용자가 첫 메시지를 보내면 해당 메시지 내용을 기반으로 탭 이름이 자동 설정된다.
+  - 자동 세션 생성: 새 탭에서 첫 메시지를 전송하면 백엔드 세션이 자동으로 생성된다.
+  - `/clear`는 활성 탭의 메시지만 초기화한다.
+  - 스트리밍 응답은 `session_id`를 기준으로 해당 탭에 정확히 라우팅된다.
 - **새 세션 생성**: 프로젝트 디렉토리 기준 새 대화 시작
 - **세션 재개**: 기존 세션 ID로 대화 이어가기
 - **세션 포크**: 기존 세션에서 분기하여 새 대화 시작
@@ -1415,3 +1422,20 @@
 - 상태바에 활성 MCP 서버 수와 집계 상태(green: 전체 connected, yellow: 일부 pending, red: 실패 있음)가 표시된다. 클릭 시 관리 모달이 열린다.
 - 관리 모달 내 서버 목록에서 각 서버의 실시간 연결 상태가 색상 도트로 표시된다 (connected/pending/failed/needs-auth/unknown).
 - 구현: `src/components/layout/status-bar.tsx`, `src/components/layout/header.tsx`.
+
+---
+
+## 3.15 멀티 브라우저 독립 프로젝트 (FR-1500)
+
+### FR-1500: 멀티 브라우저 독립 프로젝트 컨텍스트
+
+- 각 브라우저 탭은 독립적인 프로젝트를 열고 작업할 수 있다. 한 탭에서 프로젝트를 변경해도 다른 탭에 영향을 주지 않는다.
+- 클라이언트는 탭별 UUID `browserId`를 `sessionStorage`에 생성·저장한다. 탭 복제 시 새로운 `browserId`가 부여된다.
+- 모든 HTTP 요청에 `X-Browser-Id` 헤더를, WebSocket 연결에 `?browserId=` 쿼리 파라미터를 포함한다.
+- 서버의 `BrowserSessionRegistry`가 `browserId → { root, lastSeen }` 매핑을 관리한다.
+- 파일 와처는 프로젝트 루트 단위로 refCount 기반 공유된다. 동일 프로젝트를 여는 복수 탭이 하나의 와처를 공유한다.
+- `project-changed` WebSocket 이벤트는 해당 `browserId`의 탭에만 전송된다.
+- 터미널 및 Claude 핸들러는 탭별 프로젝트 루트를 작업 디렉토리로 사용한다.
+- `browserId`가 누락된 요청은 기존 글로벌 싱글톤으로 폴백하여 하위 호환성을 유지한다.
+- 연결 해제 후 30분이 경과한 세션은 자동으로 GC된다 (터미널 세션 레지스트리와 동일 패턴).
+- 구현: `src/lib/project/browser-session-registry.mjs`, `server.js`, `server-handlers/files-handler.mjs`, `server-handlers/claude-handler.mjs`, `server-handlers/terminal-handler.mjs`.

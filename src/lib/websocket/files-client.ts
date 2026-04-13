@@ -2,6 +2,7 @@
 
 import { ReconnectingWebSocket } from './reconnecting-ws';
 import { useConnectionStore } from '@/stores/use-connection-store';
+import { getBrowserId } from '@/lib/browser-session';
 import type { FileChangeMessage, ProjectChangedMessage } from '@/types/websocket';
 
 type Listener = (event: FileChangeMessage) => void;
@@ -17,7 +18,7 @@ class FilesClient {
   start(): void {
     if (this.ws) return;
     this.ws = new ReconnectingWebSocket({
-      url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/files`,
+      url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/files?browserId=${encodeURIComponent(getBrowserId())}`,
       onOpen: () => useConnectionStore.getState().setStatus('files', 'open'),
       onClose: () => useConnectionStore.getState().setStatus('files', 'closed'),
       onMessage: (event) => {

@@ -43,14 +43,14 @@ export interface ClaudeSettings {
   [key: string]: unknown;
 }
 
-function settingsFilePath(): string | null {
-  const root = getActiveRoot();
+function settingsFilePath(projectRoot?: string | null): string | null {
+  const root = projectRoot || getActiveRoot();
   if (!root) return null;
   return path.join(root, '.claude', 'settings.json');
 }
 
-export async function loadSettings(): Promise<ClaudeSettings> {
-  const p = settingsFilePath();
+export async function loadSettings(projectRoot?: string | null): Promise<ClaudeSettings> {
+  const p = settingsFilePath(projectRoot);
   if (!p) return {};
   try {
     const content = await fs.readFile(p, 'utf-8');
@@ -61,8 +61,8 @@ export async function loadSettings(): Promise<ClaudeSettings> {
   }
 }
 
-export async function saveSettings(settings: ClaudeSettings): Promise<void> {
-  const p = settingsFilePath();
+export async function saveSettings(settings: ClaudeSettings, projectRoot?: string | null): Promise<void> {
+  const p = settingsFilePath(projectRoot);
   if (!p) throw new Error('No project is open');
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, JSON.stringify(settings, null, 2) + '\n', 'utf-8');

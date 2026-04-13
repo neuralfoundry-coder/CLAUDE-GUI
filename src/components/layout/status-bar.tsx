@@ -25,7 +25,7 @@ export function StatusBar() {
   })();
 
   return (
-    <footer className="flex h-6 items-center justify-between border-t bg-muted px-3 text-xs text-muted-foreground">
+    <footer className="flex h-6 items-center justify-between border-t glass-surface px-3 text-xs text-muted-foreground">
       <div className="flex items-center gap-3">
         <span>{activeSession ? `Session: ${activeSession.slice(0, 8)}` : 'No session'}</span>
         <span>Claude: {isStreaming ? 'streaming' : 'idle'}</span>

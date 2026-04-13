@@ -10,6 +10,7 @@ import { useProjectStore } from '@/stores/use-project-store';
 import { useRemoteAccessStore } from '@/stores/use-remote-access-store';
 import { useMcpStore } from '@/stores/use-mcp-store';
 import { AuthBadge } from './auth-badge';
+import { SettingsPopover } from './settings-popover';
 
 const THEME_ICONS: Record<Theme, React.ComponentType<{ className?: string }>> = {
   dark: Moon,
@@ -52,7 +53,7 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
   };
 
   return (
-    <header className="flex h-10 items-center justify-between border-b bg-background px-3">
+    <header className="flex h-10 items-center justify-between border-b glass-surface glass-highlight relative px-3">
       <div className="flex items-center gap-2">
         <span className="text-sm font-semibold">ClaudeGUI</span>
         <span className="text-xs text-muted-foreground">v0.5.0</span>
@@ -134,6 +135,7 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
         >
           <Globe className={`h-4 w-4 ${remoteAccess ? 'text-green-500' : ''}`} />
         </Button>
+        <SettingsPopover />
         <Button
           variant="ghost"
           size="icon"

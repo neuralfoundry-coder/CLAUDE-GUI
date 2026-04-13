@@ -39,11 +39,20 @@ import { getClaudeClient } from '@/lib/websocket/claude-client';
 import { getFilesClient } from '@/lib/websocket/files-client';
 import { terminalManager } from '@/lib/terminal/terminal-manager';
 import { useState } from 'react';
+import { cn } from '@/lib/utils';
 
 export function AppShell() {
   useTheme();
   useGlobalShortcuts();
   const isDesktop = useMediaQuery('(min-width: 1280px)');
+  const panelRounding = useSettingsStore((s) => s.panelRounding);
+  const liquidGlass = useSettingsStore((s) => s.liquidGlass);
+  const hHandleClass = panelRounding
+    ? "w-1 bg-transparent hover:bg-accent/50 transition-colors"
+    : "w-1 bg-border hover:bg-accent transition-colors";
+  const vHandleClass = panelRounding
+    ? "h-1 bg-transparent hover:bg-accent/50 transition-colors"
+    : "h-1 bg-border hover:bg-accent transition-colors";
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [loginPromptOpen, setLoginPromptOpen] = useState(false);
   const activeRoot = useProjectStore((s) => s.activeRoot);
@@ -156,7 +165,11 @@ export function AppShell() {
   ]);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden">
+    <div className={cn(
+      "flex h-screen flex-col overflow-hidden",
+      !panelRounding && "no-panel-rounding",
+      !liquidGlass && "no-liquid-glass",
+    )}>
       <Header
         onOpenProjectPicker={() => setProjectPickerOpen(true)}
         onOpenLoginPrompt={() => setLoginPromptOpen(true)}
@@ -179,7 +192,7 @@ export function AppShell() {
               <FileExplorerPanel />
             </Panel>
             <PanelResizeHandle
-              className="w-1 bg-border hover:bg-accent transition-colors"
+              className={hHandleClass}
               onDoubleClick={handleDoubleClickReset(
                 { ref: fileExplorerRef, defaultSize: DEFAULT_PANEL_SIZES.fileExplorer },
               )}
@@ -205,7 +218,7 @@ export function AppShell() {
                   <EditorPanel />
                 </Panel>
                 <PanelResizeHandle
-                  className="h-1 bg-border hover:bg-accent transition-colors"
+                  className={vHandleClass}
                   onDoubleClick={handleDoubleClickReset(
                     { ref: editorRef, defaultSize: DEFAULT_PANEL_SIZES.editor },
                     { ref: terminalRef, defaultSize: DEFAULT_PANEL_SIZES.terminal },
@@ -227,7 +240,7 @@ export function AppShell() {
               </PanelGroup>
             </Panel>
             <PanelResizeHandle
-              className="w-1 bg-border hover:bg-accent transition-colors"
+              className={hHandleClass}
               onDoubleClick={handleDoubleClickReset(
                 { ref: claudeRef, defaultSize: DEFAULT_PANEL_SIZES.claude },
               )}
@@ -247,7 +260,7 @@ export function AppShell() {
               <ClaudeChatPanel />
             </Panel>
             <PanelResizeHandle
-              className="w-1 bg-border hover:bg-accent transition-colors"
+              className={hHandleClass}
               onDoubleClick={handleDoubleClickReset(
                 { ref: previewRef, defaultSize: DEFAULT_PANEL_SIZES.preview },
               )}

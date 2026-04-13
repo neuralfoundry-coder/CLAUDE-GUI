@@ -1,12 +1,14 @@
 import { NextRequest } from 'next/server';
 import { apiError, apiSuccess, handleApiError } from '@/lib/fs/errors';
+import { getProjectRoot } from '@/lib/fs/resolve-safe';
 import { loadSettings, saveSettings, normalizeRules, type ClaudeSettings } from '@/lib/claude/settings-manager';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const settings = await loadSettings();
+    const root = getProjectRoot();
+    const settings = await loadSettings(root);
     const normalized = normalizeRules(settings);
     return apiSuccess({ settings, normalized });
   } catch (err) {
@@ -20,7 +22,8 @@ export async function PUT(req: NextRequest) {
     if (!body || typeof body !== 'object') {
       return apiError('Invalid settings body', 4400, 400);
     }
-    await saveSettings(body);
+    const root = getProjectRoot();
+    await saveSettings(body, root);
     return apiSuccess({ saved: true });
   } catch (err) {
     return handleApiError(err);

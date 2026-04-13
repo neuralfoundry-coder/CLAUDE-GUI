@@ -19,9 +19,19 @@ export interface ModelSpec {
  */
 export const MODEL_SPECS: ModelSpec[] = [
   {
-    id: 'claude-opus-4-6',
+    id: 'opus',
     displayName: 'Opus 4.6',
     description: 'Most capable for complex work',
+    contextWindow: 200_000,
+    maxOutput: 32_000,
+    inputPricePer1M: 15,
+    outputPricePer1M: 75,
+    capabilities: ['vision', 'code', 'extended-thinking'],
+  },
+  {
+    id: 'opus[1m]',
+    displayName: 'Opus 4.6 (1M)',
+    description: 'Most capable — extended 1M context',
     contextWindow: 1_000_000,
     maxOutput: 32_000,
     inputPricePer1M: 15,
@@ -29,7 +39,7 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: ['vision', 'code', 'extended-thinking'],
   },
   {
-    id: 'claude-sonnet-4-6',
+    id: 'sonnet',
     displayName: 'Sonnet 4.6',
     description: 'Best for everyday tasks',
     contextWindow: 200_000,
@@ -39,7 +49,7 @@ export const MODEL_SPECS: ModelSpec[] = [
     capabilities: ['vision', 'code', 'extended-thinking'],
   },
   {
-    id: 'claude-haiku-4-5-20251001',
+    id: 'haiku',
     displayName: 'Haiku 4.5',
     description: 'Fastest for quick answers',
     contextWindow: 200_000,
@@ -55,10 +65,18 @@ export function getModelSpec(modelId: string): ModelSpec | undefined {
   return MODEL_SPECS.find((m) => m.id === modelId);
 }
 
-/** Fuzzy match: tries exact match first, then prefix match (e.g. SDK may report a dated variant). */
+/** Fuzzy match: tries exact match first, then prefix/contains match (e.g. SDK may report a dated variant). */
 export function findModelSpec(modelId: string): ModelSpec | undefined {
   const exact = getModelSpec(modelId);
   if (exact) return exact;
-  // Try prefix: "claude-opus-4-6-20260301" → matches "claude-opus-4-6"
-  return MODEL_SPECS.find((m) => modelId.startsWith(m.id));
+  // Normalize: "claude-opus-4-6-20260301" → check if it contains a known short name
+  const lower = modelId.toLowerCase();
+  if (lower.includes('opus')) {
+    // Prefer the 1M variant if the id explicitly mentions 1m
+    if (lower.includes('1m')) return getModelSpec('opus[1m]');
+    return getModelSpec('opus');
+  }
+  if (lower.includes('sonnet')) return getModelSpec('sonnet');
+  if (lower.includes('haiku')) return getModelSpec('haiku');
+  return undefined;
 }

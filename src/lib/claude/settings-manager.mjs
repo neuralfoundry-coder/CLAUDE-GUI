@@ -2,14 +2,14 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { getActiveRoot } from '../project/project-context.mjs';
 
-function settingsFilePath() {
-  const root = getActiveRoot();
+function settingsFilePath(projectRoot) {
+  const root = projectRoot || getActiveRoot();
   if (!root) return null;
   return path.join(root, '.claude', 'settings.json');
 }
 
-export async function loadSettings() {
-  const p = settingsFilePath();
+export async function loadSettings(projectRoot) {
+  const p = settingsFilePath(projectRoot);
   if (!p) return {};
   try {
     const content = await fs.readFile(p, 'utf-8');
@@ -20,8 +20,8 @@ export async function loadSettings() {
   }
 }
 
-export async function saveSettings(settings) {
-  const p = settingsFilePath();
+export async function saveSettings(settings, projectRoot) {
+  const p = settingsFilePath(projectRoot);
   if (!p) throw new Error('No project is open');
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, JSON.stringify(settings, null, 2) + '\n', 'utf-8');

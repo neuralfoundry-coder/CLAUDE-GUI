@@ -30,9 +30,9 @@ interface SessionListProps {
 export function SessionList({ open, onOpenChange }: SessionListProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const setActiveSessionId = useClaudeStore((s) => s.setActiveSessionId);
-  const reset = useClaudeStore((s) => s.reset);
+  const createTab = useClaudeStore((s) => s.createTab);
   const loadSession = useClaudeStore((s) => s.loadSession);
+  const setActiveSessionId = useClaudeStore((s) => s.setActiveSessionId);
 
   const refresh = async () => {
     setLoading(true);
@@ -51,15 +51,24 @@ export function SessionList({ open, onOpenChange }: SessionListProps) {
   }, [open]);
 
   const onResume = async (id: string) => {
+    // Check if the active tab is empty (no messages, no session) — reuse it
+    const s = useClaudeStore.getState();
+    const activeTab = s.tabs.find((t) => t.id === s.activeTabId);
+    const activeTs = s.activeTabId ? s.tabStates[s.activeTabId] : null;
+    const isEmptyTab = activeTab && !activeTab.sessionId && (!activeTs || activeTs.messages.length === 0);
+
+    if (!isEmptyTab) {
+      // Create a new tab for the resumed session
+      createTab({ name: id.slice(0, 12), sessionId: id });
+    }
     await loadSession(id);
     onOpenChange(false);
   };
 
   const onFork = (id: string) => {
-    // Fork: start a fresh conversation but mark the parent session id.
-    // Agent SDK will create a new session on the next query; history UI
-    // shows only the new turns.
-    reset();
+    // Fork: create a new tab with fork-of-{id} session marker.
+    // Agent SDK will create a new session on the next query.
+    createTab({ name: `Fork of ${id.slice(0, 8)}` });
     setActiveSessionId(`fork-of-${id}`);
     onOpenChange(false);
   };

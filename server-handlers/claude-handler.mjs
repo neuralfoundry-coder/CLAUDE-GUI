@@ -1,4 +1,5 @@
 import { getActiveRoot } from '../src/lib/project/project-context.mjs';
+import { browserSessionRegistry } from '../src/lib/project/browser-session-registry.mjs';
 import { createDebug } from '../src/lib/debug.mjs';
 import {
   loadSettings,
@@ -65,7 +66,9 @@ async function loadAgentSdk() {
   }
 }
 
-export default async function claudeHandler(ws, _req) {
+export default async function claudeHandler(ws, req) {
+  const browserId = req.browserId || null;
+  if (browserId) browserSessionRegistry.ensureSession(browserId);
   const sdk = await loadAgentSdk();
   if (!sdk) {
     ws.send(JSON.stringify({ type: 'error', message: 'Claude Agent SDK not available' }));
@@ -111,7 +114,7 @@ export default async function claudeHandler(ws, _req) {
     // additions take effect for the very next tool use without reconnecting.
     let rules = null;
     try {
-      const settings = await loadSettings();
+      const settings = await loadSettings(browserSessionRegistry.getRoot(browserId));
       rules = normalizeRules(settings);
     } catch (err) {
       dbg.warn('failed to load settings for permission check', err);
@@ -149,7 +152,7 @@ export default async function claudeHandler(ws, _req) {
 
   const runCompletion = async (msg) => {
     const { requestId, filePath, language, prefix, suffix } = msg;
-    const cwd = getActiveRoot();
+    const cwd = browserSessionRegistry.getRoot(browserId);
     if (!cwd) {
       send({ type: 'error', requestId, code: 4412, message: 'No project is open.' });
       return;
@@ -232,7 +235,7 @@ export default async function claudeHandler(ws, _req) {
     currentAbort = abort;
     activeAbortControllers.add(abort);
 
-    const cwd = getActiveRoot();
+    const cwd = browserSessionRegistry.getRoot(browserId);
     if (!cwd) {
       dbg.warn('query rejected: no active project root', { requestId });
       send({
@@ -268,7 +271,7 @@ export default async function claudeHandler(ws, _req) {
     // Load enabled MCP servers from project settings
     let mcpServers = undefined;
     try {
-      const settings = await loadSettings();
+      const settings = await loadSettings(cwd);
       if (settings.mcpServers) {
         mcpServers = {};
         for (const [name, entry] of Object.entries(settings.mcpServers)) {

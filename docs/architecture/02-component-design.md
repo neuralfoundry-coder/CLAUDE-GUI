@@ -38,7 +38,11 @@
         <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
 
         <Panel id="claude" ref={claudeRef} collapsible collapsedSize={0}>
-          <ClaudeChatPanel />
+          <ClaudeChatPanel>
+            <ClaudeTabBar />          {/* 탭 생성/닫기/이름 변경/컨텍스트 메뉴 */}
+            <ClaudeChatView />        {/* 활성 탭의 메시지·입력·스트리밍 영역 */}
+            <SessionInfoBar tabId={activeTabId} />
+          </ClaudeChatPanel>
         </Panel>
 
         <PanelResizeHandle onDoubleClick={resetAdjacentPanels} />
@@ -81,10 +85,11 @@ server.js
 │   │       └── /api/sessions/*
 │   │
 │   └── WebSocket Upgrade Handler
+│       ├── browserId 추출 (URL ?browserId= 쿼리)
 │       ├── /_next/webpack-hmr          → Next.js HMR (dev only)
-│       ├── /ws/terminal                → PTY Session Handler
-│       ├── /ws/claude                  → Agent SDK Handler
-│       └── /ws/files                   → Chokidar Broadcaster
+│       ├── /ws/terminal                → PTY Session Handler (browserId별 cwd)
+│       ├── /ws/claude                  → Agent SDK Handler (browserId별 cwd)
+│       └── /ws/files                   → @parcel/watcher Broadcaster (browserId별 루트)
 │
 └── lib/
     ├── fs/                             ← 샌드박싱된 파일 시스템
@@ -666,6 +671,19 @@ interface TerminalState {
 ### useClaudeStore
 
 ```typescript
+interface ClaudeTab {
+  id: string;            // 탭 고유 ID (UUID)
+  name: string;          // 탭 표시 이름 (첫 메시지 기반 자동 명명)
+  sessionId: string | null;  // 첫 메시지 전송 전에는 null
+}
+
+interface ClaudeTabState {
+  messages: ClaudeMessage[];
+  isStreaming: boolean;
+  pendingPermissionRequest: PermissionRequest | null;
+  sessionStats: SessionStats | null;
+}
+
 interface SessionStats {
   sessionId: string;
   model: string | null;
@@ -679,21 +697,30 @@ interface SessionStats {
 }
 
 interface ClaudeState {
+  // 멀티탭 구조
+  tabs: ClaudeTab[];                         // 열린 탭 목록
+  activeTabId: string;                       // 현재 활성 탭 ID
+  tabStates: Record<string, ClaudeTabState>; // tabId → 탭별 상태
+
+  // 레거시 호환 (세션 목록 관리)
   sessions: ClaudeSession[];
-  activeSessionId: string | null;
-  messages: Record<string, ClaudeMessage[]>;  // sessionId → messages
-  pendingPermissionRequest: PermissionRequest | null;
   totalCost: Record<string, number>;
   tokenUsage: Record<string, { input: number; output: number }>;
-  // 세션별 컨텍스트/사용량 스냅샷 (SDK가 실제로 전달한 값만 채워진다)
-  sessionStats: Record<string, SessionStats>;
 
   sendQuery(prompt: string): Promise<void>;
   resumeSession(id: string): void;
   forkSession(id: string): string;
   respondToPermission(approved: boolean): void;
+
+  // 탭 관리 액션
+  createTab(): string;
+  closeTab(tabId: string): void;
+  setActiveTab(tabId: string): void;
+  renameTab(tabId: string, name: string): void;
 }
 ```
+
+멀티탭 리팩토링으로 기존의 플랫 상태(`activeSessionId`, `messages: Record<string, ClaudeMessage[]>`)가 `tabs` + `tabStates` 구조로 변경되었다. 각 탭은 독립된 세션과 메시지 목록을 가지며, 스트리밍 응답은 `session_id`를 기준으로 해당 탭의 `ClaudeTabState`에 라우팅된다. 새 탭은 `sessionId: null` 상태로 생성되고, 첫 메시지 전송 시 백엔드 세션이 자동으로 생성된다.
 
 `sessionStats`는 Agent SDK가 보낸 `system.init` 이벤트(모델 이름)와 `result` 이벤트
 (`num_turns`, `duration_ms`, `usage.*`, `total_cost_usd`)만을 기반으로 누적 저장된다.
@@ -734,8 +761,8 @@ SDK가 값을 주지 않은 필드는 `null`로 유지되며, UI에서는 "-"로
 
 #### SessionInfoBar (Claude 패널)
 
-`src/components/panels/claude/session-info-bar.tsx`는 `useClaudeStore`에서 활성 세션의
-`SessionStats`를 구독하여 Claude 채팅 패널 하단에 접이식 바 형태로 렌더링한다.
+`src/components/panels/claude/session-info-bar.tsx`는 `tabId` prop을 받아 해당 탭의
+`ClaudeTabState.sessionStats`를 `useClaudeStore`에서 구독하여 Claude 채팅 패널 하단에 접이식 바 형태로 렌더링한다.
 
 - 접힘(기본): `{model} · {turns} turns · ctx {percent} [progress bar] · {tokens} tok · {updated}` 한 줄 (높이 h-6). 컨텍스트 퍼센트 옆에 인라인 미니 프로그레스 바(40px, 3px)가 표시된다 (FR-514).
 - 펼침: 세션 ID, 모델, 턴 수, 소요 시간, 입력/출력/캐시 읽기 토큰, 마지막 업데이트 시각. 추가로:
@@ -922,3 +949,47 @@ Claude 쿼리 시:
                ↓
   MCP 도구 호출 → canUseTool(ADR-011) 권한 게이트 → 기존 허용/거부 모달
 ```
+
+---
+
+## 2.12 멀티 브라우저 독립 프로젝트 모듈 (FR-1500, ADR-027)
+
+### 서버 측 컴포넌트
+
+| 파일 | 역할 |
+|------|------|
+| `src/lib/project/browser-session-registry.mjs` | `browserId → { root, lastSeen }` 매핑 관리, refCount 기반 와처 공유, 30분 GC |
+| `server.js` | WebSocket upgrade 시 `?browserId=` 추출, REST 미들웨어에서 `X-Browser-Id` 헤더 추출 |
+| `server-handlers/files-handler.mjs` | `browserId`별 프로젝트 루트로 와처 구독, `project-changed` 이벤트를 해당 `browserId` 연결에만 전송 |
+| `server-handlers/claude-handler.mjs` | `browserId`별 프로젝트 루트를 `runQuery()`의 cwd로 사용 |
+| `server-handlers/terminal-handler.mjs` | `browserId`별 프로젝트 루트를 PTY spawn의 초기 cwd로 사용 |
+
+### 클라이언트 측 컴포넌트
+
+- 클라이언트는 탭 로드 시 `sessionStorage`에서 `browserId`를 조회하고, 없으면 UUID를 생성하여 저장한다.
+- 모든 HTTP 요청에 `X-Browser-Id` 헤더를 추가한다.
+- WebSocket 연결 URL에 `?browserId=<uuid>` 쿼리 파라미터를 포함한다.
+
+### 데이터 흐름
+
+```
+탭 A (project-foo)                     탭 B (project-bar)
+  │ browserId=aaa                        │ browserId=bbb
+  │                                      │
+  └─→ X-Browser-Id: aaa ──┐   ┌── X-Browser-Id: bbb ←─┘
+                           ▼   ▼
+                      server.js
+                           │
+                  BrowserSessionRegistry
+                  ┌────────┴────────┐
+                  │  aaa → /foo     │  bbb → /bar
+                  └────────┬────────┘
+                    ┌──────┴──────┐
+               watcher(/foo)  watcher(/bar)   ← refCount 기반 공유
+                    │              │
+              project-changed → 탭 A만   project-changed → 탭 B만
+```
+
+### `browserId` 누락 시 폴백
+
+`browserId`가 없는 요청(구 버전 클라이언트 등)은 기존 `ProjectContext` 글로벌 싱글톤(ADR-016)의 `getActiveRoot()`를 사용한다. 이를 통해 하위 호환성이 유지된다.

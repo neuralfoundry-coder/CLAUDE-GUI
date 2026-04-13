@@ -1,17 +1,24 @@
 import { NextRequest } from 'next/server';
 import {
-  getActiveRoot,
   getRecents,
-  setActiveRoot,
   ProjectRootError,
 } from '@/lib/project/project-context.mjs';
+import { browserSessionRegistry } from '@/lib/project/browser-session-registry.mjs';
 import { apiError, apiSuccess } from '@/lib/fs/errors';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+function extractBrowserId(req: NextRequest): string | null {
+  return req.headers.get('x-browser-id') || null;
+}
+
+export async function GET(req: NextRequest) {
+  const browserId = extractBrowserId(req);
+  if (browserId) {
+    browserSessionRegistry.ensureSession(browserId);
+  }
   return apiSuccess({
-    root: getActiveRoot(),
+    root: browserSessionRegistry.getRoot(browserId),
     recents: getRecents(),
   });
 }
@@ -27,8 +34,11 @@ export async function POST(req: NextRequest) {
   if (typeof path !== 'string' || path.trim() === '') {
     return apiError('path (string) required', 4400, 400);
   }
+  const browserId = extractBrowserId(req);
   try {
-    const abs = setActiveRoot(path);
+    // setRoot updates the per-session root and notifies per-session listeners
+    // (which the files-handler subscribes to for project-changed events).
+    const abs = browserSessionRegistry.setRoot(browserId, path);
     return apiSuccess({
       root: abs,
       recents: getRecents(),

@@ -5,6 +5,7 @@ import { useClaudeStore } from '@/stores/use-claude-store';
 import { useConnectionStore } from '@/stores/use-connection-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
+import { getBrowserId } from '@/lib/browser-session';
 import type { ActiveFileContext, ClaudeClientMessage, ClaudeServerMessage } from '@/types/websocket';
 
 let singleton: ClaudeClient | null = null;
@@ -16,9 +17,15 @@ class ClaudeClient {
 
   constructor() {
     this.ws = new ReconnectingWebSocket({
-      url: `${typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws'}://${typeof location !== 'undefined' ? location.host : 'localhost'}/ws/claude`,
-      onOpen: () => useConnectionStore.getState().setStatus('claude', 'open'),
+      url: `${typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws'}://${typeof location !== 'undefined' ? location.host : 'localhost'}/ws/claude?browserId=${encodeURIComponent(getBrowserId())}`,
+      onOpen: () => {
+        // eslint-disable-next-line no-console
+        console.debug('[claude-ws] OPEN browserId=', getBrowserId());
+        useConnectionStore.getState().setStatus('claude', 'open');
+      },
       onClose: () => {
+        // eslint-disable-next-line no-console
+        console.debug('[claude-ws] CLOSED');
         useConnectionStore.getState().setStatus('claude', 'closed');
         // Reset streaming state when connection drops so the UI
         // doesn't get stuck in a loading state after reconnection.
@@ -30,6 +37,10 @@ class ClaudeClient {
       onMessage: (event) => {
         try {
           const msg = JSON.parse(event.data as string) as ClaudeServerMessage;
+          if (process.env.NODE_ENV !== 'production') {
+            // eslint-disable-next-line no-console
+            console.debug('[claude-ws]', msg.type, (msg as Record<string, unknown>).requestId ?? '');
+          }
           // Route completion responses to their callbacks
           if (msg.type === 'completion_response') {
             const cb = this.completionCallbacks.get(msg.requestId);
@@ -40,8 +51,9 @@ class ClaudeClient {
             return;
           }
           useClaudeStore.getState().handleServerMessage(msg);
-        } catch {
-          /* ignore */
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error('[claude-ws] message handling error:', err);
         }
       },
     });
@@ -58,7 +70,7 @@ class ClaudeClient {
         }
         // Fallback: sendBeacon to HTTP abort endpoint (works even if WS is already closed)
         try {
-          navigator.sendBeacon('/api/claude/abort');
+          navigator.sendBeacon(`/api/claude/abort?browserId=${encodeURIComponent(getBrowserId())}`);
         } catch {
           /* ignore */
         }
@@ -68,6 +80,8 @@ class ClaudeClient {
   }
 
   send(msg: ClaudeClientMessage): void {
+    // eslint-disable-next-line no-console
+    console.debug('[claude-ws] SEND', msg.type, 'readyState=', this.ws.readyState);
     this.ws.sendJson(msg);
   }
 
@@ -90,7 +104,9 @@ class ClaudeClient {
     intent?: { type: string; preferences?: Record<string, unknown> },
   ): string {
     const requestId = `q-${Date.now()}`;
-    const activeId = useClaudeStore.getState().activeSessionId ?? undefined;
+    const store = useClaudeStore.getState();
+    const activeTab = store.tabs.find((t) => t.id === store.activeTabId);
+    const activeId = activeTab?.sessionId ?? undefined;
     // Fork pseudo-ids start with "fork-of-" and signal: begin a fresh SDK
     // session but remember the parent for UI reference. We do not pass
     // the parent id as `sessionId` so the SDK creates a new session.

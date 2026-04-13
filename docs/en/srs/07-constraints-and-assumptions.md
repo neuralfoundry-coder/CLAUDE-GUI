@@ -51,6 +51,7 @@
 - ClaudeGUI is a local developer tool; it does not support multi-user or multi-tenant scenarios.
 - It runs with the current OS user's privileges on the local machine.
 - Concurrent access by multiple users to the same instance is not a supported scenario.
+- However, a single user may open multiple browser tabs, each with an independent project context (FR-215). The `BrowserSessionRegistry` isolates per-tab state while remaining within the single-user security boundary.
 
 ### BC-02: No persistent storage (v1.0)
 
@@ -100,6 +101,12 @@
 
 - We target typical software projects (thousands to tens of thousands of files).
 - Extremely large monorepos with a million+ files are outside the performance guarantee.
+
+### A-06: Browser tab independence
+
+- Each browser tab maintains independent project state via a `sessionStorage`-based `browserId` (a UUID generated once per tab).
+- Duplicating a tab creates a new `sessionStorage` context in most browsers, so duplicated tabs receive a fresh `browserId` and start with a clean project selection.
+- The server assumes `browserId` values are opaque identifiers and does not authenticate them beyond the existing single-user trust boundary (BC-01).
 
 ---
 

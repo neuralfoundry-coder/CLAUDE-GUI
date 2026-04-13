@@ -58,13 +58,13 @@ export function EditorPanel() {
 
   return (
     <div
-      className="flex h-full flex-col bg-background"
+      className="flex h-full flex-col panel-container bg-background"
       data-panel-id="editor"
       onMouseDown={panelFocus.onMouseDown}
       onFocus={panelFocus.onFocus}
     >
       {/* Panel header */}
-      <div className="flex h-7 items-center justify-between border-b bg-muted px-3">
+      <div className="flex h-7 items-center justify-between border-b glass-surface glass-highlight relative px-3">
         <span className="text-xs font-semibold uppercase text-muted-foreground">
           Editor
         </span>

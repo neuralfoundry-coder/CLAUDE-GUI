@@ -18,14 +18,24 @@ const FILTER_ITEMS: Array<{
   { kind: 'error', label: 'Errors', icon: AlertCircle },
 ];
 
-export function ChatFilterBar() {
-  const messageFilter = useClaudeStore((s) => s.messageFilter);
+interface ChatFilterBarProps {
+  tabId?: string;
+}
+
+export function ChatFilterBar({ tabId }: ChatFilterBarProps) {
+  const storeActiveTabId = useClaudeStore((s) => s.activeTabId);
+  const resolvedTabId = tabId ?? storeActiveTabId;
+  const messageFilter = useClaudeStore((s) => {
+    const tid = resolvedTabId;
+    if (!tid) return new Set<MessageKind>();
+    return s.tabStates[tid]?.messageFilter ?? new Set<MessageKind>();
+  });
   const toggleFilter = useClaudeStore((s) => s.toggleFilter);
-  // Derive kind→count map instead of subscribing to the full messages array.
-  // Re-renders only when the counts actually change (shallow equality).
   const counts = useClaudeStore(useShallow((s) => {
+    const tid = resolvedTabId;
+    const msgs = tid ? (s.tabStates[tid]?.messages ?? []) : [];
     const c: Record<string, number> = {};
-    for (const m of s.messages) c[m.kind] = (c[m.kind] ?? 0) + 1;
+    for (const m of msgs) c[m.kind] = (c[m.kind] ?? 0) + 1;
     return c;
   }));
 

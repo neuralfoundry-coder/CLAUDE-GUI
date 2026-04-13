@@ -14,6 +14,10 @@ interface SettingsState {
   terminalCopyOnSelect: boolean;
   selectedModel: string | null;
 
+  // Design system settings
+  panelRounding: boolean;
+  liquidGlass: boolean;
+
   // Editor settings
   editorWordWrap: boolean;
   editorTabSize: number;
@@ -33,6 +37,8 @@ interface SettingsState {
   setTerminalFontLigatures: (enabled: boolean) => void;
   setTerminalCopyOnSelect: (enabled: boolean) => void;
   setSelectedModel: (modelId: string | null) => void;
+  setPanelRounding: (enabled: boolean) => void;
+  setLiquidGlass: (enabled: boolean) => void;
   setEditorWordWrap: (enabled: boolean) => void;
   setEditorTabSize: (size: number) => void;
   setEditorUseSpaces: (enabled: boolean) => void;
@@ -54,6 +60,10 @@ export const useSettingsStore = create<SettingsState>()(
       terminalCopyOnSelect: false,
       selectedModel: null,
 
+      // Design system defaults
+      panelRounding: true,
+      liquidGlass: true,
+
       // Editor defaults
       editorWordWrap: false,
       editorTabSize: 2,
@@ -73,6 +83,8 @@ export const useSettingsStore = create<SettingsState>()(
       setTerminalFontLigatures: (terminalFontLigatures) => set({ terminalFontLigatures }),
       setTerminalCopyOnSelect: (terminalCopyOnSelect) => set({ terminalCopyOnSelect }),
       setSelectedModel: (selectedModel) => set({ selectedModel }),
+      setPanelRounding: (panelRounding) => set({ panelRounding }),
+      setLiquidGlass: (liquidGlass) => set({ liquidGlass }),
       setEditorWordWrap: (editorWordWrap) => set({ editorWordWrap }),
       setEditorTabSize: (editorTabSize) => set({ editorTabSize }),
       setEditorUseSpaces: (editorUseSpaces) => set({ editorUseSpaces }),
@@ -86,7 +98,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'claudegui-settings',
-      version: 3,
+      version: 5,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
         if (version < 2) {
@@ -111,6 +123,26 @@ export const useSettingsStore = create<SettingsState>()(
             editorVimMode: false,
           };
         }
+        if (version < 4) {
+          return {
+            ...state,
+            panelRounding: true,
+            liquidGlass: true,
+          };
+        }
+        if (version < 5) {
+          // Migrate old long-form model IDs to CLI short names
+          const MODEL_ID_MAP: Record<string, string> = {
+            'claude-opus-4-6': 'opus',
+            'claude-sonnet-4-6': 'sonnet',
+            'claude-haiku-4-5-20251001': 'haiku',
+          };
+          const old = state.selectedModel as string | null;
+          return {
+            ...state,
+            selectedModel: old && MODEL_ID_MAP[old] ? MODEL_ID_MAP[old] : old,
+          };
+        }
         return state;
       },
       // Do NOT persist modal state.
@@ -119,6 +151,8 @@ export const useSettingsStore = create<SettingsState>()(
         terminalFontLigatures: s.terminalFontLigatures,
         terminalCopyOnSelect: s.terminalCopyOnSelect,
         selectedModel: s.selectedModel,
+        panelRounding: s.panelRounding,
+        liquidGlass: s.liquidGlass,
         editorWordWrap: s.editorWordWrap,
         editorTabSize: s.editorTabSize,
         editorUseSpaces: s.editorUseSpaces,

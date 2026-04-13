@@ -1,4 +1,5 @@
 import type { ApiResponse, FileEntry, FileStat } from '@/types/files';
+import { getBrowserId } from './browser-session';
 
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   // FormData must not carry an explicit content-type — the browser sets the
@@ -8,6 +9,7 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       ...(isFormData ? {} : { 'content-type': 'application/json' }),
+      'x-browser-id': getBrowserId(),
       ...(init?.headers || {}),
     },
   });

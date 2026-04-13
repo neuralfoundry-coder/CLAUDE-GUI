@@ -101,11 +101,25 @@ function expandedRows(stats: SessionStats | null, activeSessionId: string | null
   ];
 }
 
-export function SessionInfoBar() {
-  const activeSessionId = useClaudeStore((s) => s.activeSessionId);
+interface SessionInfoBarProps {
+  tabId?: string;
+}
+
+export function SessionInfoBar({ tabId }: SessionInfoBarProps) {
+  const storeActiveTabId = useClaudeStore((s) => s.activeTabId);
+  const resolvedTabId = tabId ?? storeActiveTabId;
+  const activeSessionId = useClaudeStore((s) => {
+    const tid = resolvedTabId;
+    if (!tid) return null;
+    const tab = s.tabs.find((t) => t.id === tid);
+    return tab?.sessionId ?? null;
+  });
   // Subscribe only to the active session's stats — not the entire Record.
   const stats = useClaudeStore(useShallow((s) => {
-    const sid = s.activeSessionId;
+    const tid = resolvedTabId;
+    if (!tid) return null;
+    const tab = s.tabs.find((t) => t.id === tid);
+    const sid = tab?.sessionId;
     return sid ? s.sessionStats[sid] ?? null : null;
   }));
   const selectedModel = useSettingsStore((s) => s.selectedModel);
