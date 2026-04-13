@@ -39,7 +39,7 @@ class ClaudeClient {
           const msg = JSON.parse(event.data as string) as ClaudeServerMessage;
           if (process.env.NODE_ENV !== 'production') {
             // eslint-disable-next-line no-console
-            console.debug('[claude-ws]', msg.type, (msg as Record<string, unknown>).requestId ?? '');
+            console.debug('[claude-ws]', msg.type, (msg as unknown as Record<string, unknown>).requestId ?? '');
           }
           // Route completion responses to their callbacks
           if (msg.type === 'completion_response') {
