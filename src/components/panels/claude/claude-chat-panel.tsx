@@ -15,7 +15,11 @@ import { ClaudeChatView } from './claude-chat-view';
 import { usePanelFocus } from '@/hooks/use-panel-focus';
 import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 
-export function ClaudeChatPanel() {
+interface ClaudeChatPanelProps {
+  leafId?: string;
+}
+
+export function ClaudeChatPanel({ leafId }: ClaudeChatPanelProps) {
   const [sessionListOpen, setSessionListOpen] = useState(false);
   const [showSlideDialog, setShowSlideDialog] = useState(false);
   const [pendingSlidePrompt, setPendingSlidePrompt] = useState<string | null>(null);
@@ -107,7 +111,7 @@ export function ClaudeChatPanel() {
       </div>
 
       {/* Tab bar */}
-      <ClaudeTabBar />
+      <ClaudeTabBar leafId={leafId} />
 
       {/* Chat content for active tab */}
       {activeTabId && (

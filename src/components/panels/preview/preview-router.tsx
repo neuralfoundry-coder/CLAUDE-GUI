@@ -6,7 +6,9 @@ import { filesApi } from '@/lib/api-client';
 import { usePreviewStore, detectPreviewType } from '@/stores/use-preview-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { HtmlPreview } from './html-preview';
+import { HtmlEditor } from './html-editor';
 import { MarkdownPreview } from './markdown-preview';
+import { MarkdownEditor } from './markdown-editor';
 import { ImagePreview } from './image-preview';
 import { PdfPreview } from './pdf-preview';
 import { SlidePreview } from './slide-preview';
@@ -18,6 +20,7 @@ import { SourcePreview } from './source-preview';
 export function PreviewRouter() {
   const currentFile = usePreviewStore((s) => s.currentFile);
   const viewMode = usePreviewStore((s) => s.viewMode);
+  const editMode = usePreviewStore((s) => s.editMode);
   const activeTabId = useEditorStore((s) => s.activeTabId);
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
   const updateTabContent = useEditorStore((s) => s.updateContent);
@@ -45,7 +48,7 @@ export function PreviewRouter() {
     }
   }, [filePath]);
 
-  const handleSlideContentChange = useCallback(
+  const handleContentChange = useCallback(
     (newContent: string) => {
       setContent(newContent);
       // Sync back to editor tab if open
@@ -60,52 +63,64 @@ export function PreviewRouter() {
     [activeTab, filePath, updateTabContent],
   );
 
+  // Primary content-loading effect: fetch from editor tab or disk.
+  // Uses a cancellation flag so stale async fetches never overwrite fresh content.
   useEffect(() => {
+    let cancelled = false;
+
     if (!filePath) {
       setContent('');
       return;
     }
+
+    // Immediately sync from editor tab when open — no async needed.
     if (activeTab && activeTab.path === filePath) {
       setContent(activeTab.content);
       return;
     }
+
+    // Reset content immediately on file switch to avoid showing stale content.
+    setContent('');
+
     if (type === 'html' || type === 'markdown' || type === 'slides') {
       filesApi
         .read(filePath)
-        .then(({ content: c }) => setContent(c))
-        .catch(() => setContent(''));
+        .then(({ content: c }) => { if (!cancelled) setContent(c); })
+        .catch(() => { if (!cancelled) setContent(''); });
     }
+
+    return () => { cancelled = true; };
   }, [filePath, type, activeTab]);
 
+  // Debounced editor-tab content sync: when the user edits a file in the
+  // Monaco editor, reflect changes in the preview after a short delay.
+  // Depends on activeTab?.content (value) instead of activeTab (reference)
+  // to avoid re-running on unrelated editor-store updates.
   useEffect(() => {
     if (!activeTab || !filePath || activeTab.path !== filePath) return;
     const timer = setTimeout(() => setContent(activeTab.content), 300);
     return () => clearTimeout(timer);
-  }, [activeTab, filePath]);
+  }, [activeTab?.content, filePath]);
 
   if (!filePath || type === 'none') {
     return <div className="h-full w-full" aria-hidden="true" />;
   }
 
   if (type === 'html') {
-    return viewMode === 'source' ? (
-      <SourcePreview content={content} language="html" />
-    ) : (
-      <HtmlPreview key={`${filePath}:${contentKey}`} content={content} />
-    );
+    if (viewMode === 'source') return <SourcePreview content={content} language="html" />;
+    if (editMode && filePath) return <HtmlEditor content={content} filePath={filePath} onContentChange={handleContentChange} />;
+    return <HtmlPreview key={`${filePath}:${contentKey}`} content={content} />;
   }
   if (type === 'markdown') {
-    return viewMode === 'source' ? (
-      <SourcePreview content={content} language="markdown" />
-    ) : (
-      <MarkdownPreview content={content} />
-    );
+    if (viewMode === 'source') return <SourcePreview content={content} language="markdown" />;
+    if (editMode && filePath) return <MarkdownEditor content={content} filePath={filePath} onContentChange={handleContentChange} />;
+    return <MarkdownPreview content={content} />;
   }
   if (type === 'slides') {
     return viewMode === 'source' ? (
       <SourcePreview content={content} language="html" />
     ) : (
-      <SlidePreview content={content} onContentChange={handleSlideContentChange} />
+      <SlidePreview content={content} onContentChange={handleContentChange} />
     );
   }
   if (type === 'image') return <ImagePreview path={filePath} />;

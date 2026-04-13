@@ -75,6 +75,33 @@
 - `src/hooks/use-media-query.ts` — `useMediaQuery` hook. Tracks viewport changes via `window.matchMedia` listener. Returns `true` (desktop-first) during SSR.
 - `src/components/layout/mobile-shell.tsx` — Mobile tab layout. Switches between 5 `PanelId` tabs via a bottom tab bar.
 
+### Dynamic Panel Splitting System (FR-108, FR-109)
+
+The desktop layout uses a **recursive split tree** (`SplitNode` / `LeafNode`) instead of a hardcoded `PanelGroup` tree. `useSplitLayoutStore` manages the tree structure, and `SplitLayoutRenderer` recursively renders the tree into `react-resizable-panels` `PanelGroup` / `Panel` components.
+
+```
+SplitLayoutRenderer(node)
+├── SplitNode → <PanelGroup direction={direction}>
+│   ├── <Panel>{SplitLayoutRenderer(child[0])}</Panel>
+│   ├── <PanelResizeHandle />
+│   └── <Panel>{SplitLayoutRenderer(child[1])}</Panel>
+│
+└── LeafNode → <Panel collapsible>
+        <LeafPanel panelType={type} leafId={id} />
+    </Panel>
+```
+
+**Tab drag-and-drop**: uses `@dnd-kit/core` + `@dnd-kit/sortable` for tab reordering and split creation. `DndProvider` wraps the desktop layout, and each tab bar is wrapped in a `SortableContext`. Drop zones divide the panel area into 25% edges (top/bottom/left/right) and a 50% center, with `DropZoneOverlay` providing visual feedback.
+
+**New files**:
+- `src/stores/use-split-layout-store.ts` — Split tree state management. `splitLeaf`, `removeLeaf`, `updateRatio`, per-panel-type collapse control.
+- `src/components/layout/split-layout-renderer.tsx` — Recursive layout renderer.
+- `src/components/layout/leaf-panel.tsx` — Routes leaf nodes to their respective panel components.
+- `src/components/dnd/dnd-provider.tsx` — `DndContext` wrapper. Handles tab reordering and split creation.
+- `src/components/dnd/sortable-tab-item.tsx` — `useSortable`-based individual tab wrapper.
+- `src/components/dnd/drop-zone-overlay.tsx` — Visual drop zone highlights during drag.
+- `src/hooks/use-drop-zones.ts` — Utility to map pointer coordinates to 5 drop zones.
+
 ## 2.2 Server Component Structure
 
 ```
@@ -297,6 +324,8 @@ The store subscribes to each and reflects them in the tab labels, status indicat
 | Tab switch | Store `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. `searchOverlayOpen` is reset to false. |
 | Font-size change | Manager subscription callback → `setFontSize(px)` → sets `term.options.fontSize` and re-fits every instance. No PTY restart. |
 | Panel collapse | `<TerminalPanel>` unmounts → `XTerminalAttach.useEffect` cleanup → `terminalManager.detach(id)`. The manager unparents its persistent `<div>` but keeps xterm and the WS alive. |
+| Socket error | The `createSocket` `onError` callback logs a warning to the console. If a server `error` control frame is received while the session is still `connecting`, it immediately transitions to `closed`. |
+| Connection timeout | If the WebSocket handshake exceeds 15 seconds, a timer in the `connectTimers` map transitions the session to `closed` and closes the socket. The timer is cleared in `onOpen`/`onClose`. |
 | Unexpected socket close | The `createSocket` `onClose` callback transitions status to `closed` and writes `[connection to PTY lost]` to the xterm buffer. **No reconnect attempt**. |
 | Shell exit | Server sends `{type:"exit", code}` control frame → `applyServerControl` transitions status to `exited`. The tab remains until the user closes it. |
 | Restart | `restartSession(id)` — permitted only when `closed`/`exited`. Keeps the xterm buffer (no `dispose`), inserts a `─── restarted at HH:MM:SS ───` separator, resets `pendingBytes`/`paused`/`exitCode`, sets status `connecting`, and calls `createSocket(inst)` again. The OSC 7 snippet is automatically re-injected server-side when the new PTY is spawned. |
@@ -384,8 +413,10 @@ src/components/panels/preview/
 ├── preview-panel.tsx               # container + header (source/rendered toggle, download)
 ├── preview-router.tsx              # renderer dispatch + viewMode branching
 ├── html-preview.tsx                # iframe srcdoc
+├── html-editor.tsx                 # split-view HTML editor (FR-616)
 ├── pdf-preview.tsx                 # react-pdf
 ├── markdown-preview.tsx            # react-markdown
+├── markdown-editor.tsx             # split-view Markdown editor (FR-616)
 ├── image-preview.tsx               # zoom/pan
 ├── slide-preview.tsx               # multi-page vertical scroll + selection + Edit mode
 ├── source-preview.tsx              # highlight.js-backed source view (FR-614)
@@ -396,6 +427,8 @@ src/components/panels/preview/
 Beyond `currentFile`/`pageNumber`/`zoom`/`fullscreen`, `usePreviewStore` carries a `viewMode: 'rendered' | 'source'` field (FR-614). The default is `'rendered'`, and calling `setFile` resets `viewMode` to `'rendered'` so the source view never sticks across file switches. An `isSourceToggleable(type)` helper only allows the toggle for `html`/`markdown`/`slides`. The `renderedHtml: string | null` field (FR-613) caches rendered HTML from file-backed preview components (docx/xlsx/pptx/image), enabling cross-format export (PDF/HTML/Doc). It is reset to `null` on `setFile`.
 
 For slide editing, `slideEditMode: boolean` and `selectedSlideIndex: number` (0-based) fields have been added (FR-702, FR-703). Both are reset (`false`, `0`) on `setFile` calls. The Edit toggle button is displayed in the header only when `type === 'slides' && viewMode !== 'source'`.
+
+For HTML/Markdown direct editing, an `editMode: boolean` field has been added (FR-616). It is reset to `false` on `setFile` calls. The Edit toggle button is displayed in the header when `type === 'html' || type === 'markdown'` and `viewMode !== 'source'`. In edit mode, a split view (left: textarea code editor, right: live preview) is provided with 1-second debounced auto-save that syncs to both the editor tab and disk.
 
 ### Router logic
 
@@ -982,3 +1015,47 @@ On Claude query:
                ↓
   MCP tool call → canUseTool(ADR-011) permission gate → existing allow/deny modal
 ```
+
+---
+
+## 2.12 Multi-Browser Independent Projects Module (FR-1500, ADR-027)
+
+### Server-side components
+
+| File | Role |
+|------|------|
+| `src/lib/project/browser-session-registry.mjs` | `browserId → { root, lastSeen }` mapping management, refCount-based watcher sharing, 30-min GC |
+| `server.js` | Extracts `?browserId=` on WebSocket upgrade, extracts `X-Browser-Id` header on REST requests |
+| `server-handlers/files-handler.mjs` | Subscribes watchers by per-`browserId` project root, sends `project-changed` events only to matching `browserId` connections |
+| `server-handlers/claude-handler.mjs` | Uses per-`browserId` project root as `runQuery()` cwd, `persistSession: false` to prevent session lock contention, `_activeQueries` Map for per-browser active Query tracking |
+| `server-handlers/terminal-handler.mjs` | Uses per-`browserId` project root as initial cwd for PTY spawn |
+
+### Client-side components
+
+- On tab load, the client looks up `browserId` from `sessionStorage` and generates a UUID if absent.
+- All HTTP requests include the `X-Browser-Id` header.
+- WebSocket connection URLs include the `?browserId=<uuid>` query parameter.
+
+### Data flow
+
+```
+Tab A (project-foo)                     Tab B (project-bar)
+  │ browserId=aaa                        │ browserId=bbb
+  │                                      │
+  └─→ X-Browser-Id: aaa ──┐   ┌── X-Browser-Id: bbb ←─┘
+                           ▼   ▼
+                      server.js
+                           │
+                  BrowserSessionRegistry
+                  ┌────────┴────────┐
+                  │  aaa → /foo     │  bbb → /bar
+                  └────────┬────────┘
+                    ┌──────┴──────┐
+               watcher(/foo)  watcher(/bar)   ← refCount-based sharing
+                    │              │
+              project-changed → Tab A only   project-changed → Tab B only
+```
+
+### Fallback when `browserId` is missing
+
+Requests without `browserId` (e.g., old clients) fall back to the existing `ProjectContext` global singleton (ADR-016) via `getActiveRoot()`. This preserves backward compatibility.

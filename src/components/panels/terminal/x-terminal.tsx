@@ -29,10 +29,31 @@ export function XTerminalAttach({ sessionId }: XTerminalAttachProps) {
     const host = hostRef.current;
     if (!host) return;
     let disposed = false;
-    void terminalManager.ensureSession(sessionId).then(() => {
+
+    // Read initialCwd from the store so we pass it on the first ensureSession.
+    const sess = useTerminalStore.getState().sessions.find((s) => s.id === sessionId);
+    const initialCwd = sess?.cwd ?? undefined;
+
+    const doAttach = () => {
       if (disposed) return;
       terminalManager.attach(sessionId, host);
-    });
+    };
+
+    if (terminalManager.hasSession(sessionId)) {
+      doAttach();
+    } else {
+      terminalManager
+        .ensureSession(sessionId, initialCwd ? { initialCwd } : undefined)
+        .then(doAttach)
+        .catch(() => {
+          // ensureSession failed (e.g. xterm modules failed to load).
+          // Transition the session out of "connecting" so the UI shows a
+          // restart button instead of spinning forever.
+          if (!disposed) {
+            useTerminalStore.getState().updateSessionStatus(sessionId, 'closed', null);
+          }
+        });
+    }
     return () => {
       disposed = true;
       terminalManager.detach(sessionId);
@@ -69,11 +90,13 @@ export function XTerminalAttach({ sessionId }: XTerminalAttachProps) {
   const handleSelectAll = () => terminalManager.selectAll(sessionId);
   const handleClear = () => terminalManager.clearBuffer(sessionId);
   const handleFind = () => openSearchOverlay();
+  const setNativeNotice = useTerminalStore((s) => s.setNativeTerminalNotice);
   const handleOpenNative = async () => {
     try {
-      await terminalApi.openNative(sessionCwd ?? undefined);
+      const result = await terminalApi.openNative(sessionCwd ?? undefined);
+      setNativeNotice({ type: 'success', message: `Opened in ${result.launcher}`, ts: Date.now() });
     } catch (err) {
-      alert(`Could not open system terminal: ${(err as Error).message}`);
+      setNativeNotice({ type: 'error', message: `Could not open system terminal: ${(err as Error).message}`, ts: Date.now() });
     }
   };
 

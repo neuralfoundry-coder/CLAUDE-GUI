@@ -4,13 +4,13 @@
 
 ## 3.1 Panel Layout System (FR-100)
 
-### FR-101: Four-panel composition
+### FR-101: Panel composition
 
-- The system shall provide an IDE layout composed of four primary panels.
+- The system shall provide an IDE layout composed of primary panels.
   - **Left**: file explorer (vertical)
-  - **Center top**: code editor
-  - **Center bottom**: terminal
-  - **Right**: preview panel (vertical)
+  - **Center**: code editor
+  - **Right**: Claude chat + preview panel (vertical)
+- The built-in terminal panel is excluded from the default layout. Instead, the OS default terminal is launched via the header's external terminal button (`ExternalLink` icon) or `Cmd/Ctrl+Shift+O`.
 - It shall be implemented with `react-resizable-panels` v4.
 
 ### FR-102: Panel resize
@@ -27,9 +27,9 @@
 - Corresponding keyboard shortcuts:
   - `Ctrl+Cmd+B` / `Ctrl+Alt+B` — toggle file explorer
   - `Ctrl+Cmd+E` / `Ctrl+Alt+E` — toggle editor
-  - `Ctrl+Cmd+J` / `Ctrl+Alt+J` — toggle terminal
   - `Ctrl+Cmd+K` / `Ctrl+Alt+K` — toggle Claude chat
   - `Ctrl+Cmd+P` / `Ctrl+Alt+P` — toggle preview
+  - `Cmd+Shift+O` / `Ctrl+Shift+O` — open external terminal
 
 ### FR-104: Layout state persistence
 
@@ -50,10 +50,28 @@
 ### FR-107: Responsive mobile layout
 
 - When the viewport width is **below 1280px**, the app shall switch to a single-panel tab mode.
-- A bottom tab bar shall be provided with the following five tabs for panel switching:
-  - Files, Editor, Terminal, Claude, Preview
+- A bottom tab bar shall be provided with the following four tabs for panel switching:
+  - Files, Editor, Claude, Preview
 - When a tab is selected, only the corresponding panel shall be displayed full-screen; all others shall be hidden.
-- When the viewport returns to 1280px or above, the previous four-panel (or last saved) layout shall be automatically restored.
+- When the viewport returns to 1280px or above, the previous (or last saved) layout shall be automatically restored.
+
+### FR-108: Dynamic panel splitting
+
+- Users shall be able to split an existing panel horizontally or vertically to create a new panel.
+- Splits are managed as a recursive binary tree (`SplitNode` / `LeafNode`) structure.
+- Maximum split depth is limited to 4 levels to prevent unusably small panels.
+- The split layout is automatically saved to `localStorage` and restored on refresh.
+- Empty panels (all tabs removed) are automatically removed and the parent split collapses.
+- Tab bar context menus provide "Split Right" and "Split Down" options.
+
+### FR-109: Tab drag-and-drop
+
+- Users shall be able to drag tabs to reorder them within the same panel.
+- Uses `@dnd-kit/core` + `@dnd-kit/sortable` libraries.
+- Editor, Claude, and terminal panel tabs all support drag reordering.
+- Dropping a tab on the edge of another panel (top/bottom/left/right 25% area) creates a new split in that direction.
+- Drop zones display a visual highlight (semi-transparent sky-500 overlay) during drag.
+- Drag activation distance: 5px (prevents unintentional drags).
 
 ---
 
@@ -333,6 +351,7 @@
 - Output that happens to start with `{` (e.g. `cat package.json`) is never misinterpreted as a control frame.
 - The terminal pipeline shall stay fully separate from the Claude chat input. `/ws/terminal` and `/ws/claude` shall not share symbols or state.
 - The server shall spawn the shell in **login + interactive** mode. The shell resolution order, flag mapping, and environment variables are specified in `FR-410`.
+- **Input queuing**: While the WebSocket is not yet `OPEN` (initial load, restart, etc.), user keystrokes are buffered in an `inputQueue` and flushed in order as soon as the connection completes. The queue cap is 32 KB; oldest entries are evicted when exceeded. A "Connecting to shell…" overlay is shown during the connecting state, informing the user that keystrokes will be delivered once connected.
 - **Visibility requirement (WCAG AA)**: every `foreground` and ANSI-16 color in `TERMINAL_THEMES` shall meet a **contrast ratio ≥ 4.5:1** against the theme's `background`. The only exceptions are the `black`/`brightBlack` slots that by xterm convention map to the app background tone (and only when they do in fact satisfy WCAG against that background) and the `cursor`/`selectionBackground` entries that render as inverted overlays. This is enforced automatically by `tests/unit/terminal-themes-contrast.test.ts`.
 - The palette is defined in a single source `src/lib/terminal/terminal-themes.ts` and imported by `TerminalManager`, which propagates it to every instance via `setTheme(theme)`.
 
@@ -426,6 +445,9 @@
 ### FR-411: Terminal session durability policy
 
 - The terminal WebSocket (`/ws/terminal`) **does not** auto-reconnect. An unexpected close transitions the session to `closed` and writes a notice line to the xterm buffer.
+- **Connection timeout**: if the WebSocket handshake does not complete within 15 seconds, the session transitions to `closed` and a `[connection timed out]` message is displayed. The user can retry via the Restart button.
+- **Cancel during connecting**: the "Connecting to shell…" overlay shows a Cancel button after 5 seconds; clicking it transitions the session to `closed` and exposes the Restart UI.
+- **WebSocket error handling**: `TerminalSocket` `onError` events are logged to the console for diagnostics. If the server sends an `error` control frame while the session is still in `connecting` state, it immediately transitions to `closed`.
 - This release does not introduce a server-side session registry or ID-based re-attach. For a local desktop app, the added complexity is not justified by the gain; the primary disconnect causes (server process death, HMR cycles) are not addressed by a session registry.
 - Users recover sessions via one of two paths:
   - **Restart**: when the session is `closed`/`exited`, the inline Restart icon on the tab, the floating Restart chip in the panel body, or the `Cmd/Ctrl+Shift+R` shortcut spawns a new PTY under the same session ID. The xterm scrollback is preserved and a separator line is inserted.
@@ -514,12 +536,13 @@
 - Users shall be able to open the **current tab's cwd** (or the active project root if none) in the OS default terminal app via `Cmd/Ctrl+Shift+O`, the `ExternalLink` icon button in the terminal tab strip, the "Open in system terminal" entry in the xterm context menu, or the "Open in system terminal" entry in the file-explorer directory context menu. The internal xterm session is not affected.
 - Endpoint: `POST /api/terminal/open-native`, body `{ cwd?: string }`. When omitted, `getActiveRoot()` is used. `cwd` is normalized against the project root via `resolveSafe`; if it points at a file, `path.dirname` is applied automatically.
 - Platform launcher selection is delegated to the pure function `resolveLauncher({platform, cwd, env, exists})` in `src/app/api/terminal/open-native/launchers.ts`:
-  - **darwin**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `open -na <value> <cwd>`; otherwise iTerm (when `/Applications/iTerm.app` exists) else Terminal.app.
+  - **darwin**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `open -na <value> <cwd>` (override only); otherwise iTerm (when `/Applications/iTerm.app` exists) else Terminal.app. Built-in apps (iTerm, Terminal.app) use **AppleScript** (osascript) to open a new window and set the cwd reliably. This replaces the `open -na` approach which treated cwd as a "file to open" rather than a working directory.
   - **win32**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `<value> -d <cwd>`; otherwise Windows Terminal when `%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe` exists; otherwise `cmd.exe /c start "" cmd.exe /K cd /d <cwd>`.
-  - **linux/BSD**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `$TERMINAL` → `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xfce4-terminal` → `tilix` → `alacritty` → `kitty` → `wezterm` → `xterm`, picking the first binary on PATH. The cwd flag differs per emulator (`--working-directory`, `-d`, `start --cwd`, …) and is captured in a per-binary table. `xterm` falls back to `-e 'cd <escaped> && exec $SHELL'` since it has no cwd flag.
+  - **linux/BSD**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `$TERMINAL` → `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xfce4-terminal` → `tilix` → `alacritty` → `kitty` → `wezterm` → `foot` → `rio` → `xterm`, picking the first binary on PATH. The cwd flag differs per emulator (`--working-directory`, `-d`, `start --cwd`, …) and is captured in a per-binary table. `xterm` falls back to `-e 'cd <escaped> && exec $SHELL'` since it has no cwd flag.
 - `CLAUDEGUI_EXTERNAL_TERMINAL` overrides the OS default. On macOS the value is passed to `open -a`; on Linux it is looked up on PATH as a binary name; on Windows it is treated as a full executable path.
 - Error handling: if no terminal is installed or the override cannot be resolved, `resolveLauncher` raises `NoLauncherError` → HTTP 501 (`code: 4501`). `spawn` failures (e.g. ENOENT) are raced against an `error` event for a 100 ms window and reported as HTTP 500 (`code: 5500`) with a reason string. `resolveSafe` violations → 403 (`code: 4403`). A missing cwd → 404 (`code: 4404`).
-- Security: the child process is launched with `spawn(..., { detached: true, stdio: 'ignore' })` and `child.unref()` so the server never consumes its stdio. The `/ws/terminal` + `127.0.0.1` bind invariant holds; `0.0.0.0` exposure remains prohibited.
+- Security: the child process is launched with `spawn(..., { detached: true, stdio: 'ignore', cwd: targetDir })` and `child.unref()` so the server never consumes its stdio. The `/ws/terminal` + `127.0.0.1` bind invariant holds; `0.0.0.0` exposure remains prohibited.
+- **Inline feedback**: on success, a green banner ("Opened in {launcher}") is shown at the top of the terminal panel for 3 seconds; on failure, a red banner with the error message is shown for 8 seconds. Non-blocking inline notifications are used instead of `alert()`.
 
 ---
 
@@ -794,6 +817,8 @@
 - HTML shall be rendered via the iframe `srcdoc` attribute.
 - `sandbox="allow-scripts"` shall be applied (`allow-same-origin` is forbidden).
 - When only CSS changed, styles shall be updated via `postMessage` to avoid reloading the iframe.
+- Content shall be loaded immediately upon file selection. Asynchronous fetches must be cancellable (cancellation flag), and content shall be reset immediately on file switch to prevent stale content from being displayed.
+- Implementation: `src/components/panels/preview/preview-router.tsx` (content loading + cancellation logic), `src/components/panels/preview/html-preview.tsx` (iframe rendering).
 
 ### FR-603: PDF preview
 
@@ -926,6 +951,18 @@
 - The system default voice is used; no voice selection UI is provided.
 - Implementation: `src/hooks/use-speech-synthesis.ts` (Web Speech API wrapper hook), `src/lib/preview/extract-preview-text.ts` (text extraction utility), `src/components/panels/preview/preview-panel.tsx` (header TTS button).
 
+### FR-616: Preview direct edit mode (v0.7)
+
+- Text-based previews (`html`, `markdown`) shall provide a **split-view edit mode**. Slides (`slides`) retain the existing FR-703 edit mode.
+- The preview panel header shall expose a `Pencil` icon edit toggle button, visible only when the preview type is `html` or `markdown` and `viewMode === 'rendered'`. When active, the button is highlighted with `bg-accent`.
+- Edit mode state is managed by `usePreviewStore.editMode` and is automatically reset to `false` on `setFile` calls.
+- When edit mode is entered, the following split view is provided:
+  - **Left (flex-1)**: `<textarea>` code editing area with monospace font and Tab key space insertion support.
+  - **Right (w-2/5)**: Live preview. HTML uses `iframe srcdoc` (300ms debounce), Markdown uses `react-markdown` (300ms debounce).
+- **Auto-save**: Automatically saves 1 second after the last keystroke via debounce. If an editor tab is open, syncs via `updateTabContent` and writes to disk via `filesApi.write()`.
+- The edit mode header label displays `"{type} · edit"`.
+- Implementation: `src/stores/use-preview-store.ts` (`editMode`, `setEditMode`, `toggleEditMode`), `src/components/panels/preview/html-editor.tsx` (HTML split editor), `src/components/panels/preview/markdown-editor.tsx` (Markdown split editor), `src/components/panels/preview/preview-router.tsx` (edit mode routing), `src/components/panels/preview/preview-panel.tsx` (header edit button).
+
 ---
 
 ## 3.7 Presentation Features (FR-700)
@@ -1005,9 +1042,10 @@
 
 - `Cmd+B` / `Ctrl+B` shall toggle the file-explorer panel.
 
-### FR-804: Toggle terminal
+### FR-804: Open external terminal
 
-- `Cmd+J` / `Ctrl+J` shall toggle the terminal panel.
+- `Cmd+Shift+O` / `Ctrl+Shift+O` or the header's `ExternalLink` icon button shall open the OS default terminal app at the current project root.
+- The built-in terminal panel has been excluded from the default layout, so the `Cmd+J` toggle is no longer provided.
 
 ### FR-805: Customize keyboard shortcuts
 
@@ -1435,3 +1473,28 @@ Allows switching the server binding address from `127.0.0.1` (local only) to `0.
 - The status bar shows the number of active MCP servers and an aggregate status indicator (green: all connected, yellow: some pending, red: any failed). Clicking opens the management modal.
 - Within the management modal, each server's real-time connection status is shown as a colored dot (connected/pending/failed/needs-auth/unknown).
 - Implementation: `src/components/layout/status-bar.tsx`, `src/components/layout/header.tsx`.
+
+---
+
+## 3.15 Multi-Browser Independent Projects (FR-1500)
+
+### FR-1500: Multi-browser independent project context
+
+- Each browser tab shall be able to open and work on an independent project. Changing a project in one tab shall not affect other tabs.
+- The client generates and stores a per-tab UUID `browserId` in `sessionStorage`. Tab duplication yields a new `browserId`.
+- All HTTP requests include an `X-Browser-Id` header, and WebSocket connections include a `?browserId=` query parameter.
+- The server's `BrowserSessionRegistry` manages `browserId → { root, lastSeen }` mappings.
+- File watchers are shared per project root on a refCount basis. Multiple tabs opening the same project share a single watcher.
+- `project-changed` WebSocket events are sent only to connections belonging to the matching `browserId`.
+- Terminal and Claude handlers use the per-tab project root as their working directory.
+- Requests missing `browserId` fall back to the global singleton for backward compatibility.
+- Sessions disconnected for more than 30 minutes are automatically GC'd (same pattern as the terminal session registry).
+- Implementation: `src/lib/project/browser-session-registry.mjs`, `server.js`, `server-handlers/files-handler.mjs`, `server-handlers/claude-handler.mjs`, `server-handlers/terminal-handler.mjs`.
+
+### FR-1501: Multi-browser concurrent Claude chat
+
+- Multiple browsers (or tabs) shall be able to execute Claude chat queries concurrently.
+- Each browser's query spawns an independent Agent SDK process. A query in one browser shall not block queries in other browsers.
+- Session disk persistence is disabled (`persistSession: false`) to prevent session file lock contention between multiple CLI processes on the same project. Session resume (`resume`) works within the server process lifetime only.
+- Active Query instances are tracked by `browserId` so that MCP server status queries (`getMcpServerStatus`) retrieve data from the correct Query for each browser.
+- Implementation: `server-handlers/claude-handler.mjs`, `src/app/api/mcp/status/route.ts`.

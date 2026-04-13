@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
         child = spawn(launcher.cmd, launcher.args, {
           detached: true,
           stdio: 'ignore',
+          cwd: targetDir,
         });
       } catch (err) {
         resolve(err as Error);

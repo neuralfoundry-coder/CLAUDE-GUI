@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { useLayoutStore } from '@/stores/use-layout-store';
+import { useSplitLayoutStore } from '@/stores/use-split-layout-store';
 import { useAuthStore } from '@/stores/use-auth-store';
 import { useTerminalStore } from '@/stores/use-terminal-store';
 
@@ -31,7 +31,7 @@ export function LoginPromptModal({ open, onOpenChange }: LoginPromptModalProps) 
   const [saveError, setSaveError] = useState<string | null>(null);
   const status = useAuthStore((s) => s.status);
   const refresh = useAuthStore((s) => s.refresh);
-  const setCollapsed = useLayoutStore((s) => s.setCollapsed);
+  const setPanelCollapsedByType = useSplitLayoutStore((s) => s.setPanelCollapsedByType);
   const sessions = useTerminalStore((s) => s.sessions);
   const createSession = useTerminalStore((s) => s.createSession);
 
@@ -48,7 +48,7 @@ export function LoginPromptModal({ open, onOpenChange }: LoginPromptModalProps) 
   };
 
   const openTerminal = () => {
-    setCollapsed('terminal', false);
+    setPanelCollapsedByType('terminal', false);
     if (sessions.length === 0) {
       createSession();
     }

@@ -16,7 +16,11 @@ import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 import { getLanguageFromPath, getLanguageDisplayName } from '@/lib/editor/language-map';
 import { cn } from '@/lib/utils';
 
-export function EditorPanel() {
+interface EditorPanelProps {
+  leafId?: string;
+}
+
+export function EditorPanel({ leafId }: EditorPanelProps) {
   const activeTabId = useEditorStore((s) => s.activeTabId);
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
   const saveFile = useEditorStore((s) => s.saveFile);
@@ -99,7 +103,7 @@ export function EditorPanel() {
         </div>
       </div>
 
-      <EditorTabBar />
+      <EditorTabBar leafId={leafId} />
       <DiffAcceptBar />
       <div className="flex-1 overflow-hidden">
         {!activeTabId || !activeTab ? (

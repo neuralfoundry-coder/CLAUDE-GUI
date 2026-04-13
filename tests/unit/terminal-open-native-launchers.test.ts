@@ -15,30 +15,34 @@ function withoutItermInstalled(_: string): boolean {
 }
 
 describe('resolveLauncher — macOS', () => {
-  it('defaults to Terminal.app when iTerm is not installed', () => {
+  it('defaults to Terminal.app via AppleScript when iTerm is not installed', () => {
     const launcher = resolveLauncher({
       platform: 'darwin',
       cwd: '/Users/k/proj',
       env: {},
       exists: withoutItermInstalled,
     });
-    expect(launcher.cmd).toBe('open');
-    expect(launcher.args).toEqual(['-na', 'Terminal', '/Users/k/proj']);
+    expect(launcher.cmd).toBe('osascript');
+    expect(launcher.args[0]).toBe('-e');
+    expect(launcher.args[1]).toContain('Terminal');
+    expect(launcher.args[1]).toContain('/Users/k/proj');
     expect(launcher.label).toBe('Terminal');
   });
 
-  it('prefers iTerm when /Applications/iTerm.app exists', () => {
+  it('prefers iTerm via AppleScript when /Applications/iTerm.app exists', () => {
     const launcher = resolveLauncher({
       platform: 'darwin',
       cwd: '/Users/k/proj',
       env: {},
       exists: (p) => p === '/Applications/iTerm.app',
     });
-    expect(launcher.args).toEqual(['-na', 'iTerm', '/Users/k/proj']);
+    expect(launcher.cmd).toBe('osascript');
+    expect(launcher.args[1]).toContain('iTerm2');
+    expect(launcher.args[1]).toContain('/Users/k/proj');
     expect(launcher.label).toBe('iTerm');
   });
 
-  it('honors CLAUDEGUI_EXTERNAL_TERMINAL override', () => {
+  it('honors CLAUDEGUI_EXTERNAL_TERMINAL override via open -na', () => {
     const launcher = resolveLauncher({
       platform: 'darwin',
       cwd: '/tmp',

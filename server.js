@@ -232,8 +232,13 @@ async function startServer(nextHandler, upgradeHandler) {
   };
 
   wssTerminal.on('connection', async (ws, req) => {
-    const handler = await loadHandler('terminal-handler');
-    handler(ws, req);
+    try {
+      const handler = await loadHandler('terminal-handler');
+      await handler(ws, req);
+    } catch (err) {
+      dbg.error('[ws/terminal] handler error', err);
+      try { ws.close(); } catch { /* ignore */ }
+    }
   });
 
   wssClaude.on('connection', async (ws, req) => {

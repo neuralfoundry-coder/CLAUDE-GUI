@@ -178,6 +178,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
   ref,
 ) {
   const treeApiRef = useRef<TreeApi<TreeNode> | undefined>(undefined);
+  const [treeHeight, setTreeHeight] = useState(400);
 
   useImperativeHandle(
     ref,
@@ -215,6 +216,25 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
   const containerRef = useRef<HTMLDivElement>(null);
   const externalFileDropRef = useRef(onExternalFileDrop);
   externalFileDropRef.current = onExternalFileDrop;
+
+  // Measure container height dynamically so the tree fills all available
+  // space instead of using a hardcoded pixel value.
+  // Deps include `loading` and `error` because the container ref is only
+  // rendered in the non-loading/non-error branch — without these deps the
+  // effect runs on the first render (loading=true), finds el=null, and
+  // never re-runs when the container actually mounts.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const h = el.getBoundingClientRect().height;
+      if (h > 0) setTreeHeight(h);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [loading, error]);
 
   useEffect(() => {
     const node = containerRef.current;
@@ -282,7 +302,9 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
       node.removeEventListener('dragover', onDragOver);
       node.removeEventListener('drop', onDropCapture, true);
     };
-  }, []);
+    // Same rationale as the ResizeObserver effect: containerRef is only
+    // rendered once loading/error are cleared.
+  }, [loading, error]);
 
   if (loading) return <div className="p-3 text-xs text-muted-foreground">Loading…</div>;
   if (error) return <div className="p-3 text-xs text-destructive">{error}</div>;
@@ -294,7 +316,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
         data={rootNodes}
         openByDefault={false}
         width="100%"
-        height={800}
+        height={treeHeight}
         indent={16}
         rowHeight={24}
         onSelect={handleSelect}

@@ -73,6 +73,33 @@
 - `src/hooks/use-media-query.ts` — `useMediaQuery` 훅. `window.matchMedia` 리스너로 뷰포트 변경을 추적. SSR에서는 `true`(데스크톱 우선) 반환.
 - `src/components/layout/mobile-shell.tsx` — 모바일 탭 레이아웃. 5개 `PanelId` 탭과 각 패널 컴포넌트를 하단 탭 바로 전환.
 
+### 동적 패널 분할 시스템 (FR-108, FR-109)
+
+데스크톱 레이아웃은 고정된 `PanelGroup` 트리 대신 **재귀적 분할 트리**(`SplitNode` / `LeafNode`)로 구성된다. `useSplitLayoutStore`가 트리 구조를 관리하며, `SplitLayoutRenderer`가 트리를 재귀적으로 `react-resizable-panels`의 `PanelGroup` / `Panel`로 렌더링한다.
+
+```
+SplitLayoutRenderer(node)
+├── SplitNode → <PanelGroup direction={direction}>
+│   ├── <Panel>{SplitLayoutRenderer(child[0])}</Panel>
+│   ├── <PanelResizeHandle />
+│   └── <Panel>{SplitLayoutRenderer(child[1])}</Panel>
+│
+└── LeafNode → <Panel collapsible>
+        <LeafPanel panelType={type} leafId={id} />
+    </Panel>
+```
+
+**탭 드래그 앤 드롭**: `@dnd-kit/core` + `@dnd-kit/sortable`를 사용하여 탭 재정렬 및 분할 생성을 지원한다. `DndProvider`가 데스크톱 레이아웃을 감싸며, 각 탭 바는 `SortableContext`로 감싸져 있다. 드롭 존은 패널 영역의 25% 가장자리(상/하/좌/우)와 중앙(50%)으로 나뉘며, `DropZoneOverlay`가 시각적 피드백을 제공한다.
+
+**새 파일**:
+- `src/stores/use-split-layout-store.ts` — 분할 트리 상태 관리. `splitLeaf`, `removeLeaf`, `updateRatio`, 패널 타입별 접힘 제어.
+- `src/components/layout/split-layout-renderer.tsx` — 재귀적 레이아웃 렌더러.
+- `src/components/layout/leaf-panel.tsx` — 리프 노드를 해당 패널 컴포넌트로 라우팅.
+- `src/components/dnd/dnd-provider.tsx` — `DndContext` 래퍼. 탭 재정렬과 분할 생성 처리.
+- `src/components/dnd/sortable-tab-item.tsx` — `useSortable` 기반 개별 탭 래퍼.
+- `src/components/dnd/drop-zone-overlay.tsx` — 드래그 시 드롭 존 시각적 하이라이트.
+- `src/hooks/use-drop-zones.ts` — 포인터 좌표를 5개 드롭 존으로 변환하는 유틸리티.
+
 ## 2.2 서버 컴포넌트 구조
 
 ```
@@ -293,6 +320,8 @@ function syncExternalChange(path: string) {
 | 탭 전환 | 스토어 `setActiveSession` → `terminalManager.activate(id)` → `fit()` + `focus()`. searchOverlayOpen은 false로 리셋. |
 | 폰트 크기 변경 | 매니저 구독 콜백 → `setFontSize(px)` → 모든 인스턴스의 `term.options.fontSize` 변경 + `fit()`. PTY 재시작 없음. |
 | 패널 collapse | `<TerminalPanel>` unmount → `XTerminalAttach.useEffect` cleanup → `terminalManager.detach(id)`. 매니저는 persistent `<div>`를 DOM에서 떼어내기만 하고 xterm/WS는 유지. |
+| 소켓 error | `createSocket`의 `onError` 콜백이 콘솔에 경고 로그를 기록한다. 서버 `error` control frame 수신 시 `connecting` 상태이면 즉시 `closed`로 전이한다. |
+| 연결 타임아웃 | WebSocket 핸드셰이크 15초 초과 시 `connectTimers` 맵의 타이머가 세션을 `closed`로 전이하고 소켓을 닫는다. 타이머는 `onOpen`/`onClose`에서 클리어된다. |
 | 소켓 unexpected close | `createSocket`의 `onClose` 콜백이 status를 `closed`로 전이, xterm 버퍼에 `[connection to PTY lost]` 라인 기록. **재연결 시도 없음**. |
 | 쉘 종료 | 서버가 `{type:"exit", code}` 제어 프레임 전송 → `applyServerControl`이 status를 `exited`로 전이. 탭은 사용자가 닫을 때까지 유지. |
 | Restart | `restartSession(id)` — `closed`/`exited`에서만 허용. xterm `dispose` 없이 스크롤백 유지, `─── restarted at HH:MM:SS ───` separator 삽입, pendingBytes/paused/exitCode 리셋, status `connecting`, `createSocket(inst)` 재호출. OSC 7 스니펫 주입은 서버측에서 새 PTY spawn 시 자동 수행된다. |
@@ -380,8 +409,10 @@ src/components/panels/preview/
 ├── preview-panel.tsx               # 컨테이너 + 헤더(소스/렌더 토글, 다운로드)
 ├── preview-router.tsx              # 타입별 렌더러 선택 + viewMode 분기
 ├── html-preview.tsx                # iframe srcdoc
+├── html-editor.tsx                 # 분할 뷰 HTML 편집기 (FR-616)
 ├── pdf-preview.tsx                 # react-pdf
 ├── markdown-preview.tsx            # react-markdown
+├── markdown-editor.tsx             # 분할 뷰 Markdown 편집기 (FR-616)
 ├── image-preview.tsx               # 줌/팬
 ├── slide-preview.tsx               # 멀티페이지 세로 스크롤 + 선택 + Edit 모드
 ├── source-preview.tsx              # highlight.js 기반 소스 뷰 (FR-614)
@@ -392,6 +423,8 @@ src/components/panels/preview/
 `usePreviewStore`는 `currentFile`/`pageNumber`/`zoom`/`fullscreen` 외에 `viewMode: 'rendered' | 'source'` 필드를 유지한다(FR-614). 기본값은 `'rendered'`이며 `setFile` 호출 시 자동으로 `'rendered'`로 리셋되어 파일 전환 시 소스 뷰가 고착되지 않는다. `isSourceToggleable(type)` 헬퍼가 `html`/`markdown`/`slides`에만 토글을 허용한다. `renderedHtml: string | null` 필드(FR-613)는 파일 기반 프리뷰 컴포넌트(docx/xlsx/pptx/image)가 렌더링한 HTML을 캐싱하여 크로스 포맷 내보내기(PDF/HTML/Doc)를 가능하게 한다. `setFile` 호출 시 `null`로 초기화된다.
 
 슬라이드 편집을 위해 `slideEditMode: boolean`과 `selectedSlideIndex: number`(0-based) 필드가 추가되었다(FR-702, FR-703). `setFile` 호출 시 두 값 모두 초기화(`false`, `0`)된다. Edit 토글 버튼은 `type === 'slides' && viewMode !== 'source'`일 때만 헤더에 표시된다.
+
+HTML/Markdown 직접 편집을 위해 `editMode: boolean` 필드가 추가되었다(FR-616). `setFile` 호출 시 `false`로 초기화된다. Edit 토글 버튼은 `type === 'html' || type === 'markdown'`이고 `viewMode !== 'source'`일 때 헤더에 표시된다. 편집 모드에서는 분할 뷰(좌: textarea 코드 편집, 우: 실시간 프리뷰)를 제공하며, 1초 디바운스 자동 저장으로 에디터 탭과 디스크에 동기화한다.
 
 ### 라우터 로직
 
@@ -961,7 +994,7 @@ Claude 쿼리 시:
 | `src/lib/project/browser-session-registry.mjs` | `browserId → { root, lastSeen }` 매핑 관리, refCount 기반 와처 공유, 30분 GC |
 | `server.js` | WebSocket upgrade 시 `?browserId=` 추출, REST 미들웨어에서 `X-Browser-Id` 헤더 추출 |
 | `server-handlers/files-handler.mjs` | `browserId`별 프로젝트 루트로 와처 구독, `project-changed` 이벤트를 해당 `browserId` 연결에만 전송 |
-| `server-handlers/claude-handler.mjs` | `browserId`별 프로젝트 루트를 `runQuery()`의 cwd로 사용 |
+| `server-handlers/claude-handler.mjs` | `browserId`별 프로젝트 루트를 `runQuery()`의 cwd로 사용, `persistSession: false`로 세션 잠금 충돌 방지, `_activeQueries` Map으로 브라우저별 활성 Query 추적 |
 | `server-handlers/terminal-handler.mjs` | `browserId`별 프로젝트 루트를 PTY spawn의 초기 cwd로 사용 |
 
 ### 클라이언트 측 컴포넌트

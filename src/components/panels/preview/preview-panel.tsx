@@ -20,7 +20,11 @@ import { cn } from '@/lib/utils';
 import { useSpeechSynthesis } from '@/hooks/use-speech-synthesis';
 import { extractPreviewText } from '@/lib/preview/extract-preview-text';
 
-export function PreviewPanel() {
+interface PreviewPanelProps {
+  leafId?: string;
+}
+
+export function PreviewPanel({ leafId: _leafId }: PreviewPanelProps) {
   const currentFile = usePreviewStore((s) => s.currentFile);
   const fullscreen = usePreviewStore((s) => s.fullscreen);
   const toggleFullscreen = usePreviewStore((s) => s.toggleFullscreen);
@@ -31,6 +35,8 @@ export function PreviewPanel() {
   const activeTab = useEditorStore((s) => s.tabs.find((t) => t.id === activeTabId));
   const slideEditMode = usePreviewStore((s) => s.slideEditMode);
   const toggleSlideEditMode = usePreviewStore((s) => s.toggleSlideEditMode);
+  const editMode = usePreviewStore((s) => s.editMode);
+  const toggleEditMode = usePreviewStore((s) => s.toggleEditMode);
   const liveMode = useLivePreviewStore((s) => s.mode);
   const autoSwitch = useLivePreviewStore((s) => s.autoSwitch);
   const selectedSlideIndex = usePreviewStore((s) => s.selectedSlideIndex);
@@ -50,6 +56,7 @@ export function PreviewPanel() {
   const showLive = autoSwitch && liveMode !== 'idle';
   const showSourceToggle = !showLive && isSourceToggleable(type);
   const showSlideEdit = !showLive && type === 'slides' && viewMode !== 'source';
+  const showEdit = !showLive && (type === 'html' || type === 'markdown') && viewMode !== 'source';
   const TTS_TYPES = new Set(['html', 'markdown', 'slides'] as const);
   const showTts = !showLive && TTS_TYPES.has(type as 'html' | 'markdown' | 'slides') && ttsSupported;
   const typeLabel = showLive ? 'live' : type !== 'none' ? type : '';
@@ -57,7 +64,9 @@ export function PreviewPanel() {
     ? `${typeLabel} · source`
     : slideEditMode && type === 'slides'
       ? `${typeLabel} · edit`
-      : typeLabel;
+      : editMode && (type === 'html' || type === 'markdown')
+        ? `${typeLabel} · edit`
+        : typeLabel;
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -122,6 +131,18 @@ export function PreviewPanel() {
               onClick={toggleSlideEditMode}
               aria-label={slideEditMode ? 'Exit edit mode' : 'Edit slides'}
               title={slideEditMode ? 'Exit edit mode' : 'Edit slides'}
+            >
+              <Pencil className="h-3 w-3" aria-hidden="true" />
+            </Button>
+          )}
+          {showEdit && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn('h-5 w-5', editMode && 'bg-accent')}
+              onClick={toggleEditMode}
+              aria-label={editMode ? 'Exit edit mode' : 'Edit preview'}
+              title={editMode ? 'Exit edit mode' : 'Edit preview'}
             >
               <Pencil className="h-3 w-3" aria-hidden="true" />
             </Button>

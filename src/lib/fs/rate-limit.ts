@@ -9,11 +9,12 @@ const WINDOW_MS = 60_000;
  * The file API rate limit is primarily a defense against misbehaving
  * clients or external callers — for a single local desktop user, a
  * reasonable project crawl (Cmd+P / `@` autocomplete / file tree expand)
- * can legitimately burst into the hundreds of requests when opening a
- * large repo. 1200 req/min (~20 req/sec sustained) comfortably covers
- * that while still cutting off runaway loops.
+ * can legitimately burst into the thousands of requests when opening a
+ * large repo with deeply nested directories. 6000 req/min (~100 req/sec
+ * sustained) comfortably covers that while still cutting off runaway loops.
+ * Each browser tab gets its own bucket via browserId in clientKey().
  */
-const MAX_REQUESTS = 1200;
+const MAX_REQUESTS = 6000;
 
 export function rateLimit(key: string): { ok: boolean; remaining: number } {
   const now = Date.now();
@@ -28,6 +29,7 @@ export function rateLimit(key: string): { ok: boolean; remaining: number } {
 }
 
 export function clientKey(req: Request): string {
-  const forwarded = req.headers.get('x-forwarded-for');
-  return forwarded || req.headers.get('x-real-ip') || 'local';
+  const browserId = req.headers.get('x-browser-id');
+  const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'local';
+  return browserId ? `${ip}:${browserId}` : ip;
 }

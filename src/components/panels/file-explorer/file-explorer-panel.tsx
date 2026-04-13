@@ -27,7 +27,11 @@ function formatRelative(ts: number | null, now: number): string {
   return `${Math.floor(delta / 3600)}h ago`;
 }
 
-export function FileExplorerPanel() {
+interface FileExplorerPanelProps {
+  leafId?: string;
+}
+
+export function FileExplorerPanel({ leafId: _leafId }: FileExplorerPanelProps) {
   const { rootNodes, loading, error, refreshRoot, loadSubtree, lastSyncedAt, suppressWsRefreshRef } = useFileTree();
   const [now, setNow] = useState(() => Date.now());
   const [dragDepth, setDragDepth] = useState(0);
@@ -288,6 +292,7 @@ export function FileExplorerPanel() {
     selectionRef,
     onNewFile,
     onNewFolder,
+    onRename: beginRenameWithRetry,
   });
 
   const isDragOver = dragDepth > 0;
@@ -401,7 +406,7 @@ export function FileExplorerPanel() {
         <div className="border-b px-2 py-1 text-[11px] text-muted-foreground">(no project open)</div>
       )}
       <div
-        className="flex flex-1 flex-col"
+        className="flex min-h-0 flex-1 flex-col"
         onContextMenu={onTreeContextMenu}
         style={explorerZoom !== 1 ? { zoom: explorerZoom } : undefined}
       >
@@ -420,7 +425,7 @@ export function FileExplorerPanel() {
       </div>
       <FileContextMenu
         actions={actions}
-        onRequestRename={(id) => treeRef.current?.beginRename(id)}
+        onRequestRename={(id) => beginRenameWithRetry(id)}
         onRequestCreateFile={(parentPath) => void onNewFile(parentPath)}
         onRequestCreateFolder={(parentPath) => void onNewFolder(parentPath)}
         onRequestRefresh={() => void refreshRoot()}

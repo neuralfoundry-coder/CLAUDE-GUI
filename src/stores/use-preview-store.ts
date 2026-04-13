@@ -23,6 +23,8 @@ interface PreviewState {
   viewMode: PreviewViewMode;
   /** Slide edit mode: when true, selected slide shows HTML editor + prompt input */
   slideEditMode: boolean;
+  /** Generic edit mode for HTML/Markdown preview: split-view editor + live preview */
+  editMode: boolean;
   /** Index of the currently selected slide (0-based) */
   selectedSlideIndex: number;
   /**
@@ -37,6 +39,8 @@ interface PreviewState {
   setFullscreen: (value: boolean) => void;
   setViewMode: (mode: PreviewViewMode) => void;
   toggleViewMode: () => void;
+  setEditMode: (enabled: boolean) => void;
+  toggleEditMode: () => void;
   setSlideEditMode: (enabled: boolean) => void;
   toggleSlideEditMode: () => void;
   setSelectedSlideIndex: (index: number) => void;
@@ -50,15 +54,18 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   fullscreen: false,
   viewMode: 'rendered',
   slideEditMode: false,
+  editMode: false,
   selectedSlideIndex: 0,
   renderedHtml: null,
-  setFile: (currentFile) => set({ currentFile, pageNumber: 1, viewMode: 'rendered', slideEditMode: false, selectedSlideIndex: 0, renderedHtml: null }),
+  setFile: (currentFile) => set({ currentFile, pageNumber: 1, viewMode: 'rendered', slideEditMode: false, editMode: false, selectedSlideIndex: 0, renderedHtml: null }),
   setPage: (pageNumber) => set({ pageNumber }),
   setZoom: (zoom) => set({ zoom }),
   toggleFullscreen: () => set((s) => ({ fullscreen: !s.fullscreen })),
   setFullscreen: (fullscreen) => set({ fullscreen }),
   setViewMode: (viewMode) => set({ viewMode }),
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === 'source' ? 'rendered' : 'source' })),
+  setEditMode: (editMode) => set({ editMode }),
+  toggleEditMode: () => set((s) => ({ editMode: !s.editMode })),
   setSlideEditMode: (slideEditMode) => set({ slideEditMode }),
   toggleSlideEditMode: () => set((s) => ({ slideEditMode: !s.slideEditMode })),
   setSelectedSlideIndex: (selectedSlideIndex) => set({ selectedSlideIndex }),

@@ -16,17 +16,25 @@ const dbg = createDebug('claude');
  *  to cancel running queries when the WebSocket is already gone. */
 export const activeAbortControllers = new Set();
 
-/** Module-level reference to the active SDK instance for MCP status queries. */
-let _activeSdk = null;
+/** Module-level map of active Query instances keyed by browserId (or 'default').
+ *  Used by getMcpServerStatus() to call mcpServerStatus() on a live Query. */
+const _activeQueries = new Map();
 
 /**
- * Returns MCP server connection statuses from the active SDK session.
+ * Returns MCP server connection statuses from an active Query instance.
  * Called by the /api/mcp/status route.
+ * @param {string|null} [browserId] - optional browserId to look up a specific query
  */
-export async function getMcpServerStatus() {
-  if (!_activeSdk) return [];
+export async function getMcpServerStatus(browserId) {
+  // Try the specific browser's query first, then fall back to any active query
+  let query = browserId ? _activeQueries.get(browserId) : null;
+  if (!query) {
+    const first = _activeQueries.values().next();
+    query = first.done ? null : first.value;
+  }
+  if (!query) return [];
   try {
-    const statuses = await _activeSdk.mcpServerStatus();
+    const statuses = await query.mcpServerStatus();
     return statuses ?? [];
   } catch {
     return [];
@@ -74,7 +82,7 @@ export default async function claudeHandler(ws, req) {
     ws.send(JSON.stringify({ type: 'error', message: 'Claude Agent SDK not available' }));
     return;
   }
-  _activeSdk = sdk;
+  const queryKey = browserId || 'default';
 
   const pendingPermissions = new Map();
   let currentAbort = null;
@@ -184,6 +192,7 @@ export default async function claudeHandler(ws, req) {
         cwd,
         abortController: abort,
         permissionMode: 'default',
+        persistSession: false,
         maxTurns: 1,
         canUseTool: () => ({ behavior: 'deny', message: 'Completion mode: no tools' }),
       };
@@ -292,6 +301,7 @@ export default async function claudeHandler(ws, req) {
         canUseTool,
         abortController: abort,
         permissionMode: 'default',
+        persistSession: false,
         ...(sessionId ? { resume: sessionId } : {}),
         ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
         ...(options.model ? { model: options.model } : {}),
@@ -299,6 +309,7 @@ export default async function claudeHandler(ws, req) {
       };
 
       const stream = sdk.query({ prompt: finalPrompt, options: queryOptions });
+      _activeQueries.set(queryKey, stream);
 
       for await (const event of stream) {
         if (abort.signal.aborted) break;
@@ -328,6 +339,9 @@ export default async function claudeHandler(ws, req) {
     } finally {
       activeAbortControllers.delete(abort);
       currentAbort = null;
+      if (_activeQueries.get(queryKey) === stream) {
+        _activeQueries.delete(queryKey);
+      }
       for (const resolve of pendingPermissions.values()) {
         try {
           resolve(false);
@@ -367,6 +381,7 @@ export default async function claudeHandler(ws, req) {
     dbg.log('ws closed');
     currentAbort?.abort();
     pendingPermissions.clear();
+    _activeQueries.delete(queryKey);
   });
 
   ws.on('error', (err) => {

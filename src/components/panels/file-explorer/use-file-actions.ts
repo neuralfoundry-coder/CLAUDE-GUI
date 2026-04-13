@@ -5,7 +5,7 @@ import { filesApi, terminalApi } from '@/lib/api-client';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { usePreviewStore, detectPreviewType } from '@/stores/use-preview-store';
 import { useTerminalStore } from '@/stores/use-terminal-store';
-import { useLayoutStore } from '@/stores/use-layout-store';
+import { useSplitLayoutStore } from '@/stores/use-split-layout-store';
 import { useProjectStore } from '@/stores/use-project-store';
 import { useFileClipboardStore } from '@/stores/use-file-clipboard-store';
 import { useDeleteConfirmStore } from './delete-confirm-dialog';
@@ -49,8 +49,8 @@ export function useFileActions(refreshRoot: () => Promise<void> | void): FileAct
   const openFileInEditor = useEditorStore((s) => s.openFile);
   const setPreviewFile = usePreviewStore((s) => s.setFile);
   const createTerminal = useTerminalStore((s) => s.createSession);
-  const terminalCollapsed = useLayoutStore((s) => s.terminalCollapsed);
-  const togglePanel = useLayoutStore((s) => s.togglePanel);
+  const isPanelCollapsed = useSplitLayoutStore((s) => s.isPanelCollapsed);
+  const togglePanel = useSplitLayoutStore((s) => s.togglePanelByType);
   const activeRoot = useProjectStore((s) => s.activeRoot);
   const openProject = useProjectStore((s) => s.openProject);
   const setClipboard = useFileClipboardStore((s) => s.setClipboard);
@@ -69,10 +69,10 @@ export function useFileActions(refreshRoot: () => Promise<void> | void): FileAct
       const path = typeof target === 'string' ? target : target.path;
       const isDir = typeof target === 'string' ? true : target.isDirectory;
       const cwd = isDir ? path : dirname(path);
-      if (terminalCollapsed) togglePanel('terminal');
+      if (isPanelCollapsed('terminal')) togglePanel('terminal');
       createTerminal({ initialCwd: cwd || '.' });
     },
-    [createTerminal, terminalCollapsed, togglePanel],
+    [createTerminal, isPanelCollapsed, togglePanel],
   );
 
   const openInSystemTerminal = useCallback(
@@ -80,7 +80,13 @@ export function useFileActions(refreshRoot: () => Promise<void> | void): FileAct
       const path = typeof target === 'string' ? target : target.path;
       const isDir = typeof target === 'string' ? true : target.isDirectory;
       const cwd = isDir ? path : dirname(path);
-      await terminalApi.openNative(cwd || undefined);
+      const notify = useTerminalStore.getState().setNativeTerminalNotice;
+      try {
+        const result = await terminalApi.openNative(cwd || undefined);
+        notify({ type: 'success', message: `Opened in ${result.launcher}`, ts: Date.now() });
+      } catch (err) {
+        notify({ type: 'error', message: `Could not open system terminal: ${(err as Error).message}`, ts: Date.now() });
+      }
     },
     [],
   );

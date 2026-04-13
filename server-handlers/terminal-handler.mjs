@@ -92,13 +92,19 @@ async function createNewSession(req) {
   const { shell, args: shellArgs } = resolveShell();
   const env = buildPtyEnv(shell);
   dbg.info('spawning PTY', { shell, shellArgs, cwd });
-  const ptyProcess = pty.spawn(shell, shellArgs, {
-    name: 'xterm-256color',
-    cols: 120,
-    rows: 30,
-    cwd,
-    env,
-  });
+  let ptyProcess;
+  try {
+    ptyProcess = pty.spawn(shell, shellArgs, {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
+      cwd,
+      env,
+    });
+  } catch (err) {
+    dbg.error('PTY spawn failed', err);
+    return null;
+  }
   const record = terminalSessionRegistry.register(ptyProcess, cwd);
 
   // Inject an OSC 7 cwd emitter into the shell so the client can track the

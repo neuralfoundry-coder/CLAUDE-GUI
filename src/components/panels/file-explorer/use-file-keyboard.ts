@@ -23,6 +23,7 @@ interface UseFileKeyboardOptions {
   selectionRef: React.RefObject<string[]>;
   onNewFile: (parentPath: string) => void | Promise<void>;
   onNewFolder: (parentPath: string) => void | Promise<void>;
+  onRename: (id: string) => void;
 }
 
 export function useFileKeyboard({
@@ -31,6 +32,7 @@ export function useFileKeyboard({
   selectionRef,
   onNewFile,
   onNewFolder,
+  onRename,
 }: UseFileKeyboardOptions): void {
   const shortcuts = useMemo<Shortcut[]>(() => {
     const when = isFocusInsideFileExplorer;
@@ -47,7 +49,7 @@ export function useFileKeyboard({
         when,
         handler: () => {
           const sel = getSelection();
-          if (sel.length === 1 && sel[0]) treeRef.current?.beginRename(sel[0]);
+          if (sel.length === 1 && sel[0]) onRename(sel[0]);
         },
       },
       // Delete / Backspace — remove selection
@@ -165,7 +167,7 @@ export function useFileKeyboard({
         },
       },
     ];
-  }, [actions, onNewFile, onNewFolder, selectionRef, treeRef]);
+  }, [actions, onNewFile, onNewFolder, onRename, selectionRef, treeRef]);
 
   useKeyboardShortcut(shortcuts);
 }

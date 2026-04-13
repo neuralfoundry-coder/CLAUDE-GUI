@@ -3,6 +3,12 @@
 import { create } from 'zustand';
 import { terminalManager, type TerminalInstanceStatus } from '@/lib/terminal/terminal-manager';
 
+export interface NativeTerminalNotice {
+  type: 'success' | 'error';
+  message: string;
+  ts: number;
+}
+
 export interface TerminalSession {
   id: string;
   name: string;
@@ -29,6 +35,8 @@ interface TerminalState {
   splitEnabled: boolean;
   activePaneIndex: 0 | 1;
   searchOverlayOpen: boolean;
+  nativeTerminalNotice: NativeTerminalNotice | null;
+  setNativeTerminalNotice: (notice: NativeTerminalNotice | null) => void;
   createSession: (opts?: { initialCwd?: string; name?: string }) => string;
   closeSession: (id: string) => void;
   closeActiveSession: () => void;
@@ -47,6 +55,7 @@ interface TerminalState {
   clearActiveBuffer: () => void;
   renameSession: (id: string, name: string) => void;
   moveSession: (id: string, direction: -1 | 1) => void;
+  reorderSession: (fromIndex: number, toIndex: number) => void;
   updateSessionCwd: (id: string, cwd: string | null) => void;
   updateSessionStatus: (id: string, status: TerminalInstanceStatus, exitCode: number | null) => void;
 }
@@ -77,6 +86,8 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   splitEnabled: false,
   activePaneIndex: 0,
   searchOverlayOpen: false,
+  nativeTerminalNotice: null,
+  setNativeTerminalNotice: (notice) => set({ nativeTerminalNotice: notice }),
 
   createSession: (opts) => {
     counter += 1;
@@ -102,7 +113,10 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
         ...assignToActivePane(s, id),
       };
     });
-    void terminalManager.ensureSession(id, opts?.initialCwd ? { initialCwd: opts.initialCwd } : undefined);
+    // Do NOT call ensureSession here — XTerminalAttach handles it on mount.
+    // This avoids a race where both the store and the component create a
+    // WebSocket for the same session. initialCwd is stored in the session
+    // record and read by XTerminalAttach.
     return id;
   },
 
@@ -278,6 +292,18 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
       const sessions = [...s.sessions];
       const [moved] = sessions.splice(idx, 1);
       sessions.splice(target, 0, moved!);
+      return { sessions };
+    });
+  },
+
+  reorderSession: (fromIndex, toIndex) => {
+    set((s) => {
+      if (fromIndex === toIndex) return s;
+      if (fromIndex < 0 || fromIndex >= s.sessions.length) return s;
+      if (toIndex < 0 || toIndex >= s.sessions.length) return s;
+      const sessions = [...s.sessions];
+      const [moved] = sessions.splice(fromIndex, 1);
+      sessions.splice(toIndex, 0, moved!);
       return { sessions };
     });
   },

@@ -1,14 +1,16 @@
 'use client';
 
 import {
-  Moon, Sun, Contrast, Terminal, Sidebar, Eye, FolderOpen, MonitorSmartphone,
+  Moon, Sun, Contrast, ExternalLink, Sidebar, Eye, FolderOpen, MonitorSmartphone,
   Monitor, Code2, MessageSquare, Globe, Blocks,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLayoutStore, type Theme } from '@/stores/use-layout-store';
+import { useSplitLayoutStore } from '@/stores/use-split-layout-store';
 import { useProjectStore } from '@/stores/use-project-store';
 import { useRemoteAccessStore } from '@/stores/use-remote-access-store';
 import { useMcpStore } from '@/stores/use-mcp-store';
+import { terminalApi } from '@/lib/api-client';
 import { AuthBadge } from './auth-badge';
 import { SettingsPopover } from './settings-popover';
 
@@ -36,7 +38,7 @@ function basename(p: string | null): string {
 export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) {
   const theme = useLayoutStore((s) => s.theme);
   const setTheme = useLayoutStore((s) => s.setTheme);
-  const togglePanel = useLayoutStore((s) => s.togglePanel);
+  const togglePanelByType = useSplitLayoutStore((s) => s.togglePanelByType);
   const activeRoot = useProjectStore((s) => s.activeRoot);
   const remoteAccess = useRemoteAccessStore((s) => s.remoteAccess);
   const localIPs = useRemoteAccessStore((s) => s.localIPs);
@@ -73,7 +75,7 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => togglePanel('fileExplorer')}
+          onClick={() => togglePanelByType('fileExplorer')}
           aria-label="Toggle sidebar"
           title="Toggle sidebar (⌃⌘B)"
         >
@@ -82,7 +84,7 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => togglePanel('editor')}
+          onClick={() => togglePanelByType('editor')}
           aria-label="Toggle editor"
           title="Toggle editor (⌃⌘E)"
         >
@@ -91,16 +93,20 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => togglePanel('terminal')}
-          aria-label="Toggle terminal"
-          title="Toggle terminal (⌃⌘J)"
+          onClick={() => {
+            void terminalApi.openNative(activeRoot ?? undefined).catch(() => {
+              /* ignore — user will see the OS error */
+            });
+          }}
+          aria-label="Open external terminal"
+          title="Open external terminal (⇧⌘O)"
         >
-          <Terminal className="h-4 w-4" />
+          <ExternalLink className="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => togglePanel('claude')}
+          onClick={() => togglePanelByType('claude')}
           aria-label="Toggle Claude chat"
           title="Toggle Claude chat (⌃⌘K)"
         >
@@ -109,7 +115,7 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => togglePanel('preview')}
+          onClick={() => togglePanelByType('preview')}
           aria-label="Toggle preview"
           title="Toggle preview (⌃⌘P)"
         >

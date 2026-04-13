@@ -7,7 +7,7 @@ import { UniversalStreamExtractor } from '@/lib/claude/universal-stream-extracto
 import { useLivePreviewStore } from '@/stores/use-live-preview-store';
 import { useArtifactStore } from '@/stores/use-artifact-store';
 import { useEditorStore } from '@/stores/use-editor-store';
-import { useLayoutStore } from '@/stores/use-layout-store';
+import { useSplitLayoutStore } from '@/stores/use-split-layout-store';
 import { applyEditOps } from '@/lib/claude/artifact-from-tool';
 
 export type MessageKind = 'text' | 'tool_use' | 'tool_result' | 'system' | 'error' | 'auto_decision';
@@ -199,6 +199,7 @@ interface ClaudeState {
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   renameTab: (tabId: string, name: string) => void;
+  reorderTab: (fromIndex: number, toIndex: number) => void;
 
   // Per-tab message/streaming actions (operate on active tab)
   pushUserMessage: (content: string) => string;
@@ -325,16 +326,16 @@ async function forwardToolToEditor(
   if (!filePath) return;
 
   const editorStore = useEditorStore.getState();
-  const layoutStore = useLayoutStore.getState();
+  const { isPanelCollapsed, setPanelCollapsedByType } = useSplitLayoutStore.getState();
 
-  if (layoutStore.editorCollapsed) {
-    layoutStore.setCollapsed('editor', false);
+  if (isPanelCollapsed('editor')) {
+    setPanelCollapsedByType('editor', false);
   }
 
   const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
   const PREVIEWABLE_EXTS = new Set(['html', 'htm', 'svg', 'md', 'markdown']);
-  if (PREVIEWABLE_EXTS.has(ext) && layoutStore.previewCollapsed) {
-    layoutStore.setCollapsed('preview', false);
+  if (PREVIEWABLE_EXTS.has(ext) && isPanelCollapsed('preview')) {
+    setPanelCollapsedByType('preview', false);
   }
 
   const existingTab = editorStore.tabs.find((t) => t.path === filePath);
@@ -607,6 +608,18 @@ export const useClaudeStore = create<ClaudeState>((set) => ({
         t.id === tabId ? { ...t, name, customName: true } : t,
       ),
     }));
+  },
+
+  reorderTab: (fromIndex, toIndex) => {
+    set((s) => {
+      if (fromIndex === toIndex) return s;
+      if (fromIndex < 0 || fromIndex >= s.tabs.length) return s;
+      if (toIndex < 0 || toIndex >= s.tabs.length) return s;
+      const tabs = [...s.tabs];
+      const [moved] = tabs.splice(fromIndex, 1);
+      tabs.splice(toIndex, 0, moved!);
+      return { tabs };
+    });
   },
 
   // ── Per-tab message/streaming actions ──

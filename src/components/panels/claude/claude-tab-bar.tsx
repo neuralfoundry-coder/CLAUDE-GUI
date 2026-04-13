@@ -1,18 +1,30 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Columns2, Rows2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 import { cn } from '@/lib/utils';
 import { useClaudeStore } from '@/stores/use-claude-store';
+import { useSplitLayoutStore } from '@/stores/use-split-layout-store';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { SortableTabItem } from '@/components/dnd/sortable-tab-item';
+import type { DragData } from '@/components/dnd/dnd-provider';
 
-export function ClaudeTabBar() {
+interface ClaudeTabBarProps {
+  leafId?: string;
+}
+
+export function ClaudeTabBar({ leafId }: ClaudeTabBarProps) {
   const tabs = useClaudeStore((s) => s.tabs);
   const activeTabId = useClaudeStore((s) => s.activeTabId);
   const tabStates = useClaudeStore((s) => s.tabStates);
@@ -20,6 +32,7 @@ export function ClaudeTabBar() {
   const closeTab = useClaudeStore((s) => s.closeTab);
   const createTab = useClaudeStore((s) => s.createTab);
   const renameTab = useClaudeStore((s) => s.renameTab);
+  const splitLeaf = useSplitLayoutStore((s) => s.splitLeaf);
 
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -68,104 +81,127 @@ export function ClaudeTabBar() {
     [tabs, closeTab],
   );
 
+  const tabIds = tabs.map((t) => t.id);
+
   return (
     <div className="flex h-7 items-center border-b glass-surface">
       <div className="flex flex-1 items-center overflow-x-auto">
-        {tabs.map((tab) => {
-          const isActive = tab.id === activeTabId;
-          const ts = tabStates[tab.id];
-          const isStreaming = ts?.isStreaming ?? false;
-          const isEditing = editingTabId === tab.id;
+        <SortableContext items={tabIds} strategy={horizontalListSortingStrategy}>
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeTabId;
+            const ts = tabStates[tab.id];
+            const isStreaming = ts?.isStreaming ?? false;
+            const isEditing = editingTabId === tab.id;
+            const dragData: DragData = {
+              tabId: tab.id,
+              sourceType: 'claude',
+            };
 
-          return (
-            <ContextMenu key={tab.id}>
-              <ContextMenuTrigger asChild>
-                <button
-                  type="button"
-                  className={cn(
-                    'group flex h-7 shrink-0 items-center gap-1 border-r px-2 text-[11px]',
-                    isActive
-                      ? 'bg-background text-foreground'
-                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                  )}
-                  onClick={() => setActiveTab(tab.id)}
-                  onDoubleClick={() => startRename(tab.id, tab.name)}
-                  title={tab.sessionId ? `Session: ${tab.sessionId}` : 'New session'}
-                >
-                  {/* Status dot */}
-                  <span
-                    className={cn(
-                      'h-1.5 w-1.5 shrink-0 rounded-full',
-                      isStreaming
-                        ? 'animate-pulse bg-orange-400'
-                        : tab.sessionId
-                          ? 'bg-emerald-400'
-                          : 'bg-zinc-400',
-                    )}
-                  />
-
-                  {/* Tab name / inline edit */}
-                  {isEditing ? (
-                    <input
-                      ref={inputRef}
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitRename();
-                        if (e.key === 'Escape') cancelRename();
-                      }}
-                      onBlur={commitRename}
-                      className="w-20 bg-transparent text-[11px] outline-none"
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <span className="max-w-[120px] truncate">{tab.name}</span>
-                  )}
-
-                  {/* Close button */}
-                  {!isEditing && (
-                    <span
-                      role="button"
-                      tabIndex={-1}
+            return (
+              <SortableTabItem key={tab.id} id={tab.id} dragData={dragData}>
+                <ContextMenu>
+                  <ContextMenuTrigger asChild>
+                    <button
+                      type="button"
                       className={cn(
-                        'ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm',
-                        'opacity-0 hover:bg-muted-foreground/20 group-hover:opacity-100',
-                        isActive && 'opacity-60',
+                        'group flex h-7 shrink-0 items-center gap-1 border-r px-2 text-[11px]',
+                        isActive
+                          ? 'bg-background text-foreground'
+                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                       )}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeTab(tab.id);
-                      }}
-                      aria-label={`Close ${tab.name}`}
+                      onClick={() => setActiveTab(tab.id)}
+                      onDoubleClick={() => startRename(tab.id, tab.name)}
+                      title={tab.sessionId ? `Session: ${tab.sessionId}` : 'New session'}
                     >
-                      <X className="h-3 w-3" />
-                    </span>
-                  )}
-                </button>
-              </ContextMenuTrigger>
-              <ContextMenuContent>
-                <ContextMenuItem onSelect={() => closeTab(tab.id)}>
-                  Close
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onSelect={() => handleCloseOthers(tab.id)}
-                  disabled={tabs.length <= 1}
-                >
-                  Close Others
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onSelect={() => handleCloseToRight(tab.id)}
-                  disabled={tabs.findIndex((t) => t.id === tab.id) === tabs.length - 1}
-                >
-                  Close to the Right
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => startRename(tab.id, tab.name)}>
-                  Rename
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
-          );
-        })}
+                      {/* Status dot */}
+                      <span
+                        className={cn(
+                          'h-1.5 w-1.5 shrink-0 rounded-full',
+                          isStreaming
+                            ? 'animate-pulse bg-orange-400'
+                            : tab.sessionId
+                              ? 'bg-emerald-400'
+                              : 'bg-zinc-400',
+                        )}
+                      />
+
+                      {/* Tab name / inline edit */}
+                      {isEditing ? (
+                        <input
+                          ref={inputRef}
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') commitRename();
+                            if (e.key === 'Escape') cancelRename();
+                          }}
+                          onBlur={commitRename}
+                          className="w-20 bg-transparent text-[11px] outline-none"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span className="max-w-[120px] truncate">{tab.name}</span>
+                      )}
+
+                      {/* Close button */}
+                      {!isEditing && (
+                        <span
+                          role="button"
+                          tabIndex={-1}
+                          className={cn(
+                            'ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm',
+                            'opacity-0 hover:bg-muted-foreground/20 group-hover:opacity-100',
+                            isActive && 'opacity-60',
+                          )}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeTab(tab.id);
+                          }}
+                          aria-label={`Close ${tab.name}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </span>
+                      )}
+                    </button>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onSelect={() => closeTab(tab.id)}>
+                      Close
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      onSelect={() => handleCloseOthers(tab.id)}
+                      disabled={tabs.length <= 1}
+                    >
+                      Close Others
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      onSelect={() => handleCloseToRight(tab.id)}
+                      disabled={tabs.findIndex((t) => t.id === tab.id) === tabs.length - 1}
+                    >
+                      Close to the Right
+                    </ContextMenuItem>
+                    <ContextMenuItem onSelect={() => startRename(tab.id, tab.name)}>
+                      Rename
+                    </ContextMenuItem>
+                    {leafId && (
+                      <>
+                        <ContextMenuSeparator />
+                        <ContextMenuItem onSelect={() => splitLeaf(leafId, 'horizontal', 'claude', 'after')}>
+                          <Columns2 className="mr-2 h-3 w-3" />
+                          Split Right
+                        </ContextMenuItem>
+                        <ContextMenuItem onSelect={() => splitLeaf(leafId, 'vertical', 'claude', 'after')}>
+                          <Rows2 className="mr-2 h-3 w-3" />
+                          Split Down
+                        </ContextMenuItem>
+                      </>
+                    )}
+                  </ContextMenuContent>
+                </ContextMenu>
+              </SortableTabItem>
+            );
+          })}
+        </SortableContext>
       </div>
 
       {/* New tab button */}

@@ -54,6 +54,7 @@ interface EditorState {
   syncExternalChange: (path: string) => Promise<void>;
   setCursorPosition: (line: number, col: number) => void;
   setCompletionLoading: (loading: boolean) => void;
+  reorderTab: (fromIndex: number, toIndex: number) => void;
   hasDirtyTabs: () => boolean;
   resetAll: () => void;
 }
@@ -281,6 +282,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setCursorPosition: (line, col) => set({ cursorLine: line, cursorCol: col }),
 
   setCompletionLoading: (completionLoading) => set({ completionLoading }),
+
+  reorderTab: (fromIndex, toIndex) => {
+    set((s) => {
+      if (fromIndex === toIndex) return s;
+      if (fromIndex < 0 || fromIndex >= s.tabs.length) return s;
+      if (toIndex < 0 || toIndex >= s.tabs.length) return s;
+      const tabs = [...s.tabs];
+      const [moved] = tabs.splice(fromIndex, 1);
+      tabs.splice(toIndex, 0, moved!);
+      return { tabs };
+    });
+  },
 
   hasDirtyTabs: () => get().tabs.some((t) => t.dirty),
 

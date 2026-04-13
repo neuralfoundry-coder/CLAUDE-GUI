@@ -51,6 +51,8 @@ const LINUX_LAUNCHERS: LinuxLauncher[] = [
   { bin: 'alacritty', argsFor: (cwd) => ['--working-directory', cwd] },
   { bin: 'kitty', argsFor: (cwd) => ['-d', cwd] },
   { bin: 'wezterm', argsFor: (cwd) => ['start', '--cwd', cwd] },
+  { bin: 'foot', argsFor: (cwd) => ['--working-directory', cwd] },
+  { bin: 'rio', argsFor: (cwd) => ['--working-dir', cwd] },
   {
     bin: 'xterm',
     // xterm has no cwd flag — cd via a shell invocation.
@@ -68,15 +70,32 @@ export function resolveLauncher(input: LauncherInput): Launcher {
   const override = env[ENV_OVERRIDE]?.trim();
 
   if (platform === 'darwin') {
-    // `open` is always on macOS. If an override is set, pass it straight
-    // to `-a`. Otherwise prefer iTerm2 when installed, else Terminal.app.
+    // For known terminals, use AppleScript to reliably set the working
+    // directory. `open -na <app> <path>` passes cwd as a "file to open"
+    // which works inconsistently across terminal emulators.
     if (override) {
+      // Unknown override app — best-effort via `open -na`.
       return { cmd: 'open', args: ['-na', override, cwd], label: override };
     }
+    const escaped = shellEscape(cwd);
     if (exists('/Applications/iTerm.app')) {
-      return { cmd: 'open', args: ['-na', 'iTerm', cwd], label: 'iTerm' };
+      return {
+        cmd: 'osascript',
+        args: [
+          '-e',
+          `tell application "iTerm2" to create window with default profile command "cd ${escaped} && exec $SHELL"`,
+        ],
+        label: 'iTerm',
+      };
     }
-    return { cmd: 'open', args: ['-na', 'Terminal', cwd], label: 'Terminal' };
+    return {
+      cmd: 'osascript',
+      args: [
+        '-e',
+        `tell application "Terminal" to do script "cd ${escaped} && clear"`,
+      ],
+      label: 'Terminal',
+    };
   }
 
   if (platform === 'win32') {

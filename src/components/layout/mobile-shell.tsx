@@ -1,10 +1,9 @@
 'use client';
 
-import { FolderTree, Code2, Terminal, MessageSquare, Eye } from 'lucide-react';
+import { FolderTree, Code2, MessageSquare, Eye } from 'lucide-react';
 import { useLayoutStore, type PanelId } from '@/stores/use-layout-store';
 import { FileExplorerPanel } from '@/components/panels/file-explorer/file-explorer-panel';
 import { EditorPanel } from '@/components/panels/editor/editor-panel';
-import { TerminalPanel } from '@/components/panels/terminal/terminal-panel';
 import { ClaudeChatPanel } from '@/components/panels/claude/claude-chat-panel';
 import { PreviewPanel } from '@/components/panels/preview/preview-panel';
 import { useSwipeNavigation } from '@/hooks/use-swipe-navigation';
@@ -18,15 +17,13 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: 'fileExplorer', label: 'Files', icon: FolderTree },
   { id: 'editor', label: 'Editor', icon: Code2 },
-  { id: 'terminal', label: 'Terminal', icon: Terminal },
   { id: 'claude', label: 'Claude', icon: MessageSquare },
   { id: 'preview', label: 'Preview', icon: Eye },
 ];
 
-const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
+const PANEL_COMPONENTS: Record<string, React.ComponentType> = {
   fileExplorer: FileExplorerPanel,
   editor: EditorPanel,
-  terminal: TerminalPanel,
   claude: ClaudeChatPanel,
   preview: PreviewPanel,
 };
@@ -34,7 +31,7 @@ const PANEL_COMPONENTS: Record<PanelId, React.ComponentType> = {
 export function MobileShell() {
   const activePanel = useLayoutStore((s) => s.mobileActivePanel);
   const setActivePanel = useLayoutStore((s) => s.setMobileActivePanel);
-  const ActiveComponent = PANEL_COMPONENTS[activePanel];
+  const ActiveComponent = PANEL_COMPONENTS[activePanel] ?? EditorPanel;
 
   const TAB_IDS = TABS.map((t) => t.id);
 

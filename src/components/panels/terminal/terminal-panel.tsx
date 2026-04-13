@@ -4,19 +4,29 @@ import { useEffect, useRef, useState } from 'react';
 import { Plus, X, RotateCw, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { useTerminalStore, type TerminalSession } from '@/stores/use-terminal-store';
+import { useTerminalStore, type TerminalSession, type NativeTerminalNotice } from '@/stores/use-terminal-store';
 import { useProjectStore } from '@/stores/use-project-store';
 import { terminalApi } from '@/lib/api-client';
 import { usePanelFocus } from '@/hooks/use-panel-focus';
 import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 import { XTerminalAttach } from './x-terminal';
 import { TerminalSearchOverlay } from './terminal-search-overlay';
+import {
+  SortableContext,
+  horizontalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { SortableTabItem } from '@/components/dnd/sortable-tab-item';
+import type { DragData } from '@/components/dnd/dnd-provider';
 
-async function openInSystemTerminal(cwd: string | null | undefined): Promise<void> {
+async function openInSystemTerminal(
+  cwd: string | null | undefined,
+  notify: (notice: NativeTerminalNotice | null) => void,
+): Promise<void> {
   try {
-    await terminalApi.openNative(cwd ?? undefined);
+    const result = await terminalApi.openNative(cwd ?? undefined);
+    notify({ type: 'success', message: `Opened in ${result.launcher}`, ts: Date.now() });
   } catch (err) {
-    alert(`Could not open system terminal: ${(err as Error).message}`);
+    notify({ type: 'error', message: `Could not open system terminal: ${(err as Error).message}`, ts: Date.now() });
   }
 }
 
@@ -172,7 +182,45 @@ function TerminalTab({
   );
 }
 
-export function TerminalPanel() {
+function ConnectingOverlay({ sessionId }: { sessionId: string }) {
+  const [showCancel, setShowCancel] = useState(false);
+  const updateSessionStatus = useTerminalStore((s) => s.updateSessionStatus);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setShowCancel(true), 5000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <div className="pointer-events-none absolute inset-0 flex items-start justify-center pt-12">
+      <div className="flex items-center gap-2 rounded-md border bg-popover/95 px-3 py-2 text-xs shadow-lg backdrop-blur">
+        <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" aria-hidden="true" />
+        <span className="text-muted-foreground">
+          Connecting to shell&hellip;
+        </span>
+        <span className="text-muted-foreground/60">
+          Keystrokes will be delivered when connected
+        </span>
+        {showCancel && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="pointer-events-auto h-5 px-2 text-xs text-muted-foreground"
+            onClick={() => updateSessionStatus(sessionId, 'closed', null)}
+          >
+            Cancel
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface TerminalPanelProps {
+  leafId?: string;
+}
+
+export function TerminalPanel({ leafId: _leafId }: TerminalPanelProps) {
   const sessions = useTerminalStore((s) => s.sessions);
   const activeSessionId = useTerminalStore((s) => s.activeSessionId);
   const primarySessionId = useTerminalStore((s) => s.primarySessionId);
@@ -187,6 +235,8 @@ export function TerminalPanel() {
   const focusPane = useTerminalStore((s) => s.focusPane);
   const searchOpen = useTerminalStore((s) => s.searchOverlayOpen);
   const closeSearchOverlay = useTerminalStore((s) => s.closeSearchOverlay);
+  const nativeNotice = useTerminalStore((s) => s.nativeTerminalNotice);
+  const setNativeNotice = useTerminalStore((s) => s.setNativeTerminalNotice);
   const activeRoot = useProjectStore((s) => s.activeRoot);
   const panelFocus = usePanelFocus('terminal');
 
@@ -201,6 +251,14 @@ export function TerminalPanel() {
   useEffect(() => {
     setDismissedRoot(null);
   }, [activeRoot]);
+
+  // Auto-dismiss native terminal notice after a timeout.
+  useEffect(() => {
+    if (!nativeNotice) return;
+    const delay = nativeNotice.type === 'success' ? 3000 : 8000;
+    const timer = setTimeout(() => setNativeNotice(null), delay);
+    return () => clearTimeout(timer);
+  }, [nativeNotice, setNativeNotice]);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const isRestartable =
@@ -248,18 +306,41 @@ export function TerminalPanel() {
           </div>
         </div>
       )}
+      {nativeNotice && (
+        <button
+          type="button"
+          className={cn(
+            'flex w-full items-center gap-2 border-b px-3 py-1 text-xs',
+            nativeNotice.type === 'success' && 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+            nativeNotice.type === 'error' && 'bg-red-500/10 text-red-700 dark:text-red-400',
+          )}
+          onClick={() => setNativeNotice(null)}
+        >
+          <span className="truncate">{nativeNotice.message}</span>
+          <X className="ml-auto h-3 w-3 shrink-0 opacity-60" aria-hidden="true" />
+        </button>
+      )}
       <div className="flex h-7 items-center border-b glass-surface glass-highlight relative" aria-label="Terminal sessions">
-        {sessions.map((sess) => (
-          <TerminalTab
-            key={sess.id}
-            session={sess}
-            isActive={activeSessionId === sess.id}
-            onActivate={() => setActiveSession(sess.id)}
-            onClose={() => closeSession(sess.id)}
-            onRestart={() => restartSession(sess.id)}
-            onRename={(name) => renameSession(sess.id, name)}
-          />
-        ))}
+        <SortableContext items={sessions.map((s) => s.id)} strategy={horizontalListSortingStrategy}>
+          {sessions.map((sess) => {
+            const dragData: DragData = {
+              tabId: sess.id,
+              sourceType: 'terminal',
+            };
+            return (
+              <SortableTabItem key={sess.id} id={sess.id} dragData={dragData}>
+                <TerminalTab
+                  session={sess}
+                  isActive={activeSessionId === sess.id}
+                  onActivate={() => setActiveSession(sess.id)}
+                  onClose={() => closeSession(sess.id)}
+                  onRestart={() => restartSession(sess.id)}
+                  onRename={(name) => renameSession(sess.id, name)}
+                />
+              </SortableTabItem>
+            );
+          })}
+        </SortableContext>
         <Button
           variant="ghost"
           size="icon"
@@ -274,7 +355,7 @@ export function TerminalPanel() {
           variant="ghost"
           size="icon"
           className="h-6 w-6"
-          onClick={() => openInSystemTerminal(activeSession?.cwd)}
+          onClick={() => openInSystemTerminal(activeSession?.cwd, setNativeNotice)}
           title="Open in system terminal (⇧⌘O)"
           aria-label="Open in system terminal"
         >
@@ -315,6 +396,9 @@ export function TerminalPanel() {
         )}
         {searchOpen && activeSessionId && (
           <TerminalSearchOverlay sessionId={activeSessionId} onClose={closeSearchOverlay} />
+        )}
+        {activeSession?.status === 'connecting' && (
+          <ConnectingOverlay sessionId={activeSession.id} />
         )}
         {isRestartable && activeSession && (
           <div className="pointer-events-none absolute inset-0 flex items-start justify-center pt-12">

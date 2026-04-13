@@ -2,13 +2,13 @@
 
 ## 3.1 패널 레이아웃 시스템 (FR-100)
 
-### FR-101: 4분할 패널 구성
+### FR-101: 패널 구성
 
-- 시스템은 4개의 주요 패널로 구성된 IDE 레이아웃을 제공해야 한다.
+- 시스템은 주요 패널로 구성된 IDE 레이아웃을 제공해야 한다.
   - **좌측**: 파일 탐색기 (수직)
-  - **중앙 상단**: 코드 에디터
-  - **중앙 하단**: 터미널
-  - **우측**: 프리뷰 패널 (수직)
+  - **중앙**: 코드 에디터
+  - **우측**: Claude 채팅 + 프리뷰 패널 (수직)
+- 내장 터미널 패널은 기본 레이아웃에서 제외된다. 대신 헤더 우측 상단의 외부 터미널 열기 버튼(`ExternalLink` 아이콘) 또는 `Cmd/Ctrl+Shift+O` 단축키로 OS 기본 터미널을 호출한다.
 - `react-resizable-panels` v4를 사용하여 구현한다.
 
 ### FR-102: 패널 리사이즈
@@ -25,9 +25,9 @@
 - 대응 키보드 단축키:
   - `Ctrl+Cmd+B` / `Ctrl+Alt+B` — 파일 탐색기 토글
   - `Ctrl+Cmd+E` / `Ctrl+Alt+E` — 에디터 토글
-  - `Ctrl+Cmd+J` / `Ctrl+Alt+J` — 터미널 토글
   - `Ctrl+Cmd+K` / `Ctrl+Alt+K` — Claude 채팅 토글
   - `Ctrl+Cmd+P` / `Ctrl+Alt+P` — 프리뷰 토글
+  - `Cmd+Shift+O` / `Ctrl+Shift+O` — 외부 터미널 열기
 
 ### FR-104: 레이아웃 상태 영속화
 
@@ -48,10 +48,28 @@
 ### FR-107: 반응형 모바일 레이아웃
 
 - 뷰포트 너비가 **1280px 미만**인 경우 단일 패널 탭 모드로 전환해야 한다.
-- 하단에 탭 바를 제공하며, 다음 5개 탭으로 패널을 전환한다:
-  - Files, Editor, Terminal, Claude, Preview
+- 하단에 탭 바를 제공하며, 다음 4개 탭으로 패널을 전환한다:
+  - Files, Editor, Claude, Preview
 - 탭 전환 시 해당 패널만 전체 화면으로 표시하고 나머지는 숨긴다.
-- 뷰포트가 1280px 이상으로 복귀하면 기존 4분할(또는 마지막 저장된) 레이아웃으로 자동 복원한다.
+- 뷰포트가 1280px 이상으로 복귀하면 기존(또는 마지막 저장된) 레이아웃으로 자동 복원한다.
+
+### FR-108: 동적 패널 분할
+
+- 사용자는 기존 패널을 가로 또는 세로로 분할하여 새로운 패널을 생성할 수 있어야 한다.
+- 분할은 재귀적 이진 트리(`SplitNode` / `LeafNode`) 구조로 관리된다.
+- 최대 분할 깊이는 4단계로 제한하여 사용 불가능한 미세 패널을 방지한다.
+- 분할된 레이아웃은 `localStorage`에 자동 저장되며 새로고침 시 복원된다.
+- 빈 패널(모든 탭이 제거된 경우)은 자동으로 제거되고 부모 split이 축소된다.
+- 탭 바 컨텍스트 메뉴에서 "Split Right", "Split Down" 옵션을 제공한다.
+
+### FR-109: 탭 드래그 앤 드롭
+
+- 사용자는 탭을 드래그하여 같은 패널 내에서 탭 순서를 변경할 수 있어야 한다.
+- `@dnd-kit/core` + `@dnd-kit/sortable` 라이브러리를 사용한다.
+- 에디터, 클로드, 터미널 패널의 탭이 모두 드래그 재정렬을 지원한다.
+- 탭을 다른 패널의 가장자리(상/하/좌/우 25% 영역)에 드롭하면 해당 방향으로 새 분할이 생성된다.
+- 드래그 중 드롭 존에 시각적 하이라이트(반투명 sky-500 오버레이)를 표시한다.
+- 드래그 활성화 거리: 5px (의도하지 않은 드래그 방지).
 
 ---
 
@@ -318,6 +336,7 @@
 - 출력 내용이 우연히 `{`로 시작해도(`cat package.json` 등) 제어 프레임으로 오인되지 않는다.
 - 터미널 파이프라인은 Claude 채팅 입력과 완전히 분리되어야 한다. `/ws/terminal`과 `/ws/claude`는 심볼 수준에서도 교차 의존이 없어야 한다.
 - 서버는 쉘을 **로그인 + 인터랙티브** 모드로 spawn해야 한다. 구체적인 쉘 해결 순서, 플래그 매핑, 환경 변수는 `FR-410`에서 정의한다.
+- **입력 큐잉**: WebSocket이 아직 `OPEN` 상태가 아닌 동안(초기 로드, 재시작 등) 사용자가 입력한 키 입력은 `inputQueue`에 버퍼링되며, WebSocket 연결 완료 즉시 순서대로 전송된다. 큐 상한은 32 KB이며, 초과 시 가장 오래된 입력부터 폐기된다. 연결 중 상태에서는 "Connecting to shell…" 오버레이가 표시되어 키 입력이 연결 후 전달됨을 안내한다.
 - **시각성 요구사항 (WCAG AA)**: `TERMINAL_THEMES`의 모든 foreground·ANSI 16 색상은 해당 테마 `background` 위에서 **4.5:1 이상의 대비율**을 만족해야 한다. 예외는 관례상 배경과 같은 톤을 쓰는 `black`/`brightBlack` 일부 엔트리(테마별로 WCAG가 실제로 충족하는 경우에만)와 오버레이로 렌더되는 `cursor`/`selectionBackground`뿐이다. 이 요구는 `tests/unit/terminal-themes-contrast.test.ts`가 자동 검증한다.
 - 팔레트는 단일 소스 `src/lib/terminal/terminal-themes.ts`에서 정의되며, `TerminalManager`는 이를 import해 `setTheme(theme)` 호출 시 모든 인스턴스에 전파한다.
 
@@ -411,6 +430,9 @@
 ### FR-411: 터미널 세션 지속성 정책
 
 - 터미널 WebSocket(`/ws/terminal`)은 **자동 재연결하지 않는다**. 연결이 예기치 않게 끊어지면 세션은 `closed` 상태가 되고, xterm 버퍼에 안내 라인이 기록된다.
+- **연결 타임아웃**: WebSocket 핸드셰이크가 15초 내에 완료되지 않으면 세션을 `closed`로 전이하고 `[connection timed out]` 메시지를 표시한다. 사용자는 Restart 버튼으로 재시도할 수 있다.
+- **연결 중 취소**: "Connecting to shell…" 오버레이에 5초 후 Cancel 버튼이 나타나며, 클릭 시 세션을 `closed`로 전이하여 Restart UI를 노출한다.
+- **WebSocket 에러 처리**: `TerminalSocket`의 `onError` 이벤트를 콘솔에 로깅하여 연결 실패 원인을 진단할 수 있다. 서버가 `error` control frame을 전송하고 세션이 아직 `connecting` 상태이면 즉시 `closed`로 전이한다.
 - 서버 측 세션 레지스트리나 ID 기반 재부착은 이 버전에서 도입하지 않는다. 로컬 데스크톱 앱 특성상 복잡도 대비 이득이 작고, 주요 단절 원인(서버 프로세스 종료, HMR 사이클)은 세션 레지스트리로 해결되지 않는다.
 - 사용자는 다음 두 경로로 세션을 복구할 수 있다:
   - **Restart**: `closed`/`exited` 상태에서 탭 인라인 Restart 버튼 또는 패널 내 플로팅 Restart 버튼, 혹은 단축키 `Cmd/Ctrl+Shift+R`을 통해 동일한 세션 ID로 새 PTY를 spawn한다. xterm 스크롤백은 보존되며 separator 라인이 삽입된다.
@@ -499,12 +521,13 @@
 - 사용자는 `Cmd/Ctrl+Shift+O` 단축키, 터미널 탭 스트립의 `ExternalLink` 아이콘 버튼, xterm 컨텍스트 메뉴의 "Open in system terminal" 항목, 또는 파일 탐색기 컨텍스트 메뉴의 "Open in system terminal" 항목을 통해 **현재 탭의 cwd**(없으면 활성 프로젝트 루트)를 OS 기본 터미널 앱에서 새 창으로 열 수 있어야 한다. 내부 xterm 세션은 영향을 받지 않는다.
 - 엔드포인트: `POST /api/terminal/open-native`, body `{ cwd?: string }`. 미지정 시 `getActiveRoot()` 사용. `cwd`는 `resolveSafe`로 프로젝트 루트 안으로 정규화되며, 파일 경로면 `path.dirname`으로 자동 보정된다.
 - 플랫폼별 launcher 결정은 `src/app/api/terminal/open-native/launchers.ts`의 순수 함수 `resolveLauncher({platform, cwd, env, exists})`가 담당한다:
-  - **darwin**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `open -na <value> <cwd>` / 그 외에는 `/Applications/iTerm.app` 존재 시 iTerm, 없으면 Terminal.app.
+  - **darwin**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `open -na <value> <cwd>` (override) / 그 외에는 `/Applications/iTerm.app` 존재 시 iTerm, 없으면 Terminal.app. 내장 앱(iTerm, Terminal.app)은 **AppleScript**(osascript)를 사용하여 새 창을 열고 cwd를 정확히 설정한다. `open -na` 방식 대신 AppleScript를 사용함으로써 cwd가 "열 파일"이 아닌 작업 디렉토리로 올바르게 적용된다.
   - **win32**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `<value> -d <cwd>` / 없으면 `%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe` 탐지 후 Windows Terminal / 최후로 `cmd.exe /c start "" cmd.exe /K cd /d <cwd>`.
-  - **linux/BSD**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `$TERMINAL` → `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xfce4-terminal` → `tilix` → `alacritty` → `kitty` → `wezterm` → `xterm` 순으로 PATH 탐색. cwd 전달 플래그는 각 emulator별로 다르며(`--working-directory`, `-d`, `start --cwd` 등) 테이블로 캡슐화된다. `xterm`은 `-e 'cd <escaped> && exec $SHELL'`로 폴백한다.
+  - **linux/BSD**: `CLAUDEGUI_EXTERNAL_TERMINAL` → `$TERMINAL` → `x-terminal-emulator` → `gnome-terminal` → `konsole` → `xfce4-terminal` → `tilix` → `alacritty` → `kitty` → `wezterm` → `foot` → `rio` → `xterm` 순으로 PATH 탐색. cwd 전달 플래그는 각 emulator별로 다르며(`--working-directory`, `-d`, `start --cwd` 등) 테이블로 캡슐화된다. `xterm`은 `-e 'cd <escaped> && exec $SHELL'`로 폴백한다.
 - 환경 변수 `CLAUDEGUI_EXTERNAL_TERMINAL`로 OS 기본값을 override할 수 있다. 값은 macOS에서는 `open -a`의 앱 이름으로, Linux에서는 binary 이름으로, Windows에서는 실행 파일 경로로 해석된다.
 - 오류 처리: 설치된 터미널이 없거나 override가 PATH에서 찾을 수 없으면 `NoLauncherError` → HTTP 501 (`code: 4501`). `spawn` 실패(ENOENT 등)는 100 ms 윈도우 안에서 async `error` 이벤트를 race해 HTTP 500 (`code: 5500`) + 이유 문자열로 보고한다. `resolveSafe` 위반은 403 (`code: 4403`). cwd 미존재는 404 (`code: 4404`).
-- 보안: 새 창은 `spawn(..., { detached: true, stdio: 'ignore' })` + `child.unref()`로 분리 실행되며 클라이언트는 stdout/stderr을 소비하지 않는다. 서버 `127.0.0.1` 바인딩 전제를 유지하고 `0.0.0.0` 노출을 금한다.
+- 보안: 새 창은 `spawn(..., { detached: true, stdio: 'ignore', cwd: targetDir })` + `child.unref()`로 분리 실행되며 클라이언트는 stdout/stderr을 소비하지 않는다. 서버 `127.0.0.1` 바인딩 전제를 유지하고 `0.0.0.0` 노출을 금한다.
+- **인라인 피드백**: 성공 시 터미널 패널 상단에 초록 배너("Opened in {launcher}")가 3초간 표시되며, 실패 시 빨간 배너(오류 메시지)가 8초간 표시된다. `alert()` 대신 비차단 인라인 알림을 사용한다.
 
 ---
 
@@ -770,6 +793,8 @@
 - `iframe`의 `srcdoc` 속성을 통해 HTML을 렌더링해야 한다.
 - `sandbox="allow-scripts"` 적용 (`allow-same-origin` 금지).
 - CSS만 변경된 경우 `postMessage`를 통해 스타일만 업데이트 (iframe 리로드 방지).
+- 파일 선택 시 콘텐츠를 즉시 로드해야 한다. 비동기 fetch는 취소 가능해야 하며(cancellation flag), 파일 전환 시 이전 콘텐츠를 즉시 초기화하여 stale 콘텐츠가 표시되지 않도록 한다.
+- 구현: `src/components/panels/preview/preview-router.tsx` (콘텐츠 로딩 + 취소 로직), `src/components/panels/preview/html-preview.tsx` (iframe 렌더링).
 
 ### FR-603: PDF 프리뷰
 
@@ -902,6 +927,18 @@
 - 시스템 기본 음성을 사용하며 별도의 음성 선택 UI는 제공하지 않는다.
 - 구현: `src/hooks/use-speech-synthesis.ts`(Web Speech API 래퍼 훅), `src/lib/preview/extract-preview-text.ts`(텍스트 추출 유틸리티), `src/components/panels/preview/preview-panel.tsx`(헤더 TTS 버튼).
 
+### FR-616: 프리뷰 직접 편집 모드 (v0.7)
+
+- 텍스트 기반 프리뷰(`html`, `markdown`)는 **분할 뷰 편집 모드**를 제공해야 한다. 슬라이드(`slides`)는 기존 FR-703 편집 모드를 유지한다.
+- 프리뷰 패널 헤더에 `Pencil` 아이콘의 편집 토글 버튼을 두며, `html` 또는 `markdown` 타입이고 `viewMode === 'rendered'`일 때만 표시한다. 활성 시 `bg-accent`로 강조한다.
+- 편집 모드 상태는 `usePreviewStore.editMode`로 관리하며, `setFile` 호출 시 자동으로 `false`로 리셋된다.
+- 편집 모드 진입 시 다음 분할 뷰를 제공한다:
+  - **좌측 (flex-1)**: `<textarea>` 기반 코드 편집 영역. monospace 폰트, Tab 키 공백 삽입 지원.
+  - **우측 (w-2/5)**: 실시간 프리뷰. HTML은 `iframe srcdoc`(300ms 디바운스), Markdown은 `react-markdown`(300ms 디바운스)으로 렌더.
+- **자동 저장**: 마지막 키 입력 후 1초 디바운스로 자동 저장한다. 에디터 탭이 열려 있으면 `updateTabContent`로 동기화하고, `filesApi.write()`로 디스크에 기록한다.
+- 편집 모드 헤더 레이블은 `"{type} · edit"`으로 표시한다.
+- 구현: `src/stores/use-preview-store.ts`(`editMode`, `setEditMode`, `toggleEditMode`), `src/components/panels/preview/html-editor.tsx`(HTML 분할 편집기), `src/components/panels/preview/markdown-editor.tsx`(Markdown 분할 편집기), `src/components/panels/preview/preview-router.tsx`(편집 모드 라우팅), `src/components/panels/preview/preview-panel.tsx`(헤더 편집 버튼).
+
 ---
 
 ## 3.7 프레젠테이션 기능 (FR-700)
@@ -981,9 +1018,10 @@
 
 - `Cmd+B` / `Ctrl+B`로 파일 탐색기 패널을 토글할 수 있어야 한다.
 
-### FR-804: 터미널 토글
+### FR-804: 외부 터미널 열기
 
-- `Cmd+J` / `Ctrl+J`로 터미널 패널을 토글할 수 있어야 한다.
+- `Cmd+Shift+O` / `Ctrl+Shift+O` 또는 헤더 우측 상단 `ExternalLink` 아이콘 버튼으로 OS 기본 터미널 앱을 현재 프로젝트 루트에서 연다.
+- 내장 터미널 패널은 기본 레이아웃에서 제외되었으므로 `Cmd+J` 토글은 더 이상 제공하지 않는다.
 
 ### FR-804-1: 에디터 토글
 
@@ -1439,3 +1477,11 @@
 - `browserId`가 누락된 요청은 기존 글로벌 싱글톤으로 폴백하여 하위 호환성을 유지한다.
 - 연결 해제 후 30분이 경과한 세션은 자동으로 GC된다 (터미널 세션 레지스트리와 동일 패턴).
 - 구현: `src/lib/project/browser-session-registry.mjs`, `server.js`, `server-handlers/files-handler.mjs`, `server-handlers/claude-handler.mjs`, `server-handlers/terminal-handler.mjs`.
+
+### FR-1501: 멀티 브라우저 Claude 채팅 동시 실행
+
+- 복수의 브라우저(또는 탭)에서 동시에 Claude 채팅 쿼리를 실행할 수 있어야 한다.
+- 각 브라우저의 쿼리는 독립적인 Agent SDK 프로세스를 spawn하여 처리된다. 한 브라우저의 쿼리가 다른 브라우저의 쿼리를 블로킹하지 않는다.
+- 세션 디스크 영속화를 비활성화(`persistSession: false`)하여 동일 프로젝트에서 여러 CLI 프로세스 간의 세션 파일 잠금 충돌을 방지한다. 세션 이어쓰기(`resume`)는 서버 프로세스 생애주기 내에서만 동작한다.
+- 활성 Query 인스턴스는 `browserId` 기준으로 추적되어 MCP 서버 상태 조회(`getMcpServerStatus`)가 브라우저별로 올바른 Query에서 데이터를 가져온다.
+- 구현: `server-handlers/claude-handler.mjs`, `src/app/api/mcp/status/route.ts`.

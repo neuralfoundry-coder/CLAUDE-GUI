@@ -34,6 +34,7 @@ import {
 const HIGH_WATERMARK = 100 * 1024;
 const LOW_WATERMARK = 10 * 1024;
 const INPUT_CHUNK_SIZE = 4 * 1024;
+const INPUT_QUEUE_MAX_BYTES = 32 * 1024;
 
 type ReservedKeyPredicate = (event: KeyboardEvent) => boolean;
 
@@ -69,14 +70,51 @@ interface TerminalInstance {
   opened: boolean;
   exitCode: number | null;
   cwd: string | null;
+  /** Keystrokes buffered while WebSocket is not yet OPEN. Flushed on connect. */
+  inputQueue: string[];
+  inputQueueBytes: number;
 }
 
 type SessionListener = (id: string, status: TerminalInstanceStatus, exitCode: number | null) => void;
 type CwdListener = (id: string, cwd: string | null) => void;
 type ActivityListener = (id: string) => void;
 
+/** Cached xterm module imports. Resolved once so subsequent sessions pay zero import cost. */
+type XtermModules = Awaited<ReturnType<typeof loadXtermModules>>;
+let xtermModulesPromise: Promise<XtermModules> | null = null;
+
+function loadXtermModules() {
+  return Promise.all([
+    import('@xterm/xterm'),
+    import('@xterm/addon-fit'),
+    import('@xterm/addon-webgl').catch(() => null),
+    import('@xterm/addon-search'),
+    import('@xterm/addon-web-links'),
+  ] as const);
+}
+
+function getXtermModules(): Promise<XtermModules> {
+  if (!xtermModulesPromise) {
+    xtermModulesPromise = loadXtermModules().catch((err) => {
+      // Clear the cache so subsequent calls retry instead of replaying
+      // the same rejection forever.
+      xtermModulesPromise = null;
+      throw err;
+    });
+  }
+  return xtermModulesPromise;
+}
+
+// Pre-warm xterm imports as soon as this module is loaded by the browser.
+if (typeof window !== 'undefined') {
+  getXtermModules().catch(() => {});
+}
+
+const CONNECT_TIMEOUT_MS = 15_000;
+
 class TerminalManager {
   private instances = new Map<string, TerminalInstance>();
+  private connectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private listeners = new Set<SessionListener>();
   private cwdListeners = new Set<CwdListener>();
   private activityListeners = new Set<ActivityListener>();
@@ -193,6 +231,14 @@ class TerminalManager {
     return () => this.activityListeners.delete(listener);
   }
 
+  private clearConnectTimer(id: string): void {
+    const timer = this.connectTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.connectTimers.delete(id);
+    }
+  }
+
   private emit(inst: TerminalInstance): void {
     for (const l of this.listeners) {
       try {
@@ -231,13 +277,7 @@ class TerminalManager {
     if (typeof window === 'undefined') return;
     if (this.instances.has(id)) return;
 
-    const [xtermMod, fitMod, webglMod, searchMod, linksMod] = await Promise.all([
-      import('@xterm/xterm'),
-      import('@xterm/addon-fit'),
-      import('@xterm/addon-webgl').catch(() => null),
-      import('@xterm/addon-search'),
-      import('@xterm/addon-web-links'),
-    ]);
+    const [xtermMod, fitMod, webglMod, searchMod, linksMod] = await getXtermModules();
 
     // Idempotency guard for concurrent callers.
     if (this.instances.has(id)) return;
@@ -288,6 +328,8 @@ class TerminalManager {
       opened: false,
       exitCode: null,
       cwd: initialCwd,
+      inputQueue: [],
+      inputQueueBytes: 0,
     };
 
     // Register a custom link provider that matches file paths with optional
@@ -319,7 +361,17 @@ class TerminalManager {
     }
 
     term.onData((data) => {
-      if (inst.ws.readyState !== WebSocket.OPEN) return;
+      if (inst.ws.readyState !== WebSocket.OPEN) {
+        // Buffer keystrokes while WebSocket is connecting so they are not lost.
+        inst.inputQueue.push(data);
+        inst.inputQueueBytes += data.length;
+        // Evict oldest entries if the queue exceeds the cap.
+        while (inst.inputQueueBytes > INPUT_QUEUE_MAX_BYTES && inst.inputQueue.length > 0) {
+          const evicted = inst.inputQueue.shift()!;
+          inst.inputQueueBytes -= evicted.length;
+        }
+        return;
+      }
       this.sendInput(inst, data);
     });
 
@@ -365,17 +417,33 @@ class TerminalManager {
   }
 
   private createSocket(inst: TerminalInstance): TerminalSocket {
-    return createTerminalSocket({
+    const socket = createTerminalSocket({
       url: this.buildSocketUrl(inst),
       onOpen: (ws) => {
+        this.clearConnectTimer(inst.id);
         inst.status = 'open';
         useConnectionStore.getState().setStatus('terminal', 'open');
         this.emit(inst);
         const cols = inst.lastCols || inst.term.cols || 120;
         const rows = inst.lastRows || inst.term.rows || 30;
         ws.send(JSON.stringify({ type: 'resize', cols, rows } satisfies TerminalClientControl));
+        // Flush any keystrokes that were buffered while connecting.
+        if (inst.inputQueue.length > 0) {
+          for (const chunk of inst.inputQueue) {
+            this.sendInput(inst, chunk);
+          }
+          inst.inputQueue.length = 0;
+          inst.inputQueueBytes = 0;
+        }
       },
-      onClose: () => {
+      onError: (event) => {
+        console.warn(`[terminal] WebSocket error for session ${inst.id}`, event);
+      },
+      onClose: (event) => {
+        this.clearConnectTimer(inst.id);
+        console.debug(`[terminal] socket closed for ${inst.id}`, {
+          code: event?.code, reason: event?.reason, wasClean: event?.wasClean,
+        });
         // `exited` is set by the server-side exit frame handler; preserve it.
         if (inst.status !== 'exited') {
           inst.status = 'closed';
@@ -386,6 +454,27 @@ class TerminalManager {
       },
       onMessage: (event) => this.handleMessage(inst, event),
     });
+
+    // Safety net: if the WebSocket handshake hangs, force-close after timeout.
+    this.clearConnectTimer(inst.id);
+    this.connectTimers.set(
+      inst.id,
+      setTimeout(() => {
+        this.connectTimers.delete(inst.id);
+        if (inst.status === 'connecting') {
+          console.warn(`[terminal] connection timeout for session ${inst.id}`);
+          inst.status = 'closed';
+          inst.term.write(
+            '\r\n\x1b[31m[connection timed out — press Restart to try again]\x1b[0m\r\n',
+          );
+          useConnectionStore.getState().setStatus('terminal', 'closed');
+          this.emit(inst);
+          try { socket.close(); } catch { /* ignore */ }
+        }
+      }, CONNECT_TIMEOUT_MS),
+    );
+
+    return socket;
   }
 
   /**
@@ -485,6 +574,7 @@ class TerminalManager {
     const inst = this.instances.get(id);
     if (!inst) return;
     if (inst.status !== 'closed' && inst.status !== 'exited') return;
+    this.clearConnectTimer(id);
 
     const now = new Date();
     const hh = String(now.getHours()).padStart(2, '0');
@@ -497,6 +587,8 @@ class TerminalManager {
     inst.pendingBytes = 0;
     inst.paused = false;
     inst.exitCode = null;
+    inst.inputQueue.length = 0;
+    inst.inputQueueBytes = 0;
     inst.status = 'connecting';
     this.emit(inst);
 
@@ -537,6 +629,11 @@ class TerminalManager {
     }
     if (msg.type === 'error') {
       inst.term.write(`\r\n\x1b[31m[terminal error: ${msg.message}]\x1b[0m\r\n`);
+      if (inst.status === 'connecting') {
+        inst.status = 'closed';
+        useConnectionStore.getState().setStatus('terminal', 'closed');
+        this.emit(inst);
+      }
       return;
     }
     if (msg.type === 'session') {
@@ -660,8 +757,7 @@ class TerminalManager {
     }
 
     this.observe(inst);
-    this.scheduleFit(inst);
-    inst.term.focus();
+    this.scheduleFit(inst, 0, true);
   }
 
   detach(id: string): void {
@@ -781,6 +877,7 @@ class TerminalManager {
   closeSession(id: string): void {
     const inst = this.instances.get(id);
     if (!inst) return;
+    this.clearConnectTimer(id);
     this.detach(id);
     // Tell the server to destroy the registry record (kill the PTY now)
     // instead of detaching with a GC grace period. Must go out BEFORE
@@ -828,13 +925,20 @@ class TerminalManager {
     }
   }
 
-  private scheduleFit(inst: TerminalInstance, attempt = 0): void {
+  /**
+   * Schedule a fit attempt. Uses rAF for the first 5 attempts, then
+   * switches to setTimeout(100ms) for 5 more to survive slow panel layouts.
+   * When `focusOnSuccess` is true, the terminal is focused after the first
+   * successful fit (used by `attach()` to defer focus until the terminal
+   * has a valid size).
+   */
+  private scheduleFit(inst: TerminalInstance, attempt = 0, focusOnSuccess = false): void {
     if (!inst.currentHost || !inst.opened) return;
-    requestAnimationFrame(() => {
+    const tryFit = () => {
       if (!inst.currentHost) return;
       const { clientWidth, clientHeight } = inst.currentHost;
       if (clientWidth === 0 || clientHeight === 0) {
-        if (attempt < 10) this.scheduleFit(inst, attempt + 1);
+        if (attempt < 10) this.scheduleFit(inst, attempt + 1, focusOnSuccess);
         return;
       }
       try {
@@ -849,7 +953,17 @@ class TerminalManager {
         inst.lastRows = rows;
         this.sendControl(inst, { type: 'resize', cols, rows });
       }
-    });
+      if (focusOnSuccess) {
+        inst.term.focus();
+      }
+    };
+    // First 5 attempts use rAF (~83ms at 60fps), remaining use setTimeout
+    // for broader coverage when panel layout takes longer to settle.
+    if (attempt < 5) {
+      requestAnimationFrame(tryFit);
+    } else {
+      setTimeout(tryFit, 100);
+    }
   }
 }
 

@@ -231,7 +231,7 @@ export function PreviewDownloadMenu() {
           <Download className="h-3 w-3" aria-hidden="true" />
         </Button>
         {open && (
-          <div className="absolute right-0 top-full z-20 mt-1 min-w-[220px] rounded-md border bg-popover p-1 shadow-lg">
+          <div className="absolute right-0 top-full z-20 mt-1 min-w-[220px] rounded-md border bg-popover text-popover-foreground p-1 shadow-lg">
             <div className="px-2 py-1 text-[10px] uppercase text-muted-foreground">
               {resolved.fromLive
                 ? streamingBadge
@@ -243,7 +243,7 @@ export function PreviewDownloadMenu() {
               <button
                 key={opt.format}
                 type="button"
-                className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground"
                 onClick={() => {
                   void onPick(opt.format);
                 }}
