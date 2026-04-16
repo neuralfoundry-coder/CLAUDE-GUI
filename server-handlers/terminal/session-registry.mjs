@@ -37,10 +37,28 @@ const GC_TIMEOUT_MS = 30 * 60 * 1000;
  *   }
  */
 
+/** Interval for proactive ring buffer trimming of idle sessions. */
+const RING_TRIM_INTERVAL_MS = 5 * 60 * 1000;
+
 class TerminalSessionRegistry {
   constructor() {
     /** @type {Map<string, any>} */
     this.sessions = new Map();
+
+    // Proactive ring buffer trimming: every 5 minutes, halve the ring buffer
+    // of detached (idle) sessions to reduce memory pressure.
+    this._trimInterval = setInterval(() => {
+      for (const record of this.sessions.values()) {
+        if (record.attached === 0 && !record.exited && record.ringBytes > 0) {
+          const halfLimit = Math.floor(RING_BUFFER_BYTES / 2);
+          while (record.ringBytes > halfLimit && record.ringBuffer.length > 1) {
+            const first = record.ringBuffer.shift();
+            record.ringBytes -= first.length;
+          }
+        }
+      }
+    }, RING_TRIM_INTERVAL_MS);
+    if (this._trimInterval.unref) this._trimInterval.unref();
   }
 
   /**
@@ -86,12 +104,9 @@ class TerminalSessionRegistry {
           dbg.error('exit listener failed', err);
         }
       }
-      // Schedule cleanup so clients have a chance to receive the exit frame.
-      setTimeout(() => {
-        if (this.sessions.get(id) === record) {
-          this.destroy(id);
-        }
-      }, 1000);
+      // Cleanup happens when the WebSocket closes (detach) or on explicit
+      // 'close' frame. No artificial delay — the exit frame is sent before
+      // the WS close in the terminal handler.
     });
 
     this.sessions.set(id, record);

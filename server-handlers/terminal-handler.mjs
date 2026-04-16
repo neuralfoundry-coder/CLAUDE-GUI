@@ -15,22 +15,36 @@ const BATCH_INTERVAL_MS = 16;
 const MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const PTY_PAUSE_THRESHOLD = 256 * 1024;
 
+// node-pty loading with retry (max 3 attempts)
+let _ptyModule = null;
+let _ptyLoadAttempts = 0;
+const MAX_PTY_LOAD_ATTEMPTS = 3;
+
 async function loadPty() {
+  if (_ptyModule) return _ptyModule;
+  if (_ptyLoadAttempts >= MAX_PTY_LOAD_ATTEMPTS) return null;
+  _ptyLoadAttempts++;
   try {
     const mod = await import('node-pty');
-    return mod.default ?? mod;
+    _ptyModule = mod.default ?? mod;
+    return _ptyModule;
   } catch (err) {
-    dbg.error('failed to load node-pty', err);
+    dbg.error(`failed to load node-pty (attempt ${_ptyLoadAttempts}/${MAX_PTY_LOAD_ATTEMPTS})`, err);
     return null;
   }
 }
 
 function sendControl(ws, msg) {
-  if (ws.readyState !== ws.OPEN) return;
+  if (ws.readyState !== ws.OPEN) {
+    dbg.warn('sendControl skipped: ws not open', { type: msg.type });
+    return false;
+  }
   try {
     ws.send(JSON.stringify(msg));
-  } catch {
-    /* ignore */
+    return true;
+  } catch (err) {
+    dbg.error('sendControl failed', { type: msg.type, err: String(err?.message || err) });
+    return false;
   }
 }
 
@@ -42,7 +56,7 @@ function sendControl(ws, msg) {
  *   2. The current ProjectContext active root (`getActiveRoot()`).
  *   3. The user's home directory.
  */
-function resolveInitialCwd(req) {
+async function resolveInitialCwd(req) {
   const browserId = req?.browserId || null;
   const fallback = () => {
     const root = browserSessionRegistry.getRoot(browserId);
@@ -56,13 +70,15 @@ function resolveInitialCwd(req) {
     const root = browserSessionRegistry.getRoot(browserId);
     const abs = path.isAbsolute(raw) ? path.resolve(raw) : root ? path.resolve(root, raw) : null;
     if (!abs) return fallback();
-    if (root && !(abs === root || abs.startsWith(root + path.sep))) {
-      dbg.warn('reject cwd outside project root', { raw, abs, root });
+    // Resolve symlinks to prevent TOCTOU escapes
+    const real = await fs.promises.realpath(abs).catch(() => abs);
+    if (root && !(real === root || real.startsWith(root + path.sep))) {
+      dbg.warn('reject cwd outside project root (symlink resolved)', { raw, abs, real, root });
       return fallback();
     }
-    const stat = fs.statSync(abs);
-    if (!stat.isDirectory()) return path.dirname(abs);
-    return abs;
+    const stat = await fs.promises.stat(real);
+    if (!stat.isDirectory()) return path.dirname(real);
+    return real;
   } catch (err) {
     dbg.warn('cwd query resolution failed', err);
     return fallback();
@@ -88,7 +104,7 @@ function parseQuerySessionId(req) {
 async function createNewSession(req) {
   const pty = await loadPty();
   if (!pty) return null;
-  const cwd = resolveInitialCwd(req);
+  const cwd = await resolveInitialCwd(req);
   const { shell, args: shellArgs } = resolveShell();
   const env = buildPtyEnv(shell);
   dbg.info('spawning PTY', { shell, shellArgs, cwd });
@@ -244,9 +260,12 @@ export default async function terminalHandler(ws, req) {
       if (typeof ptyProcess.pause === 'function') {
         ptyProcess.pause();
         ptyPaused = true;
+        sendControl(ws, { type: 'backpressure_ack', paused: true, bufferedBytes });
       }
-    } catch {
-      /* ignore */
+    } catch (err) {
+      dbg.error('PTY pause failed', err);
+      // ptyPaused stays false — correct state
+      sendControl(ws, { type: 'backpressure_ack', paused: false, bufferedBytes });
     }
   };
 
@@ -256,9 +275,11 @@ export default async function terminalHandler(ws, req) {
       if (typeof ptyProcess.resume === 'function') {
         ptyProcess.resume();
         ptyPaused = false;
+        sendControl(ws, { type: 'backpressure_ack', paused: false, bufferedBytes });
       }
-    } catch {
-      /* ignore */
+    } catch (err) {
+      dbg.error('PTY resume failed', err);
+      sendControl(ws, { type: 'backpressure_ack', paused: true, bufferedBytes });
     }
   };
 

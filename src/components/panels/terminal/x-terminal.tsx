@@ -8,7 +8,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
-import { terminalManager } from '@/lib/terminal/terminal-manager';
+import { terminalManager } from '@/lib/terminal/terminal-registry';
 import { terminalApi } from '@/lib/api-client';
 import { useTerminalStore } from '@/stores/use-terminal-store';
 

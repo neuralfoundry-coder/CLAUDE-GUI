@@ -293,13 +293,13 @@ function syncExternalChange(path: string) {
 
 `TerminalPanel` follows a **thin-attach pattern** so that React's lifecycle cannot touch PTY processes. Both the xterm.js `Terminal` instance and the WebSocket connection are owned by a `TerminalManager` singleton that lives outside the component tree; React components merely supply a DOM host.
 
-- **Owner**: `TerminalManager` singleton (`src/lib/terminal/terminal-manager.ts`)
+- **Owner**: `TerminalRegistry` singleton (`src/lib/terminal/terminal-registry.ts`) + 4 separated modules (`terminal-instance.ts`, `terminal-connection.ts`, `terminal-session-controller.ts`). See `terminal-v2-design.md` for details
 - **Attach point**: `XTerminalAttach` (`src/components/panels/terminal/x-terminal.tsx`) — the host div is wrapped in a Radix `ContextMenu`. Its `<div>` background is bound to `style={{ background: 'var(--terminal-bg)' }}` so theme toggles, tab switches, and first-mount never flash black (FR-419).
 - **Container + tab UI**: `TerminalPanel` (`src/components/panels/terminal/terminal-panel.tsx`) — inline rename, cwd label, unread indicator, project-change banner, Restart chip, split-pane renderer, "Open in system terminal" `ExternalLink` button (`FR-420`)
 - **Search overlay**: `TerminalSearchOverlay` (`src/components/panels/terminal/terminal-search-overlay.tsx`)
 - **Theme palette**: `src/lib/terminal/terminal-themes.ts` (`TERMINAL_THEMES`) — single source of truth. Exports `ConcreteTheme` (all themes except `'system'`) and `resolveTheme()`. `resolveTheme(theme)` evaluates `window.matchMedia('(prefers-color-scheme: dark)')` when the input is `'system'` and returns `'dark'`/`'light'`; otherwise it passes the theme through unchanged. `TerminalManager` imports and propagates it via `setTheme`. The hex values must stay in parity with `--terminal-bg`/`--terminal-fg` in `globals.css`; `tests/unit/terminal-themes-contrast.test.ts` catches drift.
 - **State**: `useTerminalStore` (`src/stores/use-terminal-store.ts`) — tab list, active session ID, session status (`connecting` / `open` / `closed` / `exited`), cwd, displayName, unread, searchOverlayOpen, splitEnabled, primarySessionId, secondarySessionId, activePaneIndex
-- **Socket wrapper**: `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`) — no auto-reconnect. When a reconnect is needed the manager opens a new socket carrying the `serverSessionId` via URL query (FR-414).
+- **Connection manager**: `src/lib/terminal/terminal-connection.ts` (`TerminalConnection`) — auto-reconnect with exponential backoff (5 attempts) + input queue + backpressure. Carries `serverSessionId` via URL to reattach to existing PTY (FR-414).
 - **Server-side session registry**: `server-handlers/terminal/session-registry.mjs` (`TerminalSessionRegistry` singleton) — manages PTY lifetime, 256 KB ring buffer, 30-minute GC, and transient/exit listener fan-out. ADR-020.
 - **Shell resolver**: `server-handlers/terminal/shell-resolver.mjs` (`resolveShell`, `shellFlags`, `buildPtyEnv`)
 - **OS terminal bypass**: `src/app/api/terminal/open-native/route.ts` (POST endpoint), `src/app/api/terminal/open-native/launchers.ts` (`resolveLauncher` pure function with a per-platform command table), `terminalApi.openNative` client wrapper, and the `Cmd/Ctrl+Shift+O` global shortcut. See `FR-420`.
@@ -1026,7 +1026,7 @@ On Claude query:
 |------|------|
 | `src/lib/project/browser-session-registry.mjs` | `browserId → { root, lastSeen }` mapping management, refCount-based watcher sharing, 30-min GC |
 | `server.js` | Extracts `?browserId=` on WebSocket upgrade, extracts `X-Browser-Id` header on REST requests |
-| `server-handlers/files-handler.mjs` | Subscribes watchers by per-`browserId` project root, sends `project-changed` events only to matching `browserId` connections |
+| `server-handlers/files-handler.mjs` | Subscribes watchers by per-`browserId` project root, sends `project-changed` events only to matching `browserId` connections. Events are debounced in a 150ms batch window to prevent client flooding during bulk file changes (npm install, git checkout) |
 | `server-handlers/claude-handler.mjs` | Uses per-`browserId` project root as `runQuery()` cwd, `persistSession: false` to prevent session lock contention, `_activeQueries` Map for per-browser active Query tracking |
 | `server-handlers/terminal-handler.mjs` | Uses per-`browserId` project root as initial cwd for PTY spawn |
 

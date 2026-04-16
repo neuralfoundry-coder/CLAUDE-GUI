@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { terminalManager } from '@/lib/terminal/terminal-manager';
+import { terminalManager } from '@/lib/terminal/terminal-registry';
 
 interface TerminalSearchOverlayProps {
   sessionId: string;

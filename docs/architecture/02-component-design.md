@@ -289,13 +289,13 @@ function syncExternalChange(path: string) {
 
 `TerminalPanel`은 React 수명주기가 PTY 프로세스를 건드리지 못하게 만들기 위해 **얇은 attach 패턴**을 따른다. xterm.js `Terminal` 인스턴스와 WebSocket 연결은 모두 컴포넌트 트리 바깥의 `TerminalManager` 싱글턴이 소유하며, React 컴포넌트는 단지 DOM 호스트를 제공할 뿐이다.
 
-- **소유**: `TerminalManager` 싱글턴(`src/lib/terminal/terminal-manager.ts`)
+- **소유**: `TerminalRegistry` 싱글턴(`src/lib/terminal/terminal-registry.ts`) + 4개 분리 모듈 (`terminal-instance.ts`, `terminal-connection.ts`, `terminal-session-controller.ts`). 상세 설계: `terminal-v2-design.md`
 - **attach point**: `XTerminalAttach`(`src/components/panels/terminal/x-terminal.tsx`) — Radix `ContextMenu`로 감싼 호스트 div. 호스트 `<div>`의 배경은 `style={{ background: 'var(--terminal-bg)' }}`로 CSS 변수에 바인딩되어 테마 토글·탭 전환·첫 마운트에서 검정 플래시를 내지 않는다(FR-419).
 - **컨테이너 + 탭 UI**: `TerminalPanel`(`src/components/panels/terminal/terminal-panel.tsx`) — 인라인 rename, cwd 라벨, unread 인디케이터, 프로젝트 전환 배너, Restart 칩, 스플릿 pane 렌더러, "Open in system terminal" `ExternalLink` 버튼 (`FR-420`)
 - **검색 오버레이**: `TerminalSearchOverlay`(`src/components/panels/terminal/terminal-search-overlay.tsx`)
 - **테마 팔레트**: `src/lib/terminal/terminal-themes.ts` (`TERMINAL_THEMES`) — 단일 소스. `ConcreteTheme` 타입(`'system'`을 제외한 실제 색상 테마)과 `resolveTheme()` 유틸리티를 노출한다. `resolveTheme(theme)`는 `'system'`이면 `window.matchMedia('(prefers-color-scheme: dark)')`를 평가해 `'dark'`/`'light'`로 변환하고, 그 외에는 그대로 반환한다. `TerminalManager`가 import 해 `setTheme`으로 전파하며, `globals.css`의 `--terminal-bg`/`--terminal-fg` CSS 변수와 hex 파리티를 유지해야 한다(`tests/unit/terminal-themes-contrast.test.ts`가 검증).
 - **상태**: `useTerminalStore`(`src/stores/use-terminal-store.ts`) — 탭 목록, 활성 세션 ID, 세션 상태(`connecting`/`open`/`closed`/`exited`), cwd, displayName, unread, searchOverlayOpen, splitEnabled, primarySessionId, secondarySessionId, activePaneIndex
-- **소켓 래퍼**: `src/lib/terminal/terminal-socket.ts` (`TerminalSocket`) — 자동 재연결 없음 (ReconnectingWebSocket 대비). 재연결이 필요할 때는 매니저가 `serverSessionId`를 URL에 실어 새 소켓을 연다(FR-414).
+- **연결 관리**: `src/lib/terminal/terminal-connection.ts` (`TerminalConnection`) — 자동 재연결(지수 백오프 5회) + 입력 큐 + 백프레셔. `serverSessionId`를 URL에 실어 기존 PTY에 재접속한다(FR-414).
 - **서버측 세션 레지스트리**: `server-handlers/terminal/session-registry.mjs` (`TerminalSessionRegistry` 싱글턴) — PTY 수명·링 버퍼(256 KB)·GC(30분)·transient/exit 리스너 fan-out 관리. ADR-020.
 - **쉘 해결기**: `server-handlers/terminal/shell-resolver.mjs` (`resolveShell`, `shellFlags`, `buildPtyEnv`)
 - **OS 터미널 바이패스**: `src/app/api/terminal/open-native/route.ts` (POST 엔드포인트), `src/app/api/terminal/open-native/launchers.ts` (`resolveLauncher` 순수 함수, 플랫폼별 커맨드 테이블), `terminalApi.openNative`(클라이언트 API), `Cmd/Ctrl+Shift+O` 전역 단축키. 상세는 `FR-420`.
@@ -993,7 +993,7 @@ Claude 쿼리 시:
 |------|------|
 | `src/lib/project/browser-session-registry.mjs` | `browserId → { root, lastSeen }` 매핑 관리, refCount 기반 와처 공유, 30분 GC |
 | `server.js` | WebSocket upgrade 시 `?browserId=` 추출, REST 미들웨어에서 `X-Browser-Id` 헤더 추출 |
-| `server-handlers/files-handler.mjs` | `browserId`별 프로젝트 루트로 와처 구독, `project-changed` 이벤트를 해당 `browserId` 연결에만 전송 |
+| `server-handlers/files-handler.mjs` | `browserId`별 프로젝트 루트로 와처 구독, `project-changed` 이벤트를 해당 `browserId` 연결에만 전송. 150ms 배치 윈도우로 이벤트를 디바운싱하여 대량 파일 변경(npm install, git checkout) 시 클라이언트 폭주를 방지 |
 | `server-handlers/claude-handler.mjs` | `browserId`별 프로젝트 루트를 `runQuery()`의 cwd로 사용, `persistSession: false`로 세션 잠금 충돌 방지, `_activeQueries` Map으로 브라우저별 활성 Query 추적 |
 | `server-handlers/terminal-handler.mjs` | `browserId`별 프로젝트 루트를 PTY spawn의 초기 cwd로 사용 |
 

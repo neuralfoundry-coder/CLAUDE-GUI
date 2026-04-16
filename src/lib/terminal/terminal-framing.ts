@@ -70,15 +70,27 @@ export interface TerminalSessionServerControl {
   replay: boolean;
 }
 
+/**
+ * Sent by the server in response to client `pause`/`resume` frames,
+ * confirming the actual PTY state. Prevents state mismatch where the
+ * client thinks the server paused but the pause() call actually failed.
+ */
+export interface TerminalBackpressureAckServerControl {
+  type: 'backpressure_ack';
+  paused: boolean;
+  bufferedBytes: number;
+}
+
 export type TerminalServerControl =
   | TerminalExitServerControl
   | TerminalErrorServerControl
-  | TerminalSessionServerControl;
+  | TerminalSessionServerControl
+  | TerminalBackpressureAckServerControl;
 
 export function isServerControlFrame(value: unknown): value is TerminalServerControl {
   if (!value || typeof value !== 'object') return false;
   const type = (value as { type?: unknown }).type;
-  return type === 'exit' || type === 'error' || type === 'session';
+  return type === 'exit' || type === 'error' || type === 'session' || type === 'backpressure_ack';
 }
 
 export function parseServerControlFrame(text: string): TerminalServerControl | null {

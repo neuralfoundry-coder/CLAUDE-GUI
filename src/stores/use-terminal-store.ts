@@ -1,7 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
-import { terminalManager, type TerminalInstanceStatus } from '@/lib/terminal/terminal-manager';
+import { terminalManager, type TerminalInstanceStatus } from '@/lib/terminal/terminal-registry';
 
 export interface NativeTerminalNotice {
   type: 'success' | 'error';
