@@ -104,11 +104,15 @@ function isLocalhostAddr(addr) {
 }
 
 function verifyToken(req) {
-  if (!serverConfig.remoteAccess || !serverConfig.remoteAccessToken) return true;
+  // When remote access is disabled, all connections are allowed (localhost only)
+  if (!serverConfig.remoteAccess) return true;
 
-  // Localhost connections are exempt from token checks
+  // Localhost connections are always exempt from token checks
   const remoteAddr = req.socket?.remoteAddress || req.connection?.remoteAddress;
   if (isLocalhostAddr(remoteAddr)) return true;
+
+  // Remote access enabled but no token configured — block all remote connections
+  if (!serverConfig.remoteAccessToken) return false;
 
   // Check Authorization header
   const authHeader = req.headers.authorization;

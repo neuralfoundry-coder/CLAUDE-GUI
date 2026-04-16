@@ -14,7 +14,24 @@ const CSP_DIRECTIVES = [
   "form-action 'self'",
 ];
 
-export function middleware(_req: NextRequest) {
+export function middleware(req: NextRequest) {
+  // CSRF protection: state-changing API requests must include the custom
+  // x-browser-id header. Browsers enforce CORS preflight for custom headers,
+  // so a cross-origin form/script cannot forge this header without the server
+  // explicitly allowing it. This is the "custom header" CSRF defense pattern.
+  const method = req.method.toUpperCase();
+  const pathname = req.nextUrl.pathname;
+  if (
+    pathname.startsWith('/api/') &&
+    (method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+    !req.headers.get('x-browser-id')
+  ) {
+    return NextResponse.json(
+      { success: false, error: 'Missing x-browser-id header (CSRF protection)' },
+      { status: 403 },
+    );
+  }
+
   const res = NextResponse.next();
   res.headers.set('Content-Security-Policy', CSP_DIRECTIVES.join('; '));
   res.headers.set('X-Content-Type-Options', 'nosniff');

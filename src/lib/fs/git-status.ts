@@ -40,9 +40,10 @@ function parsePorcelainLine(line: string): { path: string; status: GitFileStatus
 
 export async function getGitStatus(cwd: string): Promise<GitStatus> {
   try {
+    const execOpts = { cwd, timeout: 10_000 };
     const [{ stdout: branchOut }, { stdout: statusOut }] = await Promise.all([
-      execAsync('git rev-parse --abbrev-ref HEAD', { cwd }).catch(() => ({ stdout: '' })),
-      execAsync('git status --porcelain', { cwd }).catch(() => ({ stdout: '' })),
+      execAsync('git rev-parse --abbrev-ref HEAD', execOpts).catch(() => ({ stdout: '' })),
+      execAsync('git status --porcelain', execOpts).catch(() => ({ stdout: '' })),
     ]);
 
     const branch = branchOut.trim() || null;
@@ -59,7 +60,7 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
 
 export async function isGitRepository(cwd: string): Promise<boolean> {
   try {
-    await execAsync('git rev-parse --git-dir', { cwd });
+    await execAsync('git rev-parse --git-dir', { cwd, timeout: 10_000 });
     return true;
   } catch {
     return false;

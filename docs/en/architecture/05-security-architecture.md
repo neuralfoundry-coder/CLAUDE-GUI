@@ -187,7 +187,8 @@ wss.on('connection', (ws, req) => {
 
 ### 5.3.4 CSRF protection
 
-- REST API: SameSite cookies + CSRF token (for state-changing operations)
+- REST API: State-changing requests (POST/PUT/DELETE) require the `x-browser-id` custom header. Browsers enforce CORS preflight for custom headers, so cross-origin scripts/forms cannot forge this header ("Custom Header" CSRF defense pattern).
+- Next.js middleware (`src/middleware.ts`) validates the presence of the `x-browser-id` header on state-changing requests to `/api/` paths, returning HTTP 403 if missing.
 - WebSocket: token validation on connection
 
 ---
@@ -318,24 +319,37 @@ Rule grammar and matching logic are defined in `src/lib/claude/settings-manager.
 
 Bash commands matching the following patterns are flagged with an extra warning:
 
-- `rm -rf`, `rm -r`, `rmdir`
+- `rm -rf`, `rm -r`, `rm -f -r` (split flags included), `rmdir`
 - `sudo`, `su`
-- `chmod 777`, `chown`
-- `dd`, `mkfs`
-- `curl ... | sh`, `wget ... | sh`
+- `chmod`, `chown` (targeting system paths)
+- `dd` (device writes), `mkfs`, `fdisk`, `parted`
+- `curl ... | sh`, `wget ... | sh` (zsh included)
 - access to `/etc/`, `/System/`, `~/.ssh/`
+- Destructive commands via pipes: `| xargs rm`
+- Dangerous commands inside subshells/backticks: `` `rm -rf` ``, `$(rm -rf)`
+- System file overwrites via shell redirection: `> /etc/`
 
-```typescript
+```javascript
 const DANGER_PATTERNS = [
-  /\brm\s+-[rfR]+/,
+  /\brm\s+(?:-\w*\s+)*-\w*[rfR]\w*/,   // rm -rf, rm -f -r, rm -Rf, etc.
   /\bsudo\b/,
-  /\bcurl\s+.*\|\s*(?:sh|bash)/,
+  /\bcurl\s+[^|]*\|\s*(?:sh|bash|zsh)/,
+  /\bwget\s+[^|]*\|\s*(?:sh|bash|zsh)/,
   /\/etc\//,
+  /\/System\//,
+  /\|\s*xargs\s+(?:-\w*\s+)*rm\b/,      // pipe + xargs rm
+  /`[^`]*\brm\s+-[rfR]/,                 // rm in backticks
+  /\$\([^)]*\brm\s+-[rfR]/,             // rm in subshell
+  />\s*\/(?:etc|System)\//,              // redirection to system paths
+  /\b(?:chmod|chown)\s+.*\/(?:etc|System|usr)\//,
+  /\bdd\b.*\bof=\/dev\//,               // dd device writes
+  /\b(?:mkfs|fdisk|parted)\b/,          // format commands
 ];
 
-function assessDanger(cmd: string): 'safe' | 'warning' | 'danger' {
+function assessDanger(toolName, input): 'safe' | 'warning' | 'danger' {
+  // Extracts command and file_path strings from input, then pattern-matches
   for (const p of DANGER_PATTERNS) {
-    if (p.test(cmd)) return 'danger';
+    if (p.test(s)) return 'danger';
   }
   return 'safe';
 }
@@ -424,7 +438,8 @@ Verify the following before release:
 
 ### 5.8.1 Token Authentication Middleware
 
-- When remote access is enabled with a token, all HTTP/WebSocket requests undergo token validation.
+- When remote access is enabled, all non-local HTTP/WebSocket requests undergo token validation.
+- **Blocked without token**: When remote access is enabled but no token is configured, all remote connections are denied (`verifyToken()` returns `false`).
 - **HTTP**: validates `Authorization: Bearer <token>` header.
 - **WebSocket upgrade**: validates `?token=<token>` query parameter (browsers cannot send custom headers on upgrade).
 - **Localhost exemption**: requests from `127.0.0.1`, `::1`, `::ffff:127.0.0.1` pass without a token.

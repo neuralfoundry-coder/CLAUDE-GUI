@@ -17,6 +17,7 @@ interface Entry {
 }
 
 const MAX_ENTRIES = 1024;
+const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const registry = new Map<string, Entry>();
 
 function normalize(p: string): string {
@@ -31,6 +32,8 @@ export function registerArtifactPath(absPath: string): { ok: boolean; reason?: s
     return { ok: false, reason: 'absolute path required' };
   }
   const norm = normalize(absPath);
+  // Lazy eviction: purge expired entries before checking capacity
+  evictExpired();
   // Drop the oldest entry if the cap is hit so runaway sessions can't grow
   // the allowlist unboundedly.
   if (!registry.has(norm) && registry.size >= MAX_ENTRIES) {
@@ -43,7 +46,23 @@ export function registerArtifactPath(absPath: string): { ok: boolean; reason?: s
 
 export function isArtifactPathRegistered(absPath: string): boolean {
   if (typeof absPath !== 'string') return false;
-  return registry.has(normalize(absPath));
+  const norm = normalize(absPath);
+  const entry = registry.get(norm);
+  if (!entry) return false;
+  if (Date.now() - entry.registeredAt > TTL_MS) {
+    registry.delete(norm);
+    return false;
+  }
+  return true;
+}
+
+function evictExpired(): void {
+  const now = Date.now();
+  for (const [key, entry] of registry) {
+    if (now - entry.registeredAt > TTL_MS) {
+      registry.delete(key);
+    }
+  }
 }
 
 export function clearArtifactRegistry(): void {

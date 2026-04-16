@@ -23,6 +23,66 @@ function isUnsafeBaseName(name: string): boolean {
   return false;
 }
 
+/** Validate that declared MIME type is plausible for the file extension. */
+const EXT_MIME_MAP: Record<string, string[]> = {
+  '.jpg': ['image/jpeg'],
+  '.jpeg': ['image/jpeg'],
+  '.png': ['image/png'],
+  '.gif': ['image/gif'],
+  '.webp': ['image/webp'],
+  '.svg': ['image/svg+xml'],
+  '.pdf': ['application/pdf'],
+  '.zip': ['application/zip', 'application/x-zip-compressed'],
+  '.html': ['text/html'],
+  '.htm': ['text/html'],
+  '.css': ['text/css'],
+  '.js': ['text/javascript', 'application/javascript'],
+  '.json': ['application/json'],
+  '.xml': ['text/xml', 'application/xml'],
+  '.xlsx': ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  '.docx': ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  '.pptx': ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+};
+
+/** Magic byte signatures for binary file types. */
+const MAGIC_SIGNATURES: Array<{ ext: string[]; bytes: number[] }> = [
+  { ext: ['.png'], bytes: [0x89, 0x50, 0x4e, 0x47] },
+  { ext: ['.jpg', '.jpeg'], bytes: [0xff, 0xd8, 0xff] },
+  { ext: ['.gif'], bytes: [0x47, 0x49, 0x46] },
+  { ext: ['.pdf'], bytes: [0x25, 0x50, 0x44, 0x46] },
+  { ext: ['.zip', '.xlsx', '.docx', '.pptx'], bytes: [0x50, 0x4b, 0x03, 0x04] },
+];
+
+function validateMimeAndMagic(
+  fileName: string,
+  declaredType: string,
+  buffer: Buffer,
+): { valid: boolean; reason?: string } {
+  const ext = path.extname(fileName).toLowerCase();
+
+  // Check declared MIME vs extension (when we have a mapping)
+  const expectedMimes = EXT_MIME_MAP[ext] as string[] | undefined;
+  if (expectedMimes && declaredType && declaredType !== 'application/octet-stream') {
+    const baseMime = declaredType.split(';')[0]?.trim().toLowerCase() ?? '';
+    if (!expectedMimes.includes(baseMime)) {
+      return { valid: false, reason: `MIME type ${baseMime} does not match extension ${ext}` };
+    }
+  }
+
+  // Check magic bytes for known binary formats
+  if (buffer.length >= 4) {
+    for (const sig of MAGIC_SIGNATURES) {
+      if (!sig.ext.includes(ext)) continue;
+      const match = sig.bytes.every((b, i) => buffer[i] === b);
+      if (!match) {
+        return { valid: false, reason: `File content does not match expected ${ext} format` };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
 async function uniquePath(
   absDir: string,
   rawName: string,
@@ -31,7 +91,7 @@ async function uniquePath(
   const base = path.basename(rawName, ext);
   let n = 0;
   // Bounded retry in case of a hostile filename collision loop.
-  while (n < 10_000) {
+  while (n < 100) {
     const name = n === 0 ? rawName : `${base} (${n})${ext}`;
     const abs = path.join(absDir, name);
     try {
@@ -109,6 +169,13 @@ export async function POST(req: NextRequest) {
       }
 
       const buffer = Buffer.from(await file.arrayBuffer());
+
+      // Validate MIME type and magic bytes
+      const mimeCheck = validateMimeAndMagic(rawName, file.type, buffer);
+      if (!mimeCheck.valid) {
+        return apiError(`Upload rejected: ${mimeCheck.reason}`, 4400, 400);
+      }
+
       await fs.writeFile(destAbs, buffer);
 
       const relFromRoot = (destDir ? `${destDir}/${finalName}` : finalName).replace(/\\/g, '/');

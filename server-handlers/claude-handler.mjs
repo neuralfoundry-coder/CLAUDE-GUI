@@ -42,12 +42,29 @@ export async function getMcpServerStatus(browserId) {
 }
 
 const DANGER_PATTERNS = [
-  /\brm\s+-[rfR]+/,
+  // rm with dangerous flags — handles split flags (rm -f -r), reordered flags,
+  // multiple spaces, and combined forms (rm -rf, rm -fr, rm -Rf, etc.)
+  /\brm\s+(?:-\w*\s+)*-\w*[rfR]\w*/,
   /\bsudo\b/,
-  /\bcurl\s+[^|]*\|\s*(?:sh|bash)/,
-  /\bwget\s+[^|]*\|\s*(?:sh|bash)/,
+  /\bcurl\s+[^|]*\|\s*(?:sh|bash|zsh)/,
+  /\bwget\s+[^|]*\|\s*(?:sh|bash|zsh)/,
   /\/etc\//,
   /\/System\//,
+  // Piped destructive commands
+  /\|\s*xargs\s+rm\b/,
+  /\|\s*xargs\s+-\w*\s+rm\b/,
+  // Subshell / backtick evasion containing dangerous commands
+  /`[^`]*\brm\s+-[rfR]/,
+  /\$\([^)]*\brm\s+-[rfR]/,
+  // Overwrite / truncate via shell redirection to system paths
+  />\s*\/etc\//,
+  />\s*\/System\//,
+  // chmod / chown on system paths
+  /\b(?:chmod|chown)\s+.*\/(?:etc|System|usr)\//,
+  // dd writing to devices
+  /\bdd\b.*\bof=\/dev\//,
+  // mkfs / format commands
+  /\b(?:mkfs|fdisk|parted)\b/,
 ];
 
 function assessDanger(toolName, input) {

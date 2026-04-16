@@ -185,7 +185,8 @@ wss.on('connection', (ws, req) => {
 
 ### 5.3.4 CSRF 보호
 
-- REST API: SameSite 쿠키 + CSRF 토큰 (상태 변경 작업)
+- REST API: 상태 변경 요청(POST/PUT/DELETE)은 `x-browser-id` 커스텀 헤더를 필수로 요구한다. 브라우저는 커스텀 헤더가 포함된 크로스 오리진 요청에 CORS preflight를 강제하므로, 외부 사이트의 스크립트/폼이 이 헤더를 위조할 수 없다 ("Custom Header" CSRF 방어 패턴).
+- Next.js 미들웨어(`src/middleware.ts`)에서 `/api/` 경로의 상태 변경 요청에 `x-browser-id` 헤더 존재 여부를 검증하며, 누락 시 HTTP 403을 반환한다.
 - WebSocket: 연결 시 토큰 검증
 
 ---
@@ -316,24 +317,37 @@ const canUseTool = async (toolName, input, { signal }) => {
 
 다음 패턴의 Bash 명령은 추가 경고와 함께 표시한다:
 
-- `rm -rf`, `rm -r`, `rmdir`
+- `rm -rf`, `rm -r`, `rm -f -r` (분리 플래그 포함), `rmdir`
 - `sudo`, `su`
-- `chmod 777`, `chown`
-- `dd`, `mkfs`
-- `curl ... | sh`, `wget ... | sh`
+- `chmod`, `chown` (시스템 경로 대상)
+- `dd` (디바이스 쓰기), `mkfs`, `fdisk`, `parted`
+- `curl ... | sh`, `wget ... | sh` (zsh 포함)
 - `/etc/`, `/System/`, `~/.ssh/` 접근
+- 파이프를 통한 파괴적 명령: `| xargs rm`
+- 서브셸/백틱 내 위험 명령: `` `rm -rf` ``, `$(rm -rf)`
+- 셸 리다이렉션을 통한 시스템 파일 덮어쓰기: `> /etc/`
 
-```typescript
+```javascript
 const DANGER_PATTERNS = [
-  /\brm\s+-[rfR]+/,
+  /\brm\s+(?:-\w*\s+)*-\w*[rfR]\w*/,   // rm -rf, rm -f -r, rm -Rf 등
   /\bsudo\b/,
-  /\bcurl\s+.*\|\s*(?:sh|bash)/,
+  /\bcurl\s+[^|]*\|\s*(?:sh|bash|zsh)/,
+  /\bwget\s+[^|]*\|\s*(?:sh|bash|zsh)/,
   /\/etc\//,
+  /\/System\//,
+  /\|\s*xargs\s+(?:-\w*\s+)*rm\b/,      // 파이프 + xargs rm
+  /`[^`]*\brm\s+-[rfR]/,                 // 백틱 내 rm
+  /\$\([^)]*\brm\s+-[rfR]/,             // 서브셸 내 rm
+  />\s*\/(?:etc|System)\//,              // 시스템 경로 리다이렉션
+  /\b(?:chmod|chown)\s+.*\/(?:etc|System|usr)\//,
+  /\bdd\b.*\bof=\/dev\//,               // dd 디바이스 쓰기
+  /\b(?:mkfs|fdisk|parted)\b/,          // 포맷 명령
 ];
 
-function assessDanger(cmd: string): 'safe' | 'warning' | 'danger' {
+function assessDanger(toolName, input): 'safe' | 'warning' | 'danger' {
+  // input 객체에서 command, file_path 문자열 추출 후 패턴 매칭
   for (const p of DANGER_PATTERNS) {
-    if (p.test(cmd)) return 'danger';
+    if (p.test(s)) return 'danger';
   }
   return 'safe';
 }
@@ -422,7 +436,8 @@ const BLOCKED_FILES = [
 
 ### 5.8.1 토큰 인증 미들웨어
 
-- 원격 접근 활성화 + 토큰 설정 시, 모든 HTTP/WebSocket 요청에 토큰 검증을 수행한다.
+- 원격 접근 활성화 시, 모든 비-로컬 HTTP/WebSocket 요청에 토큰 검증을 수행한다.
+- **토큰 미설정 시 원격 차단**: 원격 접근이 활성화되었으나 토큰이 설정되지 않은 경우, 모든 원격 연결을 거부한다 (`verifyToken()`이 `false` 반환).
 - **HTTP**: `Authorization: Bearer <token>` 헤더 검증.
 - **WebSocket upgrade**: `?token=<token>` 쿼리 파라미터 검증 (브라우저에서 custom 헤더 불가).
 - **localhost 면제**: `127.0.0.1`, `::1`, `::ffff:127.0.0.1` 주소의 요청은 토큰 없이 통과.
