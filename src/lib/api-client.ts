@@ -156,6 +156,10 @@ export const projectApi = {
       body: JSON.stringify({ path }),
     });
   },
+  browse(dirPath?: string): Promise<{ parent: string | null; current: string; dirs: string[] }> {
+    const params = dirPath ? `?path=${encodeURIComponent(dirPath)}` : '';
+    return apiFetch(`/api/project/browse${params}`);
+  },
 };
 
 export const gitApi = {

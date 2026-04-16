@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/no-var-requires */
 const http = require('node:http');
-const { parse } = require('node:url');
+const { URL } = require('node:url');
 const next = require('next');
 const { WebSocketServer } = require('ws');
 
@@ -125,8 +125,8 @@ function verifyToken(req) {
 
   // Check URL query parameter (for WebSocket upgrade requests)
   try {
-    const { query } = parse(req.url || '/', true);
-    if (query.token === serverConfig.remoteAccessToken) return true;
+    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    if (reqUrl.searchParams.get('token') === serverConfig.remoteAccessToken) return true;
   } catch { /* ignore parse errors */ }
 
   return false;
@@ -144,7 +144,7 @@ function verifyOrigin(req) {
   return ALLOWED_ORIGINS.has(origin);
 }
 
-const app = next({ dev, hostname: '127.0.0.1', port });
+const app = next({ dev, hostname: '127.0.0.1', port, turbopack: dev });
 
 // ---------------------------------------------------------------------------
 // Main server setup
@@ -196,8 +196,13 @@ async function startServer(nextHandler, upgradeHandler) {
     }
 
     // Fast-path: abort all active Claude queries (called via sendBeacon on page unload)
-    const parsedUrl = parse(req.url || '/', true);
-    if (parsedUrl.pathname === '/api/claude/abort' && req.method === 'POST') {
+    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    // Next.js getRequestHandler() expects the legacy url.parse() shape: { pathname, query }
+    const parsedUrl = {
+      pathname: reqUrl.pathname,
+      query: Object.fromEntries(reqUrl.searchParams),
+    };
+    if (reqUrl.pathname === '/api/claude/abort' && req.method === 'POST') {
       try {
         const { activeAbortControllers } = await import('./server-handlers/claude-handler.mjs');
         let aborted = 0;
@@ -290,11 +295,11 @@ async function startServer(nextHandler, upgradeHandler) {
   setupPong(wssFiles);
 
   server.on('upgrade', (req, socket, head) => {
-    const parsed = parse(req.url || '/', true);
+    const parsed = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = parsed.pathname;
 
     // Attach browserId from query string so handlers can isolate per-tab state.
-    req.browserId = (parsed.query && parsed.query.browserId) || null;
+    req.browserId = parsed.searchParams.get('browserId') || null;
 
     // Preserve Next.js HMR WebSocket in dev
     if (pathname && pathname.startsWith('/_next')) {

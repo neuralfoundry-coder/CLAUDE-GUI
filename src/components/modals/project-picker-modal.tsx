@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { FolderOpen, History, AlertTriangle } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { FolderOpen, History, AlertTriangle, ChevronUp, Folder } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -13,10 +13,17 @@ import {
 import { Button } from '@/components/ui/button';
 import { useProjectStore } from '@/stores/use-project-store';
 import { useEditorStore } from '@/stores/use-editor-store';
+import { projectApi } from '@/lib/api-client';
 
 interface ProjectPickerModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+interface BrowseState {
+  parent: string | null;
+  current: string;
+  dirs: string[];
 }
 
 export function ProjectPickerModal({ open, onOpenChange }: ProjectPickerModalProps) {
@@ -28,14 +35,33 @@ export function ProjectPickerModal({ open, onOpenChange }: ProjectPickerModalPro
   const [pathInput, setPathInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [confirmDirty, setConfirmDirty] = useState<string | null>(null);
+  const [browse, setBrowse] = useState<BrowseState | null>(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
+
+  const loadBrowse = useCallback(async (dirPath?: string) => {
+    setBrowseLoading(true);
+    try {
+      const result = await projectApi.browse(dirPath);
+      setBrowse(result);
+    } catch {
+      // If browsing fails, just clear the browse state
+      setBrowse(null);
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      // Load home directory listing when modal opens
+      loadBrowse();
+    } else {
       setError(null);
       setConfirmDirty(null);
       setPathInput('');
+      setBrowse(null);
     }
-  }, [open]);
+  }, [open, loadBrowse]);
 
   const handleOpen = async (target: string) => {
     if (!target.trim()) {
@@ -55,6 +81,11 @@ export function ProjectPickerModal({ open, onOpenChange }: ProjectPickerModalPro
     }
   };
 
+  const dirName = (fullPath: string) => {
+    const parts = fullPath.split('/');
+    return parts[parts.length - 1] || fullPath;
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
@@ -64,7 +95,7 @@ export function ProjectPickerModal({ open, onOpenChange }: ProjectPickerModalPro
             Open Project
           </DialogTitle>
           <DialogDescription>
-            Enter an absolute path to a directory. The file explorer, terminal, and Claude
+            Select a project directory. The file explorer, terminal, and Claude
             queries will all switch to this project root.
           </DialogDescription>
         </DialogHeader>
@@ -83,20 +114,91 @@ export function ProjectPickerModal({ open, onOpenChange }: ProjectPickerModalPro
             <label htmlFor="project-path" className="text-xs font-semibold text-muted-foreground">
               Project path
             </label>
-            <input
-              id="project-path"
-              type="text"
-              value={pathInput}
-              onChange={(e) => setPathInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                if (e.key === 'Enter') handleOpen(pathInput);
-              }}
-              placeholder="/absolute/path/to/project"
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
-              autoFocus
-            />
+            <div className="flex gap-2">
+              <input
+                id="project-path"
+                type="text"
+                value={pathInput}
+                onChange={(e) => setPathInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                  if (e.key === 'Enter') handleOpen(pathInput);
+                }}
+                placeholder="/absolute/path/to/project"
+                className="flex-1 rounded-md border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary"
+                autoFocus
+              />
+              <Button onClick={() => handleOpen(pathInput)} disabled={loading} size="sm">
+                {loading ? 'Opening...' : 'Open'}
+              </Button>
+            </div>
           </div>
+
+          {/* Directory browser */}
+          {browse && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
+                <Folder className="h-3 w-3" aria-hidden="true" />
+                Browse directories
+              </div>
+              <div className="rounded-md border bg-muted/50 px-2 py-1.5 text-xs font-mono text-muted-foreground truncate">
+                {browse.current}
+              </div>
+              <ul className="max-h-48 space-y-0.5 overflow-y-auto">
+                {browse.parent && (
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => loadBrowse(browse.parent!)}
+                      disabled={browseLoading}
+                      className="flex w-full items-center gap-2 rounded-md border border-transparent px-3 py-1.5 text-left text-xs font-mono hover:border-border hover:bg-muted"
+                    >
+                      <ChevronUp className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                      ..
+                    </button>
+                  </li>
+                )}
+                {browse.dirs.map((dir) => (
+                  <li key={dir} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => loadBrowse(dir)}
+                      disabled={browseLoading}
+                      className="flex-1 flex items-center gap-2 rounded-md border border-transparent px-3 py-1.5 text-left text-xs font-mono hover:border-border hover:bg-muted truncate"
+                      title={dir}
+                    >
+                      <Folder className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+                      {dirName(dir)}
+                    </button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs shrink-0"
+                      onClick={() => handleOpen(dir)}
+                      disabled={loading}
+                    >
+                      Open
+                    </Button>
+                  </li>
+                ))}
+                {browse.dirs.length === 0 && (
+                  <li className="px-3 py-2 text-xs text-muted-foreground italic">
+                    No subdirectories
+                  </li>
+                )}
+              </ul>
+              {/* Open the currently browsed directory itself */}
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-xs"
+                onClick={() => handleOpen(browse.current)}
+                disabled={loading}
+              >
+                Open this directory: {dirName(browse.current)}
+              </Button>
+            </div>
+          )}
 
           {recents.length > 0 && (
             <div className="space-y-2">
@@ -145,9 +247,6 @@ export function ProjectPickerModal({ open, onOpenChange }: ProjectPickerModalPro
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
-          <Button onClick={() => handleOpen(pathInput)} disabled={loading}>
-            {loading ? 'Opening...' : 'Open'}
           </Button>
         </DialogFooter>
       </DialogContent>

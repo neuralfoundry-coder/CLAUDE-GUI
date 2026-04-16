@@ -34,6 +34,10 @@ function resolveInitialRoot(persisted) {
   const envRoot = process.env.PROJECT_ROOT;
   if (envRoot && isUsableDir(envRoot)) return path.resolve(envRoot);
   if (persisted.lastRoot && isUsableDir(persisted.lastRoot)) return path.resolve(persisted.lastRoot);
+  // Fall back to the server's working directory so that first-launch users see
+  // a usable project instead of an empty picker.
+  const cwd = process.cwd();
+  if (cwd !== path.parse(cwd).root && isUsableDir(cwd)) return cwd;
   return null;
 }
 

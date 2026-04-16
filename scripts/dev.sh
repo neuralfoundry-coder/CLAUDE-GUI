@@ -80,7 +80,8 @@ SERVER OPTIONS:
   --host <addr>        Bind host (default: 127.0.0.1, env: HOST)
   --port <n>           Bind port (default: 3000, env: PORT)
   --project <path>     Initial PROJECT_ROOT (absolute, ~ expansion supported)
-  --kill-port          (no-op, kept for compat — port is always reclaimed)
+  --kill-port          Kill the existing process on the port instead of
+                       incrementing to the next free port (default: increment)
 
 DEBUG OPTIONS:
   --debug <modules>    Comma-separated module filter. Available modules:
@@ -336,6 +337,26 @@ NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])')
 if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
   die "Node.js >= 20 required (found v$(node -v))"
 fi
+
+# Next.js 15 SWC binaries are incompatible with Node >= 23. If detected,
+# auto-switch to a Homebrew node@22 if available.
+if [ "${NODE_MAJOR:-0}" -ge 23 ]; then
+  NODE22=""
+  for candidate in /opt/homebrew/opt/node@22/bin /usr/local/opt/node@22/bin; do
+    if [ -x "$candidate/node" ]; then
+      NODE22="$candidate"
+      break
+    fi
+  done
+  if [ -n "$NODE22" ]; then
+    warn "Node $NODE_MAJOR detected — Next.js 15 requires <=22. Switching to $NODE22/node"
+    export PATH="$NODE22:$PATH"
+    NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])')
+  else
+    die "Node $NODE_MAJOR is incompatible with Next.js 15 SWC. Install Node 22: brew install node@22"
+  fi
+fi
+
 command -v npm >/dev/null 2>&1 || die "npm is not on PATH"
 
 # ----- standalone lifecycle commands (no prep, no launch) ------------------
@@ -373,22 +394,31 @@ if [ "$BACKGROUND" -eq 1 ] && [ "$INSPECT_BRK" -eq 1 ]; then
   warn "--inspect-brk with --background: debugger will wait silently for attach"
 fi
 
-# ----- kill port (always) ---------------------------------------------------
-# Always kill any existing process on the target port to ensure a clean start.
+# ----- resolve port (find free port) ----------------------------------------
+# If the target port is already in use, increment until a free one is found.
+# Use --kill-port to revert to the old behavior of killing the existing process.
 if command -v lsof >/dev/null 2>&1; then
-  PIDS=$(lsof -ti tcp:"$PORT_OPT" 2>/dev/null || true)
-  if [ -n "$PIDS" ]; then
-    warn "killing existing process on port $PORT_OPT: $PIDS"
-    # shellcheck disable=SC2086
-    kill -TERM $PIDS 2>/dev/null || true
-    sleep 0.5
-    # shellcheck disable=SC2086
-    kill -KILL $PIDS 2>/dev/null || true
-    sleep 0.3
+  if [ "$KILL_PORT" -eq 1 ]; then
+    PIDS=$(lsof -ti tcp:"$PORT_OPT" 2>/dev/null || true)
+    if [ -n "$PIDS" ]; then
+      warn "killing existing process on port $PORT_OPT: $PIDS"
+      # shellcheck disable=SC2086
+      kill -TERM $PIDS 2>/dev/null || true
+      sleep 0.5
+      # shellcheck disable=SC2086
+      kill -KILL $PIDS 2>/dev/null || true
+      sleep 0.3
+    fi
+  else
+    while lsof -ti tcp:"$PORT_OPT" >/dev/null 2>&1; do
+      warn "port $PORT_OPT is in use, trying $((PORT_OPT + 1))"
+      PORT_OPT=$((PORT_OPT + 1))
+    done
   fi
 else
   warn "lsof not available, cannot check for existing process on port $PORT_OPT"
 fi
+export PORT="$PORT_OPT"
 
 # ----- clean ----------------------------------------------------------------
 if [ "$DO_CLEAN" -eq 1 ]; then
