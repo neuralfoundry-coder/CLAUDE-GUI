@@ -82,9 +82,9 @@ ClaudeGUI는 **하이브리드 로컬 서버 아키텍처**를 채택한다. 브
 
 | 계층 | 기술 | 선택 근거 |
 |------|------|----------|
-| **Framework** | Next.js 14+ App Router | SSR + 커스텀 서버 지원 |
+| **Framework** | Next.js 15+ App Router | SSR + 커스텀 서버 지원 |
 | **Language** | TypeScript (strict) | 타입 안전성, 리팩토링 안정성 |
-| **UI Library** | React 18+ | 생태계, App Router 호환 |
+| **UI Library** | React 19+ | 생태계, App Router 호환 |
 | **Styling** | Tailwind CSS + shadcn/ui | 유틸리티 우선, Radix 기반 접근성 |
 | **Panels** | react-resizable-panels v4 | 5.2k stars, localStorage, 접기/펼치기 |
 | **Editor** | @monaco-editor/react | VS Code 엔진, 100+ 언어 |
@@ -101,7 +101,7 @@ ClaudeGUI는 **하이브리드 로컬 서버 아키텍처**를 채택한다. 브
 
 | 계층 | 기술 | 선택 근거 |
 |------|------|----------|
-| **Runtime** | Node.js 20+ LTS | `@parcel/watcher`/node-pty 네이티브 ABI, ESM dynamic import |
+| **Runtime** | Node.js 20–24.x (LTS 22 권장) | `@parcel/watcher`/node-pty 네이티브 ABI, ESM dynamic import |
 | **Server** | Next.js + 커스텀 server.js | WebSocket 필수 |
 | **WebSocket** | ws v8 | 경량, 표준 준수 |
 | **Terminal Backend** | node-pty | Microsoft 유지관리, PTY 세션 |

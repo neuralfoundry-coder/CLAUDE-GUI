@@ -163,7 +163,7 @@
 
 ### NFR-404: Node.js 호환성
 
-- Node.js **20.x LTS** 이상을 지원해야 한다.
+- Node.js **20.x–24.x** (LTS **22.x** 권장) 을 지원해야 한다.
 - `@parcel/watcher` v2 네이티브 바이너리 / node-pty 프리빌트 / ESM dynamic import가 모두 동작하는 런타임이어야 한다.
 
 ---

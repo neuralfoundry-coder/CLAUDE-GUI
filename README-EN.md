@@ -59,9 +59,9 @@ Custom Node.js server (server.js)
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | Next.js 14+ (App Router) + custom `server.js` |
+| Framework | Next.js 15+ (App Router) + custom `server.js` |
 | Language | TypeScript (strict) |
-| UI | React 18+, Tailwind CSS, shadcn/ui (Radix) |
+| UI | React 19+, Tailwind CSS, shadcn/ui (Radix) |
 | State | Zustand v5 |
 | Editor | @monaco-editor/react |
 | Terminal | @xterm/xterm v5 + node-pty |
@@ -79,7 +79,7 @@ The full dependency list and rationale are in [docs/en/architecture/01-system-ov
 
 | Tool | Minimum version | Notes |
 |------|-----------------|-------|
-| Node.js | 20.0+ | `@parcel/watcher` / node-pty native prebuilds |
+| Node.js | 20.0–24.x (LTS 22 recommended) | `@parcel/watcher` / node-pty native prebuilds |
 | npm | 10.0+ | — |
 | Claude CLI | latest | `npm install -g @anthropic-ai/claude-code` |
 | Python 3 | 3.8+ | node-pty native build |
@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main
 iwr -useb https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.ps1 | iex
 ```
 
-The script provisions Node.js 20+, the Claude CLI, the ClaudeGUI checkout, the `claudegui` launcher **and a desktop icon**. Every destructive step prompts for confirmation (`--yes` for non-interactive, `--dry-run` to only print the plan, `--no-desktop-icon` / `-NoDesktopIcon` to skip the desktop shortcut).
+The script provisions Node.js 22 LTS, the Claude CLI, the ClaudeGUI checkout, the `claudegui` launcher **and a desktop icon**. Every destructive step prompts for confirmation (`--yes` for non-interactive, `--dry-run` to only print the plan, `--no-desktop-icon` / `-NoDesktopIcon` to skip the desktop shortcut).
 
 ### Desktop icon (FR-1100)
 
@@ -411,7 +411,7 @@ The full threat model and mitigations are in [docs/en/architecture/05-security-a
 ## Known Limitations (v0.1)
 
 - **Permission mode**: The app uses Agent SDK `permissionMode: 'default'`. Safe Bash commands (e.g., `echo`) are auto-approved by the SDK, so `canUseTool` is not called for them. This is intentional — the GUI modal only shows for file writes/edits/dangerous commands. Every tool invocation is still logged in the chat panel as a tool message.
-- **node-pty**: Verified on Node 20+ and macOS Apple Silicon with `node-pty@1.2.0-beta.12`. The earlier `1.1.0` release fails with `posix_spawnp failed` on Node 24, so building requires at least `1.2.0-beta`.
+- **node-pty**: Verified on Node 22 LTS and macOS Apple Silicon with `node-pty@1.2.0-beta.12`. The earlier `1.1.0` release fails with `posix_spawnp failed` on Node 24, so building requires at least `1.2.0-beta`.
 - **Session resume/fork**: JSONL files under `~/.claude/projects/` are parsed read-only; after a fork, the first query relies on the Agent SDK's session-creation behavior.
 - **AI diff view**: Monaco `DiffEditor` is combined with LCS-based hunk decomposition, enabling per-hunk checkbox selection plus "Apply N hunks" for partial acceptance. "Reject all" restores the original; "Select all" auto-checks every hunk.
 - **Session management**: The session list Resume action parses message history from `~/.claude/projects/*.jsonl` into the UI and then continues the conversation via the Agent SDK `resume` option. Fork starts a fresh SDK session while displaying the original session id as a reference.

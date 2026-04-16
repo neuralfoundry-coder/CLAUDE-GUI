@@ -81,7 +81,7 @@ ClaudeGUI is a web-based IDE that wraps Anthropic's Claude CLI, providing a prof
 
 ## Tech Stack
 
-- **Framework**: Next.js 14+ (App Router) with custom `server.js`
+- **Framework**: Next.js 15+ (App Router) with custom `server.js`
 - **Language**: TypeScript (strict mode)
 - **Styling**: Tailwind CSS + shadcn/ui (Radix primitives)
 - **State**: Zustand v5

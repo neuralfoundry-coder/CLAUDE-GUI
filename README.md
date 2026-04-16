@@ -57,9 +57,9 @@ Custom Node.js Server (server.js)
 
 | 계층 | 기술 |
 |------|------|
-| Framework | Next.js 14+ (App Router) + 커스텀 `server.js` |
+| Framework | Next.js 15+ (App Router) + 커스텀 `server.js` |
 | Language | TypeScript (strict) |
-| UI | React 18+, Tailwind CSS, shadcn/ui (Radix) |
+| UI | React 19+, Tailwind CSS, shadcn/ui (Radix) |
 | State | Zustand v5 |
 | Editor | @monaco-editor/react |
 | Terminal | @xterm/xterm v5 + node-pty |
@@ -77,7 +77,7 @@ Custom Node.js Server (server.js)
 
 | 도구 | 최소 버전 | 비고 |
 |------|----------|------|
-| Node.js | 20.0+ | `@parcel/watcher`·node-pty 네이티브 프리빌트 |
+| Node.js | 20.0–24.x (LTS 22 권장) | `@parcel/watcher`·node-pty 네이티브 프리빌트 |
 | npm | 10.0+ | — |
 | Claude CLI | 최신 | `npm install -g @anthropic-ai/claude-code` |
 | Python 3 | 3.8+ | node-pty 네이티브 빌드 |
@@ -100,7 +100,7 @@ curl -fsSL https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main
 iwr -useb https://raw.githubusercontent.com/neuralfoundry-coder/CLAUDE-GUI/main/scripts/install/install.ps1 | iex
 ```
 
-스크립트는 Node.js 20+, Claude CLI, 프로젝트 체크아웃, 런처(`claudegui`)에 더해 **바탕화면 아이콘**까지 자동 설치한다. 각 파괴적 단계는 사용자 확인 프롬프트를 거친다 (`--yes`로 비대화형, `--dry-run`으로 계획만 출력, `--no-desktop-icon` / `-NoDesktopIcon`으로 바탕화면 아이콘 생성 생략).
+스크립트는 Node.js 22 LTS, Claude CLI, 프로젝트 체크아웃, 런처(`claudegui`)에 더해 **바탕화면 아이콘**까지 자동 설치한다. 각 파괴적 단계는 사용자 확인 프롬프트를 거친다 (`--yes`로 비대화형, `--dry-run`으로 계획만 출력, `--no-desktop-icon` / `-NoDesktopIcon`으로 바탕화면 아이콘 생성 생략).
 
 ### 바탕화면 아이콘 (FR-1100)
 
@@ -408,7 +408,7 @@ Windows에서는 `scripts/dev.ps1`이 동일 기능을 제공한다 (`.\scripts\
 ## 알려진 한계 (v0.1)
 
 - **권한 모드**: Agent SDK `permissionMode: 'default'`를 사용. 안전한 Bash 명령(`echo` 등)은 SDK가 자동 승인하므로 `canUseTool` 콜백이 호출되지 않는다. 의도된 동작이며, 파일 쓰기/편집/위험 명령에서만 GUI 모달이 표시된다. 모든 도구 사용 내역은 채팅 패널에 tool 메시지로 기록된다.
-- **node-pty**: Node 20+ 및 macOS Apple Silicon에서 `node-pty@1.2.0-beta.12` 기준으로 동작 확인. 이전 `1.1.0` 릴리스는 Node 24에서 `posix_spawnp failed`를 일으키므로 빌드 시 최소 1.2.0-beta 필요.
+- **node-pty**: Node 22 LTS 및 macOS Apple Silicon에서 `node-pty@1.2.0-beta.12` 기준으로 동작 확인. 이전 `1.1.0` 릴리스는 Node 24에서 `posix_spawnp failed`를 일으키므로 빌드 시 최소 1.2.0-beta 필요.
 - **세션 재개/포크**: `~/.claude/projects/` JSONL 파일을 읽기 전용으로 파싱하며, 포크 후 첫 쿼리 시 Agent SDK의 세션 생성 동작에 의존한다.
 - **AI diff 뷰**: Monaco `DiffEditor`에 LCS 기반 hunk 분해가 결합되어, 개별 hunk 체크박스 선택 → "Apply N hunks"로 부분 수락이 가능하다. "Reject all"은 원본을 복원하고, "Select all"은 모든 hunk를 자동 체크한다.
 - **세션 관리**: 세션 목록에서 Resume은 `~/.claude/projects/*.jsonl`의 메시지 히스토리를 파싱해 UI에 복원하고, 이후 쿼리 시 Agent SDK의 `resume` 옵션으로 대화를 이어간다. Fork는 새 SDK 세션을 시작하되 UI에 원본 세션 id를 참조로 표시한다.

@@ -70,7 +70,7 @@ ClaudeGUI's key differentiators:
 
 | Software | Minimum version | Notes |
 |----------|-----------------|-------|
-| Node.js | 20.0+ | `@parcel/watcher` / node-pty native binaries, ESM dynamic import stability |
+| Node.js | 20.0–24.x (LTS 22 recommended) | `@parcel/watcher` / node-pty native binaries, ESM dynamic import stability |
 | Claude CLI | latest | `claude` command must be on `PATH` |
 | npm | 10.0+ | package manager |
 | Chrome | latest 2 versions | primary target browser |
@@ -95,7 +95,7 @@ ClaudeGUI's key differentiators:
 ### Assumptions
 
 - The user has already installed and authenticated the Claude CLI
-- Node.js 20+ is available on the local machine
+- Node.js 20–24.x (LTS 22 recommended) is available on the local machine
 - C++ build tools are installed for native module builds
 - Chrome is used as the browser
 

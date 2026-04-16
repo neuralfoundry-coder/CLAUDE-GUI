@@ -80,22 +80,25 @@ log "Launcher: $LAUNCHER"
 need_node=1
 if command -v node >/dev/null 2>&1; then
   NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)
-  if [ "${NODE_MAJOR:-0}" -ge 20 ]; then
+  if [ "${NODE_MAJOR:-0}" -ge 20 ] && [ "${NODE_MAJOR:-0}" -lt 25 ]; then
     need_node=0
     log "Node.js $(node -v) detected"
+  elif [ "${NODE_MAJOR:-0}" -ge 25 ]; then
+    warn "Node.js $(node -v) is too new. Next.js requires Node.js 20–24."
+    warn "Install Node 22 LTS: nvm install 22 && nvm use 22"
   fi
 fi
 
 if [ "$need_node" -eq 1 ]; then
-  warn "Node.js 20+ not found."
-  if confirm "Install Node 20 via nvm?"; then
+  warn "Node.js 20+ (LTS recommended: 22.x) not found."
+  if confirm "Install Node 22 LTS via nvm?"; then
     run curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
     # shellcheck disable=SC1090
     export NVM_DIR="$HOME/.nvm"
     if [ "$DRY_RUN" -eq 0 ] && [ -s "$NVM_DIR/nvm.sh" ]; then
       . "$NVM_DIR/nvm.sh"
-      nvm install 20
-      nvm use 20
+      nvm install 22
+      nvm use 22
     fi
   else
     err "Node.js is required. Aborting."

@@ -65,7 +65,7 @@ Intended audience:
 
 - Anthropic Claude Code official documentation
 - Claude Agent SDK API reference
-- Next.js 14+ App Router documentation
+- Next.js 15+ App Router documentation
 - Monaco Editor API documentation
 - xterm.js API documentation
 

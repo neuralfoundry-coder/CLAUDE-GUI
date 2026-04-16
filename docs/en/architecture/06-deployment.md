@@ -8,7 +8,7 @@
 
 | Tool | Minimum version | Installation |
 |------|-----------------|--------------|
-| Node.js | 20.0+ | https://nodejs.org/ or nvm |
+| Node.js | 20.0–24.x (LTS 22 recommended) | https://nodejs.org/ or nvm |
 | npm | 10.0+ | Included with Node.js |
 | Claude CLI | latest | `npm install -g @anthropic-ai/claude-code` |
 | Python 3 | 3.8+ | For the node-pty native build |
@@ -537,7 +537,7 @@ jobs:
 | `Error: Cannot find module 'node-pty'` | Native build failed | `npm rebuild node-pty` or install build tools |
 | WebSocket connection fails | server.js not running | Use `node server.js` instead of `next dev` |
 | Monaco fails to load | CDN blocked | Enable a local-bundle fallback |
-| File change events missing | `@parcel/watcher` native binary failed to load | `npm rebuild @parcel/watcher`, then restart on Node.js 20+ |
+| File change events missing | `@parcel/watcher` native binary failed to load | `npm rebuild @parcel/watcher`, then restart on Node.js 22 LTS |
 | `files` handler spams `EMFILE: too many open files, watch` (legacy chokidar 5) | chokidar 4+ removed native fsevents and falls back to `fs.watch` on macOS, burning one FD per directory and blowing past the 256-per-process default soft limit | **Resolved (ADR-024)**: file watching switched to `@parcel/watcher`, which uses a single native OS handle per root. See `server-handlers/files-handler.mjs` → `loadWatcher` calling `mod.subscribe(root, cb, { ignore: WATCHER_IGNORE_GLOBS })`. |
 | Path sandbox 403 | `PROJECT_ROOT` misconfigured | Double-check the env var |
 | `claude` command not found | Not on `PATH` | `npm install -g @anthropic-ai/claude-code` |

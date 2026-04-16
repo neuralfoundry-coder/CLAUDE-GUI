@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     const srcAbs = await resolveSafe(srcPath);
     const destAbs = await resolveSafe(destPath);
     const { writtenPath } = await copyEntry(srcAbs, destAbs);
-    const writtenRel = path.relative(getProjectRoot(), writtenPath);
+    const writtenRel = path.relative(await getProjectRoot(), writtenPath);
     return apiSuccess({ srcPath, destPath, writtenPath: writtenRel });
   } catch (err) {
     return handleApiError(err);

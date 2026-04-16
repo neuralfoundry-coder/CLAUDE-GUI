@@ -6,7 +6,7 @@
 
 | 도구 | 최소 버전 | 설치 방법 |
 |------|----------|----------|
-| Node.js | 20.0+ | https://nodejs.org/ 또는 nvm |
+| Node.js | 20.0–24.x (LTS 22 권장) | https://nodejs.org/ 또는 nvm |
 | npm | 10.0+ | Node.js에 포함 |
 | Claude CLI | 최신 | `npm install -g @anthropic-ai/claude-code` |
 | Python 3 | 3.8+ | node-pty 네이티브 빌드용 |
@@ -528,7 +528,7 @@ jobs:
 | `Error: Cannot find module 'node-pty'` | 네이티브 빌드 실패 | `npm rebuild node-pty` 또는 빌드 도구 설치 |
 | WebSocket 연결 실패 | server.js 미실행 | `next dev` 대신 `node server.js` 사용 |
 | Monaco 로드 실패 | CDN 차단 | 로컬 번들 폴백 활성화 |
-| 파일 변경 이벤트 누락 | `@parcel/watcher` 네이티브 바이너리 로드 실패 | `npm rebuild @parcel/watcher` 후 Node.js 20+ 재기동 |
+| 파일 변경 이벤트 누락 | `@parcel/watcher` 네이티브 바이너리 로드 실패 | `npm rebuild @parcel/watcher` 후 Node.js 22 LTS 재기동 |
 | 파일 탐색기에서 `files-handler`가 `EMFILE: too many open files, watch`로 에러 스팸 (legacy chokidar 5) | chokidar 4+는 네이티브 fsevents 경로를 제거해 macOS에서 `fs.watch` 폴백을 사용 → 서브디렉토리마다 FD 1개 소비 → 256 FD/프로세스 기본 한도 초과 | **해결됨 (ADR-024)**: 파일 감시를 `@parcel/watcher`로 전환하여 루트당 OS 핸들 1개만 사용하도록 변경. `server-handlers/files-handler.mjs`의 `loadWatcher`가 `mod.subscribe(root, cb, { ignore: WATCHER_IGNORE_GLOBS })`를 호출한다. |
 | 경로 샌드박스 403 | `PROJECT_ROOT` 오설정 | 환경변수 재확인 |
 | `claude` 명령어 없음 | PATH 미등록 | `npm install -g @anthropic-ai/claude-code` |

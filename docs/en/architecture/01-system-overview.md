@@ -84,9 +84,9 @@ ClaudeGUI adopts a **hybrid local-server architecture**. The browser (React fron
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
-| **Framework** | Next.js 14+ App Router | SSR + custom-server support |
+| **Framework** | Next.js 15+ App Router | SSR + custom-server support |
 | **Language** | TypeScript (strict) | Type safety, refactoring stability |
-| **UI Library** | React 18+ | Ecosystem, App Router compatibility |
+| **UI Library** | React 19+ | Ecosystem, App Router compatibility |
 | **Styling** | Tailwind CSS + shadcn/ui | Utility-first; Radix-based a11y |
 | **Panels** | react-resizable-panels v4 | 5.2k stars, localStorage, collapse/expand |
 | **Editor** | @monaco-editor/react | VS Code engine, 100+ languages |
@@ -103,7 +103,7 @@ ClaudeGUI adopts a **hybrid local-server architecture**. The browser (React fron
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
-| **Runtime** | Node.js 20+ LTS | `@parcel/watcher`/node-pty native ABI, ESM dynamic import |
+| **Runtime** | Node.js 20–24.x (LTS 22 recommended) | `@parcel/watcher`/node-pty native ABI, ESM dynamic import |
 | **Server** | Next.js + custom server.js | WebSocket required |
 | **WebSocket** | ws v8 | Lightweight, standards-compliant |
 | **Terminal Backend** | node-pty | Maintained by Microsoft; PTY sessions |

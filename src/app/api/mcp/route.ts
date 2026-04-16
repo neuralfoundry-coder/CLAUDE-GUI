@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const root = getProjectRoot();
+    const root = await getProjectRoot();
     const settings = await loadSettings(root);
     const servers: Record<string, McpServerEntry> = settings.mcpServers ?? {};
     return apiSuccess({ mcpServers: servers });
@@ -23,7 +23,7 @@ export async function PUT(req: NextRequest) {
     if (!mcpServers || typeof mcpServers !== 'object') {
       return apiError('Invalid mcpServers body', 4400, 400);
     }
-    const root = getProjectRoot();
+    const root = await getProjectRoot();
     const settings = await loadSettings(root);
     settings.mcpServers = mcpServers as Record<string, McpServerEntry>;
     await saveSettings(settings, root);

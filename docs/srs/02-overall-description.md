@@ -68,7 +68,7 @@ ClaudeGUI의 핵심 차별점:
 
 | 소프트웨어 | 최소 버전 | 비고 |
 |-----------|----------|------|
-| Node.js | 20.0+ | `@parcel/watcher` / node-pty 네이티브 바이너리, ESM dynamic import 안정성 |
+| Node.js | 20.0–24.x (LTS 22 권장) | `@parcel/watcher` / node-pty 네이티브 바이너리, ESM dynamic import 안정성 |
 | Claude CLI | 최신 | `claude` 명령어 PATH 등록 필수 |
 | npm | 10.0+ | 패키지 관리 |
 | Chrome | 최신 2개 버전 | 기본 타겟 브라우저 |
@@ -93,7 +93,7 @@ ClaudeGUI의 핵심 차별점:
 ### 가정
 
 - 사용자가 Claude CLI를 사전 설치하고 인증을 완료한 상태
-- 로컬 머신에서 Node.js 20+ 환경이 준비됨
+- 로컬 머신에서 Node.js 20–24.x (LTS 22 권장) 환경이 준비됨
 - 네이티브 모듈 빌드를 위한 C++ 빌드 도구가 설치됨
 - 브라우저로 Chrome을 사용
 

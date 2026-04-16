@@ -10,7 +10,7 @@ export async function GET() {
   try {
     let browserId: string | null = null;
     try {
-      const hdrs = headers();
+      const hdrs = await headers();
       browserId = hdrs.get('x-browser-id') || null;
     } catch {
       /* not in request context */

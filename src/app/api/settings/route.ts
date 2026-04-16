@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    const root = getProjectRoot();
+    const root = await getProjectRoot();
     const settings = await loadSettings(root);
     const normalized = normalizeRules(settings);
     return apiSuccess({ settings, normalized });
@@ -22,7 +22,7 @@ export async function PUT(req: NextRequest) {
     if (!body || typeof body !== 'object') {
       return apiError('Invalid settings body', 4400, 400);
     }
-    const root = getProjectRoot();
+    const root = await getProjectRoot();
     await saveSettings(body, root);
     return apiSuccess({ saved: true });
   } catch (err) {

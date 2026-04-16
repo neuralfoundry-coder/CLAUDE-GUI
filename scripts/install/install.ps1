@@ -51,20 +51,23 @@ try {
   $nodeVersion = (node -v) 2>$null
   if ($nodeVersion -match '^v(\d+)') {
     $major = [int]$Matches[1]
-    if ($major -ge 20) {
+    if ($major -ge 20 -and $major -lt 25) {
       $needNode = $false
       Write-Log "Node.js $nodeVersion detected"
+    } elseif ($major -ge 25) {
+      Write-Warn "Node.js $nodeVersion is too new. Next.js requires Node.js 20-24."
+      Write-Warn "Install Node 22 LTS: fnm install 22; fnm use 22"
     }
   }
 } catch {}
 
 if ($needNode) {
-  Write-Warn 'Node.js 20+ not found.'
-  if (Confirm-Action 'Install Node 20 via fnm?') {
+  Write-Warn 'Node.js 20+ (LTS recommended: 22.x) not found.'
+  if (Confirm-Action 'Install Node 22 LTS via fnm?') {
     try {
       Invoke-Step 'winget install --silent --accept-source-agreements --accept-package-agreements Schniz.fnm'
-      Invoke-Step 'fnm install 20'
-      Invoke-Step 'fnm use 20'
+      Invoke-Step 'fnm install 22'
+      Invoke-Step 'fnm use 22'
     } catch {
       Write-Err "Failed to install Node via fnm. Install manually from https://nodejs.org/"
       exit 1

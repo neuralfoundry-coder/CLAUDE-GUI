@@ -4,13 +4,11 @@ const path = require('path');
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  experimental: {
-    serverComponentsExternalPackages: [
-      'node-pty',
-      '@parcel/watcher',
-      '@anthropic-ai/claude-agent-sdk',
-    ],
-  },
+  serverExternalPackages: [
+    'node-pty',
+    '@parcel/watcher',
+    '@anthropic-ai/claude-agent-sdk',
+  ],
   webpack: (config, { isServer }) => {
     if (isServer) {
       config.externals = config.externals || [];

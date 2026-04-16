@@ -13,8 +13,8 @@ export function MarkdownEditor({ content, filePath, onContentChange }: MarkdownE
   const [code, setCode] = useState(content);
   const [previewContent, setPreviewContent] = useState(content);
   const prevFileRef = useRef(filePath);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const previewTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Re-initialize code when filePath changes (not on every content prop update)
   useEffect(() => {

@@ -33,12 +33,12 @@ const DENIED_SEGMENTS = new Set([
  * `x-browser-id` header to resolve the correct per-tab root.
  * Falls back to the global singleton when browserId is absent.
  */
-export function getProjectRoot(browserId?: string | null): string {
+export async function getProjectRoot(browserId?: string | null): Promise<string> {
   let bid = browserId ?? null;
   if (!bid) {
     // Attempt to read from Next.js request headers (works inside API routes).
     try {
-      const hdrs = headers();
+      const hdrs = await headers();
       bid = hdrs.get('x-browser-id') || null;
     } catch {
       // Not in a Next.js request context — fall through to global root.
@@ -58,7 +58,7 @@ function isDeniedSegment(segment: string): boolean {
 }
 
 export async function resolveSafe(userPath: string, projectRoot?: string): Promise<string> {
-  const root = projectRoot ?? getProjectRoot();
+  const root = projectRoot ?? await getProjectRoot();
   if (typeof userPath !== 'string') {
     throw new SandboxError('path must be a string', 4400);
   }

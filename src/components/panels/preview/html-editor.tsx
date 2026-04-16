@@ -13,8 +13,8 @@ export function HtmlEditor({ content, filePath, onContentChange }: HtmlEditorPro
   const [code, setCode] = useState(content);
   const [previewHtml, setPreviewHtml] = useState(content);
   const prevFileRef = useRef(filePath);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const previewTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Re-initialize code when filePath changes (not on every content prop update)

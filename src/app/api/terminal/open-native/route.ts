@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
       }
       targetDir = stat.isDirectory() ? abs : path.dirname(abs);
     } else {
-      targetDir = getProjectRoot();
+      targetDir = await getProjectRoot();
     }
 
     let launcher;

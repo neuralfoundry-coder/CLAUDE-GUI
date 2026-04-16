@@ -165,7 +165,7 @@
 
 ### NFR-404: Node.js compatibility
 
-- Node.js **20.x LTS** or later shall be supported.
+- Node.js **20.x–24.x** (LTS **22.x** recommended) shall be supported.
 - The runtime shall be able to load `@parcel/watcher` v2 native binaries, node-pty prebuilds, and ESM dynamic imports.
 
 ---

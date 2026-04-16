@@ -63,7 +63,7 @@
 
 - Anthropic Claude Code 공식 문서
 - Claude Agent SDK API 레퍼런스
-- Next.js 14+ App Router 문서
+- Next.js 15+ App Router 문서
 - Monaco Editor API 문서
 - xterm.js API 문서
 
