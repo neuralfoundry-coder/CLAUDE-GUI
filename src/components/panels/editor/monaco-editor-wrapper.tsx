@@ -8,8 +8,12 @@ import { useEditorStore } from '@/stores/use-editor-store';
 import { useLayoutStore } from '@/stores/use-layout-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { getLanguageFromPath } from '@/lib/editor/language-map';
+import { configureMonacoLoader } from '@/lib/editor/monaco-loader-config';
 import { useResolvedTheme } from '@/hooks/use-theme';
 import { registerClaudeCompletionProvider } from './claude-completion-provider';
+
+// Configure Monaco loader once at module level (before dynamic import).
+configureMonacoLoader();
 
 /**
  * Module-level reference to the currently mounted Monaco editor so that

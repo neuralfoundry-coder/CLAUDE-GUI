@@ -137,6 +137,13 @@
 - Users shall be able to adjust editor and terminal font size.
 - `Cmd+`/`Cmd-` shall provide quick adjustment.
 
+### NFR-307: API error user notifications
+
+- API call failures (network errors, server errors, etc.) shall be shown to the user immediately via toast notifications.
+- Toasts auto-dismiss after 5 seconds and can be manually closed.
+- Up to 5 toasts are displayed simultaneously; older ones are automatically removed.
+- Implementation: `src/stores/use-toast-store.ts`, `src/components/layout/toast-container.tsx`, `src/lib/api-client.ts` (`showErrorToast`)
+
 ---
 
 ## 4.4 Compatibility (NFR-400)

@@ -148,18 +148,39 @@ async function acquireWatcher(root) {
 
   dbg.info('acquireWatcher new', { root });
 
+  // Batch events in a 150ms window to avoid flooding clients during rapid
+  // changes (e.g. npm install, git checkout). Events are deduplicated by
+  // path, keeping the latest event type.
+  let pendingBatch = new Map();
+  let batchTimer = null;
+  const BATCH_INTERVAL_MS = 150;
+
+  const flushBatch = () => {
+    batchTimer = null;
+    if (pendingBatch.size === 0) return;
+    const batch = Array.from(pendingBatch.values());
+    pendingBatch = new Map();
+    const ts = new Date().toISOString();
+    for (const item of batch) {
+      broadcastToRoot(root, {
+        type: 'change',
+        event: item.event,
+        path: item.path,
+        timestamp: ts,
+      });
+    }
+  };
+
   const handleEvents = (events) => {
     for (const ev of events) {
       if (isIgnoredByWatcher(ev.path)) continue;
       const rel = path.relative(root, ev.path) || '.';
       const mapped = mapEvent(ev.type);
       dbg.trace(mapped, rel);
-      broadcastToRoot(root, {
-        type: 'change',
-        event: mapped,
-        path: rel,
-        timestamp: new Date().toISOString(),
-      });
+      pendingBatch.set(rel, { event: mapped, path: rel });
+    }
+    if (!batchTimer) {
+      batchTimer = setTimeout(flushBatch, BATCH_INTERVAL_MS);
     }
   };
 

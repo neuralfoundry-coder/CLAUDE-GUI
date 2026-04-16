@@ -135,6 +135,13 @@
 - 에디터 및 터미널의 폰트 크기를 사용자가 조절할 수 있어야 한다.
 - `Cmd+`/`Cmd-`로 빠른 조절을 지원한다.
 
+### NFR-307: API 에러 사용자 알림
+
+- API 호출 실패(네트워크 오류, 서버 오류 등)는 토스트 알림으로 사용자에게 즉시 표시해야 한다.
+- 토스트는 5초 후 자동 해제되며, 수동으로도 닫을 수 있다.
+- 최대 5개의 토스트가 동시에 표시되며, 오래된 것은 자동으로 제거된다.
+- 구현: `src/stores/use-toast-store.ts`, `src/components/layout/toast-container.tsx`, `src/lib/api-client.ts` (`showErrorToast`)
+
 ---
 
 ## 4.4 호환성 (NFR-400)

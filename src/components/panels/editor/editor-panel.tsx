@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { Loader2, Map } from 'lucide-react';
 import { EditorTabBar } from './editor-tab-bar';
+import { EditorBreadcrumb } from './editor-breadcrumb';
 import { MonacoEditorWrapper } from './monaco-editor-wrapper';
 import { MonacoDiffWrapper } from './monaco-diff-wrapper';
 import { DiffAcceptBar } from './diff-accept-bar';
@@ -104,6 +105,7 @@ export function EditorPanel({ leafId }: EditorPanelProps) {
       </div>
 
       <EditorTabBar leafId={leafId} />
+      <EditorBreadcrumb />
       <DiffAcceptBar />
       <div className="flex-1 overflow-hidden">
         {!activeTabId || !activeTab ? (

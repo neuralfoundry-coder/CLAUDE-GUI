@@ -8,38 +8,15 @@ import { useSplitLayoutStore } from '@/stores/use-split-layout-store';
 import { useClaudeStore } from '@/stores/use-claude-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useMcpStore } from '@/stores/use-mcp-store';
-import { filesApi } from '@/lib/api-client';
+import { useFileIndexStore } from '@/stores/use-file-index-store';
 import { exportToPptx, parseHtmlToSlides } from '@/lib/export/pptx-exporter';
 import { openPrintPdf } from '@/lib/export/pdf-exporter';
 
-interface FileItem {
-  path: string;
-  name: string;
-}
-
-async function listAllFiles(dir = '', depth = 0): Promise<FileItem[]> {
-  if (depth > 3) return [];
-  try {
-    const { entries } = await filesApi.list(dir);
-    const out: FileItem[] = [];
-    for (const e of entries) {
-      const full = dir ? `${dir}/${e.name}` : e.name;
-      if (e.type === 'directory') {
-        const sub = await listAllFiles(full, depth + 1);
-        out.push(...sub);
-      } else {
-        out.push({ path: full, name: e.name });
-      }
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
-  const [files, setFiles] = useState<FileItem[]>([]);
+  const files = useFileIndexStore((s) => s.files);
+  const buildIndex = useFileIndexStore((s) => s.buildIndex);
+  const fileIndexInitialized = useFileIndexStore((s) => s.initialized);
   const openFile = useEditorStore((s) => s.openFile);
   const togglePanel = useSplitLayoutStore((s) => s.togglePanelByType);
   const setTheme = useLayoutStore((s) => s.setTheme);
@@ -64,10 +41,10 @@ export function CommandPalette() {
   }, []);
 
   useEffect(() => {
-    if (open && files.length === 0) {
-      listAllFiles().then(setFiles);
+    if (open && !fileIndexInitialized) {
+      buildIndex();
     }
-  }, [open, files.length]);
+  }, [open, fileIndexInitialized, buildIndex]);
 
   const runCommand = (fn: () => void | Promise<void>) => {
     setOpen(false);

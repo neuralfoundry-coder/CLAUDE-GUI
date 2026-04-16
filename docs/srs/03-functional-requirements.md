@@ -108,8 +108,13 @@
   - Untracked (U) — 연녹색
   - Renamed (R) — 파란색
   - Conflicted (!) — 짙은 빨간색
-- 구현: `GET /api/git/status`는 `git status --porcelain` 출력을 파싱하여 경로→상태 맵을 반환한다.
+- 구현: `GET /api/git/status`는 `git status --porcelain` 출력을 파싱하여 경로→상태 맵을 반환한다. 모든 Git 명령은 10초 타임아웃이 적용된다.
 - 프로젝트가 Git 저장소가 아니면 `isRepo: false`로 응답하고 인디케이터를 표시하지 않는다.
+
+### FR-204a: Git Diff 뷰어
+
+- 파일 컨텍스트 메뉴에서 "View Git Diff"를 선택하면, `GET /api/git/diff?path=<file>` 엔드포인트가 `git diff`와 `git show HEAD:<file>`을 실행하여 현재 작업본과 HEAD 간의 차이를 Monaco diff 에디터에 표시한다.
+- 구현: `src/app/api/git/diff/route.ts`, `src/lib/api-client.ts` (`gitApi.diff`), `src/components/panels/file-explorer/file-context-menu.tsx`
 
 ### FR-205: 파일 아이콘 매핑
 
@@ -148,7 +153,8 @@
   - `resolveSafe(destDir)`로 대상 디렉토리를 프로젝트 루트 샌드박스 내부로 제한한다.
   - 파일명은 `path.basename`으로 정규화하고 `.`, `..`, `/`, `\`, `\0`을 포함하는 이름을 거부한다.
   - 파일당 최대 크기 `MAX_BINARY_SIZE` (50 MB), 요청 총합 최대 200 MB를 초과하면 `413 Payload Too Large`를 반환한다.
-  - 동일 파일명이 이미 존재하면 덮어쓰지 않고 ` (1)`, ` (2)` 접미사로 고유화한다.
+  - 알려진 바이너리 확장자(PNG, JPEG, PDF, ZIP 등)에 대해 선언된 MIME 타입과 매직 바이트 시그니처의 일관성을 검증한다. 불일치 시 `400 Bad Request`를 반환한다.
+  - 동일 파일명이 이미 존재하면 덮어쓰지 않고 ` (1)`, ` (2)` 접미사로 고유화한다(최대 100회 재시도).
 - 업로드 성공 후 클라이언트는 `refreshRoot()`로 파일 트리를 즉시 갱신한다. `/ws/files` 감시자도 이벤트를 발행하지만 디바운스 지연 없이 즉시 반영하기 위해 수동 갱신을 병행한다.
 - 실패 시 헤더의 상태 라벨이 `upload failed: <message>`로 표시되며 `text-destructive`로 강조된다.
 - 구현: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (드롭/페이스트 핸들러, 오버레이), `src/components/panels/file-explorer/file-tree.tsx` (캡처 페이즈 외부 파일 드롭 핸들러, `onExternalFileDrop` 프롭).
@@ -214,7 +220,8 @@
 ### FR-301: Monaco Editor 통합
 
 - `@monaco-editor/react` 패키지를 통해 Monaco Editor를 통합해야 한다.
-- CDN 로더 방식으로 번들 크기를 최적화한다.
+- 기본적으로 CDN 로더 방식으로 번들 크기를 최적화한다. `NEXT_PUBLIC_MONACO_LOCAL=true` 환경변수를 설정하면 로컬 번들(`/monaco-editor/min/vs`)에서 로딩하여 오프라인/느린 네트워크 환경을 지원한다.
+- 에디터 탭 바 아래에 브레드크럼 내비게이션 바를 표시하여 현재 파일의 전체 경로를 세그먼트별로 보여준다 (`src/components/panels/editor/editor-breadcrumb.tsx`).
 
 ### FR-302: 멀티탭 지원
 
@@ -1013,6 +1020,16 @@
 ### FR-802: 빠른 파일 열기
 
 - `Cmd+P` / `Ctrl+P`로 파일명 검색 및 열기를 지원해야 한다.
+- 파일 인덱스는 `useFileIndexStore` Zustand 스토어에 캐시되며, 커맨드 팔레트를 처음 열 때 빌드된다. 이후 `/ws/files` WebSocket 이벤트(add/unlink)를 통해 증분 업데이트된다.
+
+### FR-802a: 전역 파일 내용 검색
+
+- `Cmd+Shift+F` / `Ctrl+Shift+F`로 전체 프로젝트의 파일 내용 검색을 지원해야 한다.
+- 서버 측에서 `ripgrep`(사용 불가 시 `grep` 폴백)을 사용하여 검색한다(`GET /api/files/search`).
+- 검색 결과는 최대 200개로 제한하며, 파일별로 그룹화하여 표시한다.
+- 대소문자 구분 토글 및 glob 파일 필터를 지원한다.
+- 결과를 클릭하면 해당 파일의 해당 라인으로 에디터를 연다.
+- 구현: `src/app/api/files/search/route.ts`, `src/stores/use-search-store.ts`, `src/components/panels/search/search-panel.tsx`, `src/components/layout/search-overlay.tsx`
 
 ### FR-803: 사이드바 토글
 
@@ -1252,7 +1269,7 @@
 
 - 시스템은 현재 활성 프로젝트가 변경된 이후에도 같은 Claude 세션에서 생성된 이미지/PDF/Word/Excel/PowerPoint 아티팩트를 프리뷰·내보내기할 수 있어야 한다.
 - 서버 측 아티팩트 레지스트리
-  - `src/lib/claude/artifact-registry.ts`에 최대 1024개 경로를 유지하는 인-프로세스 Map(초과 시 가장 오래된 항목 축출).
+  - `src/lib/claude/artifact-registry.ts`에 최대 1024개 경로를 유지하는 인-프로세스 Map(초과 시 가장 오래된 항목 축출). 등록된 항목은 24시간 TTL이 적용되며, 만료된 항목은 신규 등록 시 lazy eviction 및 조회 시 자동 제거된다.
   - `POST /api/artifacts/register` — `{ paths: string[] }`를 받아 절대 경로 여부와 `fs.stat()`을 검증하고 50MB(`MAX_BINARY_SIZE`) 상한을 지킨 파일만 레지스트리에 추가한다. 기존 파일 API와 동일한 레이트 리미터(`rateLimit`/`clientKey`)를 통과해야 한다.
   - `GET /api/artifacts/raw?path=<abs>` — 레지스트리에 등록된 경로에 한해서만 바이트를 스트리밍한다. `resolveSafe` 프로젝트 샌드박스는 우회하지만, 레지스트리에 있는 경로만 읽으므로 현재 세션에서 캡처한 파일로 범위가 제한된다. Content-Type은 `docx`/`xlsx`/`xlsm`/`pptx`/이미지·PDF 등을 포함한 MIME 테이블로 산정한다.
 - 클라이언트 측 동작

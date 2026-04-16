@@ -1,20 +1,39 @@
 import type { ApiResponse, FileEntry, FileStat } from '@/types/files';
 import { getBrowserId } from './browser-session';
 
+/** Lazy import to avoid circular dependencies — toast store may not be ready at module load. */
+function showErrorToast(message: string): void {
+  try {
+    // Dynamic import to keep the module dependency acyclic.
+    const { useToastStore } = require('@/stores/use-toast-store');
+    useToastStore.getState().addToast(message, 'error');
+  } catch {
+    /* fallback: toast store not yet available */
+  }
+}
+
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   // FormData must not carry an explicit content-type — the browser sets the
   // multipart boundary automatically.
   const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData;
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      ...(isFormData ? {} : { 'content-type': 'application/json' }),
-      'x-browser-id': getBrowserId(),
-      ...(init?.headers || {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers: {
+        ...(isFormData ? {} : { 'content-type': 'application/json' }),
+        'x-browser-id': getBrowserId(),
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Network error';
+    showErrorToast(msg);
+    throw err;
+  }
   const json = (await res.json()) as ApiResponse<T>;
   if (!json.success) {
+    showErrorToast(json.error ?? 'Request failed');
     throw new Error(json.error);
   }
   return json.data;
@@ -136,6 +155,15 @@ export const projectApi = {
       method: 'POST',
       body: JSON.stringify({ path }),
     });
+  },
+};
+
+export const gitApi = {
+  diff(path?: string, staged = false): Promise<{ diff: string; original: string; path: string | null }> {
+    const params = new URLSearchParams();
+    if (path) params.set('path', path);
+    if (staged) params.set('staged', 'true');
+    return apiFetch(`/api/git/diff?${params.toString()}`);
   },
 };
 

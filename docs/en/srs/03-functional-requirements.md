@@ -110,8 +110,13 @@
   - Untracked (U) — light green
   - Renamed (R) — blue
   - Conflicted (!) — dark red
-- Implementation: `GET /api/git/status` parses `git status --porcelain` output and returns a path-to-status map.
+- Implementation: `GET /api/git/status` parses `git status --porcelain` output and returns a path-to-status map. All Git commands are subject to a 10-second timeout.
 - If the project is not a Git repository, the response is `isRepo: false` and no indicator is displayed.
+
+### FR-204a: Git Diff Viewer
+
+- Selecting "View Git Diff" from the file context menu calls `GET /api/git/diff?path=<file>`, which runs `git diff` and `git show HEAD:<file>` to display the difference between the working copy and HEAD in the Monaco diff editor.
+- Implementation: `src/app/api/git/diff/route.ts`, `src/lib/api-client.ts` (`gitApi.diff`), `src/components/panels/file-explorer/file-context-menu.tsx`
 
 ### FR-205: File icon mapping
 
@@ -150,7 +155,8 @@
   - Use `resolveSafe(destDir)` to restrict the destination directory to the project-root sandbox.
   - Normalize each filename with `path.basename` and reject names equal to `.`, `..`, or containing `/`, `\`, or `\0`.
   - Reject individual files larger than `MAX_BINARY_SIZE` (50 MB) and reject any request whose total size exceeds 200 MB with `413 Payload Too Large`.
-  - If a filename already exists, do not overwrite — disambiguate by appending ` (1)`, ` (2)`, etc.
+  - For known binary extensions (PNG, JPEG, PDF, ZIP, etc.), validate that the declared MIME type and magic byte signature are consistent. Return `400 Bad Request` on mismatch.
+  - If a filename already exists, do not overwrite — disambiguate by appending ` (1)`, ` (2)`, etc. (up to 100 retries).
 - On success, the client calls `refreshRoot()` to refresh the tree immediately. The `/ws/files` watcher also emits a change event, but the manual refresh avoids waiting on the `@parcel/watcher` event batch.
 - On failure, the header status label renders `upload failed: <message>` highlighted with `text-destructive`.
 - Implementation: `src/app/api/files/upload/route.ts`, `src/lib/api-client.ts` (`filesApi.upload`), `src/components/panels/file-explorer/file-explorer-panel.tsx` (drop/paste handlers, overlay), `src/components/panels/file-explorer/file-tree.tsx` (capture-phase external file drop handler, `onExternalFileDrop` prop).
@@ -229,7 +235,8 @@
 ### FR-301: Monaco Editor integration
 
 - Monaco Editor shall be integrated via the `@monaco-editor/react` package.
-- The CDN loader shall be used to optimize bundle size.
+- By default, the CDN loader is used to optimize bundle size. Setting `NEXT_PUBLIC_MONACO_LOCAL=true` switches to a local bundle (`/monaco-editor/min/vs`) to support offline or slow-network environments.
+- A breadcrumb navigation bar is displayed below the editor tab bar, showing the full path of the current file as clickable segments (`src/components/panels/editor/editor-breadcrumb.tsx`).
 
 ### FR-302: Multi-tab support
 
@@ -1037,6 +1044,16 @@
 ### FR-802: Quick open file
 
 - `Cmd+P` / `Ctrl+P` shall support searching and opening files by name.
+- The file index is cached in the `useFileIndexStore` Zustand store and built on the first command palette open. Subsequent updates are incremental via `/ws/files` WebSocket events (add/unlink).
+
+### FR-802a: Global file content search
+
+- `Cmd+Shift+F` / `Ctrl+Shift+F` shall support searching file contents across the entire project.
+- The server uses `ripgrep` (with `grep` fallback) via `GET /api/files/search`.
+- Results are capped at 200 matches and grouped by file.
+- Case sensitivity toggle and glob file filter are supported.
+- Clicking a result opens the editor at the corresponding file and line.
+- Implementation: `src/app/api/files/search/route.ts`, `src/stores/use-search-store.ts`, `src/components/panels/search/search-panel.tsx`, `src/components/layout/search-overlay.tsx`
 
 ### FR-803: Toggle sidebar
 
@@ -1264,7 +1281,7 @@ Each panel (file explorer, editor, terminal, Claude chat, preview) shall support
 
 - The system shall let the user preview and export image/PDF/Word/Excel/PowerPoint artifacts captured earlier in the current Claude session even after switching to a different project.
 - Server-side artifact registry
-  - `src/lib/claude/artifact-registry.ts` holds an in-process Map capped at 1024 paths (oldest evicted when the cap is hit).
+  - `src/lib/claude/artifact-registry.ts` holds an in-process Map capped at 1024 paths (oldest evicted when the cap is hit). Registered entries have a 24-hour TTL; expired entries are lazily evicted on new registrations and automatically removed on lookup.
   - `POST /api/artifacts/register` — accepts `{ paths: string[] }`, verifies each is an absolute path that exists and stays under the 50 MB `MAX_BINARY_SIZE` cap, then adds it to the registry. The route uses the same rate limiter (`rateLimit`/`clientKey`) as the main files API.
   - `GET /api/artifacts/raw?path=<abs>` — streams the bytes of a previously registered path, bypassing the project-scoped `resolveSafe` sandbox but limited to files the registry has already admitted. Content-Type is resolved through a MIME table that covers `docx`/`xlsx`/`xlsm`/`pptx`, PDFs, and images.
 - Client-side behaviour

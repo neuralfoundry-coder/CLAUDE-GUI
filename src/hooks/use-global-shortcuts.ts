@@ -3,6 +3,7 @@
 import { useLayoutStore } from '@/stores/use-layout-store';
 import { useArtifactStore } from '@/stores/use-artifact-store';
 import { useProjectStore } from '@/stores/use-project-store';
+import { useSearchStore } from '@/stores/use-search-store';
 import { terminalApi } from '@/lib/api-client';
 import { useKeyboardShortcut } from './use-keyboard-shortcut';
 
@@ -61,6 +62,8 @@ export function useGlobalShortcuts(): void {
       },
     },
     { key: 'a', meta: true, ctrl: true, shift: true, handler: () => toggleArtifacts() },
+    // Cmd/Ctrl+Shift+F — toggle global search panel
+    { key: 'f', meta: true, ctrl: true, shift: true, handler: () => useSearchStore.getState().toggle() },
 
     // Cmd/Ctrl+Shift+O — open the project root in the OS terminal app.
     {

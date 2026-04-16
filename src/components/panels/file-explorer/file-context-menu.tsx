@@ -11,6 +11,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useFileContextMenuStore } from '@/stores/use-file-context-menu-store';
 import { useFileClipboardStore } from '@/stores/use-file-clipboard-store';
+import { useEditorStore } from '@/stores/use-editor-store';
+import { gitApi, filesApi } from '@/lib/api-client';
 import type { FileActions } from './use-file-actions';
 
 const isMac =
@@ -127,6 +129,28 @@ export function FileContextMenu({
             <DropdownMenuItem onSelect={wrap(() => actions.revealInOS(target.path))}>
               {revealLabel}
             </DropdownMenuItem>
+            {!targetIsDir && (
+              <DropdownMenuItem
+                onSelect={wrap(async () => {
+                  const { original } = await gitApi.diff(target.path);
+                  const { content } = await filesApi.read(target.path);
+                  if (original === content) return; // no changes
+                  await useEditorStore.getState().openFile(target.path);
+                  // Show diff: original (HEAD) vs current working copy
+                  useEditorStore.getState().applyClaudeEdit(target.path, content);
+                  // Override the diff's original to the git HEAD version
+                  useEditorStore.setState((s) => ({
+                    tabs: s.tabs.map((t) =>
+                      t.path === target.path && t.diff
+                        ? { ...t, diff: { ...t.diff, original } }
+                        : t,
+                    ),
+                  }));
+                })}
+              >
+                View Git Diff
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={wrap(() => actions.cutToClipboard(selection))}>
               Cut

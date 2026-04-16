@@ -11,6 +11,8 @@ import { ArtifactsModal } from '@/components/modals/artifacts-modal';
 import { RemoteAccessModal } from '@/components/modals/remote-access-modal';
 import { McpServersModal } from '@/components/modals/mcp-servers-modal';
 import { CommandPalette } from '@/components/command-palette/command-palette';
+import { SearchOverlay } from './search-overlay';
+import { ToastContainer } from './toast-container';
 import { MobileShell } from './mobile-shell';
 import { SplitLayoutRenderer } from './split-layout-renderer';
 import { useSettingsStore } from '@/stores/use-settings-store';
@@ -20,6 +22,7 @@ import { useProjectStore } from '@/stores/use-project-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useClaudeStore } from '@/stores/use-claude-store';
 import { usePreviewStore } from '@/stores/use-preview-store';
+import { useFileIndexStore } from '@/stores/use-file-index-store';
 import { useSplitLayoutStore } from '@/stores/use-split-layout-store';
 import { useTheme } from '@/hooks/use-theme';
 import { useKeyboardShortcut } from '@/hooks/use-keyboard-shortcut';
@@ -61,12 +64,22 @@ export function AppShell() {
     getFilesClient().start();
     void useProjectStore.getState().refresh();
 
-    const unsubscribe = getFilesClient().subscribeProjectChange((evt) => {
+    const unsubProject = getFilesClient().subscribeProjectChange((evt) => {
       useProjectStore.getState().applyRemoteChange(evt.root);
       useEditorStore.getState().resetAll();
       usePreviewStore.getState().setFile(null);
+      useFileIndexStore.getState().reset();
     });
-    return unsubscribe;
+
+    // Incrementally update the file index on add/unlink events.
+    const unsubFiles = getFilesClient().subscribe((evt) => {
+      const idx = useFileIndexStore.getState();
+      if (!idx.initialized) return;
+      if (evt.event === 'add') idx.addFile(evt.path);
+      else if (evt.event === 'unlink') idx.removeFile(evt.path);
+    });
+
+    return () => { unsubProject(); unsubFiles(); };
   }, []);
 
   useKeyboardShortcut([
@@ -132,6 +145,8 @@ export function AppShell() {
       <RemoteAccessModalHost />
       <McpServersModalHost />
       <CommandPalette />
+      <SearchOverlay />
+      <ToastContainer />
     </div>
   );
 }
