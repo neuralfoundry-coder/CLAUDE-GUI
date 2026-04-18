@@ -251,7 +251,10 @@ async function startServer(nextHandler, upgradeHandler) {
   });
 
   wssClaude.on('connection', async (ws, req) => {
-    const handler = await loadHandler('claude-handler');
+    // CLAUDE_MOCK_HANDLER swaps in a deterministic mock for E2E tests —
+    // no real Claude CLI / auth required. See tests/e2e/claude-multi-tab.spec.ts.
+    const handlerName = process.env.CLAUDE_MOCK_HANDLER ? 'claude-handler-mock' : 'claude-handler';
+    const handler = await loadHandler(handlerName);
     handler(ws, req);
   });
 

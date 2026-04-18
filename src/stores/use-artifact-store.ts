@@ -27,13 +27,19 @@ export type Artifact = ExtractedArtifact;
  */
 function registerArtifactPaths(paths: string[]): void {
   if (typeof window === 'undefined' || paths.length === 0) return;
-  fetch('/api/artifacts/register', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ paths }),
-  }).catch((err) => {
-    console.warn('[artifacts] register failed', err);
-  });
+  void (async () => {
+    const { getBrowserId } = await import('@/lib/browser-session');
+    fetch('/api/artifacts/register', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-browser-id': getBrowserId(),
+      },
+      body: JSON.stringify({ paths }),
+    }).catch((err) => {
+      console.warn('[artifacts] register failed', err);
+    });
+  })();
 }
 
 export interface ArtifactModalSize {

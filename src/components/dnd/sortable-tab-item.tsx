@@ -30,8 +30,15 @@ export function SortableTabItem({ id, dragData, children }: SortableTabItemProps
     zIndex: isDragging ? 50 : undefined,
   };
 
+  // dnd-kit spreads role="button" tabindex="0" onto the wrapper for keyboard
+  // drag support, which nests two focusable elements (this div + the inner tab
+  // button) and trips axe's `focusable-content` / nested-interactive rules.
+  // We favour pointer-only drag on tabs, so we strip the focusable attributes
+  // — the inner button remains the single focus target.
+  const { role: _role, tabIndex: _tabIndex, ...safeAttributes } = attributes;
+
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div ref={setNodeRef} style={style} {...safeAttributes} {...listeners}>
       {children}
     </div>
   );

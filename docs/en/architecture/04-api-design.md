@@ -312,6 +312,37 @@ Returns session details and message history.
 
 Deletes a session.
 
+### 4.1.4 Project API
+
+#### `GET /api/project`
+
+Returns the current project root. When the `X-Browser-Id` header is present, the root for that `browserId` is returned; otherwise the global singleton root (ADR-016) is returned.
+
+**Request headers**:
+- `X-Browser-Id` (optional): browser tab identifier UUID
+
+**Response**:
+```json
+{ "success": true, "data": { "root": "/Users/dev/myproject" } }
+```
+
+#### `POST /api/project`
+
+Changes the project root. When the `X-Browser-Id` header is present, only that tab's project root is updated.
+
+**Request headers**:
+- `X-Browser-Id` (optional): browser tab identifier UUID
+
+**Request body**:
+```json
+{ "root": "/Users/dev/other-project" }
+```
+
+**Response**:
+```json
+{ "success": true, "data": { "root": "/Users/dev/other-project" } }
+```
+
 ---
 
 ## 4.2 WebSocket Protocol

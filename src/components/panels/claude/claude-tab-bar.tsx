@@ -101,68 +101,72 @@ export function ClaudeTabBar({ leafId }: ClaudeTabBarProps) {
               <SortableTabItem key={tab.id} id={tab.id} dragData={dragData}>
                 <ContextMenu>
                   <ContextMenuTrigger asChild>
-                    <button
-                      type="button"
+                    <div
                       className={cn(
-                        'group flex h-7 shrink-0 items-center gap-1 border-r px-2 text-[11px]',
+                        'group relative flex h-7 shrink-0 items-center border-r text-[11px]',
                         isActive
                           ? 'bg-background text-foreground'
                           : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                       )}
-                      onClick={() => setActiveTab(tab.id)}
-                      onDoubleClick={() => startRename(tab.id, tab.name)}
                       title={tab.sessionId ? `Session: ${tab.sessionId}` : 'New session'}
                     >
-                      {/* Status dot */}
-                      <span
-                        className={cn(
-                          'h-1.5 w-1.5 shrink-0 rounded-full',
-                          isStreaming
-                            ? 'animate-pulse bg-orange-400'
-                            : tab.sessionId
-                              ? 'bg-emerald-400'
-                              : 'bg-zinc-400',
-                        )}
-                      />
-
-                      {/* Tab name / inline edit */}
-                      {isEditing ? (
-                        <input
-                          ref={inputRef}
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') commitRename();
-                            if (e.key === 'Escape') cancelRename();
-                          }}
-                          onBlur={commitRename}
-                          className="w-20 bg-transparent text-[11px] outline-none"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                      ) : (
-                        <span className="max-w-[120px] truncate">{tab.name}</span>
-                      )}
-
-                      {/* Close button */}
-                      {!isEditing && (
+                      <button
+                        type="button"
+                        className="flex items-center gap-1 bg-transparent px-2 py-0 pr-6 text-inherit"
+                        onClick={() => setActiveTab(tab.id)}
+                        onDoubleClick={() => startRename(tab.id, tab.name)}
+                        aria-label={`Activate ${tab.name}`}
+                      >
+                        {/* Status dot */}
                         <span
-                          role="button"
-                          tabIndex={-1}
                           className={cn(
-                            'ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm',
+                            'h-1.5 w-1.5 shrink-0 rounded-full',
+                            isStreaming
+                              ? 'animate-pulse bg-orange-400'
+                              : tab.sessionId
+                                ? 'bg-emerald-400'
+                                : 'bg-zinc-400',
+                          )}
+                          aria-hidden="true"
+                        />
+
+                        {/* Tab name / inline edit */}
+                        {isEditing ? (
+                          <input
+                            ref={inputRef}
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitRename();
+                              if (e.key === 'Escape') cancelRename();
+                            }}
+                            onBlur={commitRename}
+                            className="w-20 bg-transparent text-[11px] outline-none"
+                            onClick={(e) => e.stopPropagation()}
+                            aria-label="Rename tab"
+                          />
+                        ) : (
+                          <span className="max-w-[120px] truncate">{tab.name}</span>
+                        )}
+                      </button>
+
+                      {/* Close button — sibling of the activator, not nested inside it */}
+                      {!isEditing && (
+                        <button
+                          type="button"
+                          className={cn(
+                            'absolute right-1 top-1/2 flex h-4 w-4 shrink-0 -translate-y-1/2 items-center justify-center rounded-sm',
                             'opacity-0 hover:bg-muted-foreground/20 group-hover:opacity-100',
                             isActive && 'opacity-60',
                           )}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            closeTab(tab.id);
-                          }}
+                          onClick={() => closeTab(tab.id)}
                           aria-label={`Close ${tab.name}`}
+                          title={`Close ${tab.name}`}
                         >
                           <X className="h-3 w-3" />
-                        </span>
+                        </button>
                       )}
-                    </button>
+                    </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
                     <ContextMenuItem onSelect={() => closeTab(tab.id)}>

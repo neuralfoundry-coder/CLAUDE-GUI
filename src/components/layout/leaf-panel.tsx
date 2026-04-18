@@ -10,6 +10,7 @@ import { ClaudeChatPanel } from '@/components/panels/claude/claude-chat-panel';
 import { PreviewPanel } from '@/components/panels/preview/preview-panel';
 import { DropZoneOverlay } from '@/components/dnd/drop-zone-overlay';
 import { useDndMonitor } from '@/components/dnd/dnd-provider';
+import { PanelErrorBoundary } from './error-boundary';
 
 interface LeafPanelProps {
   leafId: string;
@@ -34,7 +35,9 @@ export function LeafPanel({ leafId, panelType }: LeafPanelProps) {
       className="relative h-full w-full"
       data-leaf-id={leafId}
     >
-      {renderPanel(panelType, leafId)}
+      <PanelErrorBoundary panelType={panelType}>
+        {renderPanel(panelType, leafId)}
+      </PanelErrorBoundary>
       <DropZoneOverlay
         activeZone={activeZone}
         visible={isDragging && isOver}

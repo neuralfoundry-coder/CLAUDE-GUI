@@ -77,7 +77,7 @@ async function loadWatcher(rootAbs, onEvents, onError) {
 // Multi-browser connection & watcher management
 // ---------------------------------------------------------------------------
 
-/** @type {Map<WebSocket, { browserId: string|null, root: string|null }>} */
+/** @type {Map<WebSocket, { browserId: string|null, root: string|null, acquired: boolean }>} */
 const connections = new Map();
 
 /**
@@ -241,19 +241,27 @@ function ensureRegistryListener() {
     dbg.info('registry root change', { browserId: browserId?.slice(0, 8), from: oldRoot, to: newRoot });
 
     // Update connection metadata and switch watchers.
+    // Acquire NEW root first; only release the old one after success, so a
+    // failed acquire never leaves the connection with zero watchers.
     for (const [, meta] of connections) {
-      if (meta.browserId === browserId) {
-        const prev = meta.root;
-        meta.root = newRoot;
-        if (prev && prev !== newRoot) releaseWatcher(prev);
-        if (newRoot && newRoot !== prev) {
-          try {
-            await acquireWatcher(newRoot);
-          } catch (err) {
-            dbg.error('failed to acquire watcher for new root', err);
-          }
+      if (meta.browserId !== browserId) continue;
+      const prev = meta.root;
+      if (prev === newRoot) continue;
+
+      let newAcquired = false;
+      if (newRoot) {
+        try {
+          await acquireWatcher(newRoot);
+          newAcquired = true;
+        } catch (err) {
+          dbg.error('failed to acquire watcher for new root, keeping previous', err);
+          // Keep prev root + watcher; metadata stays pointed at prev.
+          continue;
         }
       }
+      if (prev && meta.acquired) releaseWatcher(prev);
+      meta.root = newRoot;
+      meta.acquired = newAcquired;
     }
 
     // Send project-changed only to this browser's connections.
@@ -280,13 +288,15 @@ export default async function filesHandler(ws, req) {
 
   const root = browserSessionRegistry.getRoot(browserId);
 
-  connections.set(ws, { browserId, root });
+  const meta = { browserId, root, acquired: false };
+  connections.set(ws, meta);
   dbg.log('client connected', { browserId: browserId?.slice(0, 8), root, total: connections.size });
 
   // Acquire a watcher for this connection's root.
   if (root) {
     try {
       await acquireWatcher(root);
+      meta.acquired = true;
       sendTo(ws, { type: 'ready', root });
 
       // Send initial ready event for this root.
@@ -299,19 +309,20 @@ export default async function filesHandler(ws, req) {
     } catch (err) {
       dbg.error('handler init failed', err);
       sendTo(ws, { type: 'error', message: String(err?.message || err) });
+      // acquired stays false — close handler will skip releaseWatcher.
     }
   } else {
     sendTo(ws, { type: 'ready', root: null });
   }
 
   ws.on('close', () => {
-    const meta = connections.get(ws);
+    const m = connections.get(ws);
     connections.delete(ws);
     dbg.log('client disconnected', { browserId: browserId?.slice(0, 8), total: connections.size });
 
-    // Release watcher for the old root.
-    if (meta?.root) {
-      releaseWatcher(meta.root);
+    // Release watcher only if we actually acquired one.
+    if (m?.acquired && m.root) {
+      releaseWatcher(m.root);
     }
 
     // Check if any other connections remain for this browserId.
@@ -325,10 +336,10 @@ export default async function filesHandler(ws, req) {
 
   ws.on('error', (err) => {
     dbg.error('ws error', err);
-    const meta = connections.get(ws);
+    const m = connections.get(ws);
     connections.delete(ws);
-    if (meta?.root) {
-      releaseWatcher(meta.root);
+    if (m?.acquired && m.root) {
+      releaseWatcher(m.root);
     }
   });
 }

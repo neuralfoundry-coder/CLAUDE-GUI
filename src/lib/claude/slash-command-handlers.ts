@@ -12,6 +12,7 @@ import { useClaudeStore } from '@/stores/use-claude-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { useMcpStore } from '@/stores/use-mcp-store';
+import { getBrowserId } from '@/lib/browser-session';
 
 type PushFn = (content: string) => void;
 
@@ -161,7 +162,10 @@ export async function handleLogin(push: PushFn): Promise<void> {
 
 export async function handleLogout(push: PushFn): Promise<void> {
   try {
-    const res = await fetch('/api/auth/logout', { method: 'POST' });
+    const res = await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'x-browser-id': getBrowserId() },
+    });
     const json = await res.json();
     if (json.success) {
       push('**Signed out** successfully. Run `/login` to sign in again.');
@@ -422,7 +426,10 @@ export async function handleAddDir(push: PushFn, args: string): Promise<void> {
   try {
     const res = await fetch('/api/project', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-browser-id': getBrowserId(),
+      },
       body: JSON.stringify({ path: dirPath }),
     });
     const json = await res.json();

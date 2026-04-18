@@ -8,6 +8,7 @@ import { useTerminalStore, type TerminalSession, type NativeTerminalNotice } fro
 import { useProjectStore } from '@/stores/use-project-store';
 import { terminalApi } from '@/lib/api-client';
 import { usePanelFocus } from '@/hooks/use-panel-focus';
+import { useKeyboardShortcut, isFocusInsideTerminal } from '@/hooks/use-keyboard-shortcut';
 import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 import { XTerminalAttach } from './x-terminal';
 import { TerminalSearchOverlay } from './terminal-search-overlay';
@@ -234,6 +235,7 @@ export function TerminalPanel({ leafId: _leafId }: TerminalPanelProps) {
   const renameSession = useTerminalStore((s) => s.renameSession);
   const focusPane = useTerminalStore((s) => s.focusPane);
   const searchOpen = useTerminalStore((s) => s.searchOverlayOpen);
+  const openSearchOverlay = useTerminalStore((s) => s.openSearchOverlay);
   const closeSearchOverlay = useTerminalStore((s) => s.closeSearchOverlay);
   const nativeNotice = useTerminalStore((s) => s.nativeTerminalNotice);
   const setNativeNotice = useTerminalStore((s) => s.setNativeTerminalNotice);
@@ -245,6 +247,19 @@ export function TerminalPanel({ leafId: _leafId }: TerminalPanelProps) {
   useEffect(() => {
     if (sessions.length === 0) createSession(activeRoot ? { initialCwd: activeRoot } : undefined);
   }, [sessions.length, createSession]);
+
+  // Cmd/Ctrl+F opens the terminal search overlay when focus is inside the
+  // terminal. We gate with `when` so the same binding doesn't fight with the
+  // browser's default find when focus is elsewhere (e.g. in the editor).
+  useKeyboardShortcut([
+    {
+      key: 'f',
+      meta: true,
+      ctrl: true,
+      when: isFocusInsideTerminal,
+      handler: () => openSearchOverlay(),
+    },
+  ]);
 
   // When the active project root changes, reset the dismiss state so the
   // banner can reappear for the new root if a mismatch still exists.

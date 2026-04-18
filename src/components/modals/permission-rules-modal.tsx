@@ -32,9 +32,13 @@ async function loadSettings(): Promise<Settings> {
 }
 
 async function saveSettings(s: Settings): Promise<void> {
+  const { getBrowserId } = await import('@/lib/browser-session');
   const res = await fetch('/api/settings', {
     method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      'x-browser-id': getBrowserId(),
+    },
     body: JSON.stringify(s),
   });
   const json = await res.json();

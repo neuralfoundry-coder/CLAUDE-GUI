@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "format": "prettier --write .",
+    "docs:audit": "node scripts/docs-audit.mjs",
     "postinstall": "node scripts/patch-next.js"
   },
   "dependencies": {

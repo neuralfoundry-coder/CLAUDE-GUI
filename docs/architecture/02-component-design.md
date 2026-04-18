@@ -1026,3 +1026,30 @@ Claude 쿼리 시:
 ### `browserId` 누락 시 폴백
 
 `browserId`가 없는 요청(구 버전 클라이언트 등)은 기존 `ProjectContext` 글로벌 싱글톤(ADR-016)의 `getActiveRoot()`를 사용한다. 이를 통해 하위 호환성이 유지된다.
+
+---
+
+## 2.13 최근 추가 컴포넌트 (Phase 1–3)
+
+이 섹션은 Phase 1–3(ADR-028~033)에서 추가된 모듈의 빠른 지도이다. 각 항목의 상세 결정과 근거는 해당 ADR을 참조하라.
+
+### 안정성 레이어 (Phase 1, ADR-028~031)
+
+- `src/components/layout/error-boundary.tsx` — `<ErrorBoundary scope>` + `<PanelErrorBoundary panelType>`. `leaf-panel.tsx::renderPanel()`가 각 패널을 래핑하고 `app-shell.tsx` 루트도 감싼다. `registerErrorSink(fn)` API로 Sentry 등 외부 수집기를 플러그인 가능 (ADR-028).
+- `src/lib/claude/request-aborter.ts` — `registerAborter(fn)` / `abortRequest(id)` 얇은 레지스트리. `getClaudeClient()`가 자신의 `abort`를 등록하고, `use-claude-store`는 리듀서 밖에서 동기 abort (ADR-029).
+- `src/stores/claude/{types,helpers,extractors}.ts` — 1,333줄 단일 스토어를 behavior-preserving으로 분해. 타입, 순수 헬퍼, 모듈-레벨 Map을 분리하고 공개 API는 re-export (ADR-031).
+- `server-handlers/files-handler.mjs` — 커넥션 메타에 `acquired: boolean` 플래그, 레지스트리 리스너는 acquire-before-release 순서 (ADR-030).
+
+### 성능 레이어 (Phase 2, ADR-032)
+
+- `src/components/ui/relative-time.tsx` — 자체 `now` 상태를 가진 `<RelativeTime>` 컴포넌트. Page Visibility API로 백그라운드 탭에서 틱 중단.
+- `src/stores/use-claude-store.ts` — `handleServerMessage`의 `content_block_delta` 경로가 증분 `last.content + delta` concat으로 전환 (O(n²) → 상각 O(n)).
+- `src/components/panels/claude/claude-chat-view.tsx::StreamingActivityBar` — `tabId` prop만 받고 `useShallow`로 직접 구독.
+- `src/lib/fs/rate-limit.ts` — 5분 스로틀 버킷 GC.
+
+### UX 레이어 (Phase 3, ADR-033)
+
+- `src/hooks/use-panel-jump.ts` + `PANEL_JUMP_ORDER` — Ctrl/Cmd+1~5 패널 점프. `app-shell.tsx`에서 등록.
+- `src/stores/use-layout-presets-store.ts` + `src/components/layout/layout-presets-menu.tsx` — 빌트인 3종(Editor Focus / Preview Split / Terminal Focus) + 사용자 프리셋 persist.
+- `src/lib/editor/buffer-recovery.ts` + `src/hooks/use-buffer-recovery-persist.ts` + `src/stores/use-recovery-store.ts` + `src/components/modals/recovery-modal.tsx` — dirty 버퍼 localStorage stash(256KB cap, 1s 디바운스), 부팅 시 복구 모달.
+- `src/app/api/files/replace/route.ts` + `src/lib/fs/replace-logic.ts` — dry-run 기본 Global Replace API. `resolveSafe` 경로 샌드박스 + 파일당 1MB + 배치 200파일.

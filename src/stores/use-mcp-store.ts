@@ -54,9 +54,13 @@ export const useMcpStore = create<McpState>((set) => ({
   saveServers: async (servers) => {
     set({ loading: true });
     try {
+      const { getBrowserId } = await import('@/lib/browser-session');
       const res = await fetch('/api/mcp', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-browser-id': getBrowserId(),
+        },
         body: JSON.stringify({ mcpServers: servers }),
       });
       if (!res.ok) return false;

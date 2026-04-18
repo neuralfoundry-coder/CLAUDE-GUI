@@ -215,19 +215,6 @@
 - All shortcuts reuse the existing `useKeyboardShortcut`/`hasPrimaryModifier` infrastructure and automatically map the platform-specific modifier (`Cmd` on macOS, `Ctrl` elsewhere).
 - Implementation: `src/components/panels/file-explorer/use-file-keyboard.ts`, `src/hooks/use-keyboard-shortcut.ts` (reused).
 
-### FR-215: Multi-browser independent project context
-
-- Each browser tab can open and work on an independent project. Changing the project in one tab does not affect other tabs.
-- The client generates a UUID `browserId` per tab and stores it in `sessionStorage`. This ensures each tab (including duplicated tabs) gets its own identity.
-- `browserId` is sent in all HTTP requests via the `X-Browser-Id` header and in WebSocket connections via the `?browserId=` query parameter.
-- The server maintains a `BrowserSessionRegistry` (`src/lib/project/browser-session-registry.mjs`) that maps each `browserId` to `{ root, lastSeen }`.
-- File watchers are ref-counted per project root: when multiple tabs open the same project, a single `@parcel/watcher` subscription is shared; the subscription is torn down only when the last tab referencing that root disconnects or switches away.
-- `project-changed` WebSocket events are sent only to the specific browser tab that triggered the change, not broadcast to all connected clients.
-- Terminal and Claude handlers resolve the project root from the per-tab `BrowserSessionRegistry` entry instead of the global `ProjectContext` singleton.
-- Disconnected sessions are garbage-collected after 30 minutes of inactivity (same pattern as `TerminalSessionRegistry` in ADR-020).
-- **Backward compatibility**: if a client does not send `browserId`, the server falls back to the global `ProjectContext` singleton, preserving full compatibility with older clients.
-- Implementation: `src/lib/project/browser-session-registry.mjs`, `src/lib/websocket/browser-id.ts`, `server-handlers/claude-handler.mjs`, `server-handlers/terminal-handler.mjs`, `server-handlers/files-handler.mjs`, `server.js`.
-
 ---
 
 ## 3.3 Code Editor (FR-300)
@@ -1063,6 +1050,18 @@
 
 - `Cmd+Shift+O` / `Ctrl+Shift+O` or the header's `ExternalLink` icon button shall open the OS default terminal app at the current project root.
 - The built-in terminal panel has been excluded from the default layout, so the `Cmd+J` toggle is no longer provided.
+
+### FR-804-1: Toggle editor
+
+- `Ctrl+Cmd+E` / `Ctrl+Alt+E` shall toggle the editor panel.
+
+### FR-804-2: Toggle Claude chat
+
+- `Ctrl+Cmd+K` / `Ctrl+Alt+K` shall toggle the Claude chat panel.
+
+### FR-804-3: Toggle preview
+
+- `Ctrl+Cmd+P` / `Ctrl+Alt+P` shall toggle the preview panel.
 
 ### FR-805: Customize keyboard shortcuts
 

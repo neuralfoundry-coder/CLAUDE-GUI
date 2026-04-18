@@ -281,6 +281,88 @@ describe('terminal-handler', () => {
     expect(env!.TERM).toBe('xterm-256color');
   });
 
+  describe('race scenarios (Phase 4.2)', () => {
+    it('pause arriving AFTER emitData but BEFORE the batch timer holds the output', async () => {
+      const handler = await loadHandler();
+      const ws = new FakeWs();
+      await handler(ws, {});
+
+      // Data arrives, pause fires during the 16ms batch window.
+      currentPty!.emitData('mid-batch ');
+      await vi.advanceTimersByTimeAsync(5);
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'pause' })), false);
+
+      // Advance past the batch interval — paused state must suppress the flush.
+      await vi.advanceTimersByTimeAsync(50);
+      expect(ws.sent.filter((m) => m.binary)).toHaveLength(0);
+
+      // Resume flushes the pending data.
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'resume' })), false);
+      const binary = ws.sent.filter((m) => m.binary);
+      expect(binary).toHaveLength(1);
+      expect((binary[0]!.payload as Buffer).toString('utf-8')).toBe('mid-batch ');
+    });
+
+    it('ws close while batched output is pending does NOT kill the PTY (registry retains it)', async () => {
+      const handler = await loadHandler();
+      const ws = new FakeWs();
+      await handler(ws, {});
+
+      currentPty!.emitData('x');
+      ws.emit('close');
+      // Advance past the batch interval so any scheduled flush would fire.
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(currentPty!.kill).not.toHaveBeenCalled();
+    });
+
+    it('PTY exit after ws detach is handled without sending to the dead ws', async () => {
+      const handler = await loadHandler();
+      const ws = new FakeWs();
+      await handler(ws, {});
+
+      // ws goes away first (detach), then PTY exits.
+      ws.emit('close');
+      const beforeFrames = ws.sent.length;
+      currentPty!.emitExit(137);
+
+      // No new frame should reach the closed ws — the exit arrives after detach.
+      expect(ws.sent.length).toBe(beforeFrames);
+    });
+
+    it('overflow triggered by a huge single emitData kills PTY, even mid-batch', async () => {
+      const handler = await loadHandler();
+      const ws = new FakeWs();
+      await handler(ws, {});
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'pause' })), false);
+
+      // Emit a chunk that alone exceeds the 5 MB buffer cap.
+      currentPty!.emitData(Buffer.alloc(5 * 1024 * 1024 + 1, 0x42));
+
+      expect(currentPty!.kill).toHaveBeenCalled();
+      expect(ws.readyState).toBe(ws.CLOSED);
+      const overflow = controlFrames(ws).find(
+        (c) => c.type === 'error' && (c as unknown as { code: string }).code === 'BUFFER_OVERFLOW',
+      );
+      expect(overflow).toBeDefined();
+    });
+
+    it('close message received during batch window still destroys PTY and drains cleanly', async () => {
+      const handler = await loadHandler();
+      const ws = new FakeWs();
+      await handler(ws, {});
+
+      // Emit some output during the batch window.
+      currentPty!.emitData('pending ');
+      await vi.advanceTimersByTimeAsync(5);
+      // Explicit close request mid-batch — PTY must be killed.
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'close' })), false);
+      await vi.advanceTimersByTimeAsync(30);
+
+      expect(currentPty!.kill).toHaveBeenCalled();
+    });
+  });
+
   it('re-attaches to an existing session and replays buffered output', async () => {
     const handler = await loadHandler();
     const ws1 = new FakeWs();

@@ -195,3 +195,17 @@
 
 - 공개 API(REST, WebSocket)는 문서화해야 한다.
 - 아키텍처 결정(ADR)은 기록을 유지한다.
+
+### NFR-506: 패널 크래시 격리
+
+- 4-패널 레이아웃의 한 패널에서 발생한 렌더 오류가 다른 패널이나 앱 전체의 가용성을 훼손해서는 안 된다.
+- 각 패널은 React Error Boundary로 감싸서, 크래시 시 해당 패널만 폴백 UI(오류 메시지 + 재시도 버튼)를 표시해야 한다.
+- 오류는 `registerErrorSink(fn)` API를 통해 외부 수집기(Sentry 등)로 전달 가능해야 한다. 기본 싱크는 `console.error`.
+- 구현 참조: ADR-028, `src/components/layout/error-boundary.tsx`.
+
+### NFR-507: 요청 취소 결정성
+
+- 사용자가 스트리밍 중인 Claude 탭을 닫을 때, 서버로 향하는 abort 신호는 해당 탭 상태가 스토어에서 제거되기 **전에** 동기적으로 송신되어야 한다.
+- `requestId → tabId` 라우팅 맵은 abort와 같은 프레임에서 정리되어, 늦게 도착하는 서버 응답이 사라진 탭을 가리켜 false-route 하는 일이 없어야 한다.
+- Store 리듀서 내부에서의 비동기 `import()` 또는 fetch는 금지한다(재진입 위험). 대신 레지스트리(`request-aborter.ts`)를 통해 리듀서 밖에서 동기 호출로 수행한다.
+- 구현 참조: ADR-029, `src/lib/claude/request-aborter.ts`.

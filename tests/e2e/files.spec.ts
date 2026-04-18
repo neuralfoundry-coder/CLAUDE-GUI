@@ -4,8 +4,11 @@ test.describe('UC-01 Project Browse', () => {
   test('file explorer loads project entries', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByText('Explorer', { exact: true })).toBeVisible();
-    // Wait for the file tree REST call to populate
-    await expect(page.locator('text=package.json').first()).toBeVisible({ timeout: 10000 });
+    // Wait for the virtualized tree to render at least one top-level entry.
+    // We don't assert a specific file name because react-arborist only renders
+    // the items inside the current scroll window — `package.json` sorts after
+    // every directory and can fall below the fold on small viewports.
+    await expect(page.getByRole('treeitem').first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('health endpoint responds', async ({ request }) => {
@@ -39,6 +42,10 @@ test.describe('UC-01 Project Browse', () => {
 });
 
 test.describe('FR-202/206/211 native file-explorer interactions', () => {
+  // State-changing API requests must include an x-browser-id header — the
+  // middleware enforces this as a custom-header CSRF defense.
+  const CSRF_HEADERS = { 'x-browser-id': 'e2e-test' } as const;
+
   test('copy API duplicates an existing file with " (n)" suffix', async ({ request }) => {
     // Sanity-check: source must exist in the project root.
     const list = await request.get('/api/files?path=');
@@ -51,6 +58,7 @@ test.describe('FR-202/206/211 native file-explorer interactions', () => {
     // Duplicate package.json — should land at "package (1).json", and the
     // server must clean up after itself when we DELETE it.
     const copy = await request.post('/api/files/copy', {
+      headers: CSRF_HEADERS,
       data: { srcPath: 'package.json', destPath: 'package.json' },
     });
     expect(copy.ok()).toBe(true);
@@ -60,6 +68,7 @@ test.describe('FR-202/206/211 native file-explorer interactions', () => {
 
     const cleanup = await request.delete(
       `/api/files?path=${encodeURIComponent('package (1).json')}`,
+      { headers: CSRF_HEADERS },
     );
     expect(cleanup.ok()).toBe(true);
   });
@@ -67,6 +76,7 @@ test.describe('FR-202/206/211 native file-explorer interactions', () => {
   test('copy API rejects copying a directory into its own descendant', async ({ request }) => {
     // `src/` exists in this repo and contains nested folders.
     const res = await request.post('/api/files/copy', {
+      headers: CSRF_HEADERS,
       data: { srcPath: 'src', destPath: 'src/components/src' },
     });
     expect(res.status()).toBeGreaterThanOrEqual(400);
@@ -78,17 +88,19 @@ test.describe('FR-202/206/211 native file-explorer interactions', () => {
     page,
   }) => {
     await page.goto('/');
-    // Wait for the tree to populate.
-    const target = page.locator('text=package.json').first();
-    await expect(target).toBeVisible({ timeout: 10000 });
+    // Wait for the tree to populate. The right-click handler lives on the
+    // inner div that carries `data-tree-path`; target that element directly
+    // so the event lands on the node that wires openContextMenuAtNode.
+    await expect(page.getByRole('treeitem').first()).toBeVisible({ timeout: 10_000 });
+    const target = page.locator('[data-tree-path]').first();
 
-    // Right-click a file node to open the hoisted context menu.
+    // Right-click to open the hoisted context menu.
     await target.click({ button: 'right' });
 
     // The hoisted menu renders a Radix DropdownMenu with role=menu.
     const menu = page.getByRole('menu');
     await expect(menu).toBeVisible();
-    await expect(menu.getByText('Copy', { exact: true })).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: /Copy/ }).first()).toBeVisible();
 
     // Move the mouse around — the menu must NOT dismiss (regression for the
     // per-node ContextMenu bug where virtualization re-renders closed it).
