@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { RefreshCw, FilePlus, FolderPlus, ArrowUp, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { RelativeTime } from '@/components/ui/relative-time';
 import { FileTree, type FileTreeHandle } from './file-tree';
 import { useFileTree } from './use-file-tree';
 import { useFileActions } from './use-file-actions';
@@ -18,22 +19,12 @@ import { PanelZoomControls } from '@/components/panels/panel-zoom-controls';
 import { cn } from '@/lib/utils';
 import { collectFilesFromDataTransfer, hasFilePayload } from '@/lib/fs/collect-files';
 
-function formatRelative(ts: number | null, now: number): string {
-  if (ts === null) return 'never';
-  const delta = Math.max(0, Math.floor((now - ts) / 1000));
-  if (delta < 2) return 'just now';
-  if (delta < 60) return `${delta}s ago`;
-  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-  return `${Math.floor(delta / 3600)}h ago`;
-}
-
 interface FileExplorerPanelProps {
   leafId?: string;
 }
 
 export function FileExplorerPanel({ leafId: _leafId }: FileExplorerPanelProps) {
   const { rootNodes, loading, error, refreshRoot, loadSubtree, lastSyncedAt, suppressWsRefreshRef } = useFileTree();
-  const [now, setNow] = useState(() => Date.now());
   const [dragDepth, setDragDepth] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -48,11 +39,6 @@ export function FileExplorerPanel({ leafId: _leafId }: FileExplorerPanelProps) {
   const actions = useFileActions(refreshRoot);
   const panelFocus = usePanelFocus('fileExplorer');
   const explorerZoom = useLayoutStore((s) => s.panelZoom.fileExplorer);
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
 
   const uploadFiles = useCallback(
     async (destDir: string, files: File[]) => {
@@ -296,11 +282,6 @@ export function FileExplorerPanel({ leafId: _leafId }: FileExplorerPanelProps) {
   });
 
   const isDragOver = dragDepth > 0;
-  const statusText = uploading
-    ? 'uploading…'
-    : uploadError
-      ? `upload failed: ${uploadError}`
-      : formatRelative(lastSyncedAt, now);
 
   return (
     <div
@@ -331,7 +312,7 @@ export function FileExplorerPanel({ leafId: _leafId }: FileExplorerPanelProps) {
             )}
             title={lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'not synced yet'}
           >
-            {statusText}
+            {uploading ? 'uploading…' : uploadError ? `upload failed: ${uploadError}` : <RelativeTime timestamp={lastSyncedAt} />}
           </span>
         </div>
         <div className="flex items-center gap-0.5">

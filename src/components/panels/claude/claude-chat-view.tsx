@@ -5,6 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { Send, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useClaudeStore } from '@/stores/use-claude-store';
+import { useShallow } from 'zustand/react/shallow';
 import { getClaudeClient } from '@/lib/websocket/claude-client';
 import type { ProjectFileItem } from '@/lib/fs/list-project-files';
 import { SessionInfoBar } from './session-info-bar';
@@ -52,30 +53,46 @@ import type { ChatMessage } from '@/stores/use-claude-store';
 
 const STREAMING_ACTIVITY_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 
-function StreamingActivityBar({ messages }: { messages: ChatMessage[] }) {
-  const lastEditTool = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]!;
-      if (m.kind === 'tool_use' && m.isStreaming && STREAMING_ACTIVITY_TOOLS.has(m.toolName ?? '')) {
-        const input = m.toolInput as Record<string, unknown> | undefined;
-        const filePath = input?.file_path as string | undefined;
-        return { toolName: m.toolName!, filePath };
-      }
-    }
-    return null;
-  }, [messages]);
+interface StreamingEditToolSummary {
+  toolName: string;
+  filePath: string | undefined;
+}
 
-  if (!lastEditTool) return null;
+function selectStreamingEditTool(messages: ChatMessage[]): StreamingEditToolSummary | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.kind === 'tool_use' && m.isStreaming && STREAMING_ACTIVITY_TOOLS.has(m.toolName ?? '')) {
+      const input = m.toolInput as Record<string, unknown> | undefined;
+      const filePath = input?.file_path as string | undefined;
+      return { toolName: m.toolName!, filePath };
+    }
+  }
+  return null;
+}
+
+function StreamingActivityBar({ tabId }: { tabId: string }) {
+  // Subscribe directly to the store with a shallow-equal selector. This way
+  // the bar only re-renders when toolName or filePath actually changes —
+  // not on every token delta that reshapes the messages array.
+  const lastEditTool = useClaudeStore(
+    useShallow((s) => {
+      const summary = selectStreamingEditTool(s.tabStates[tabId]?.messages ?? []);
+      return summary ?? { toolName: null as string | null, filePath: undefined as string | undefined };
+    }),
+  );
+
+  if (!lastEditTool.toolName) return null;
 
   const fileName = lastEditTool.filePath?.split('/').pop();
   const label = lastEditTool.toolName === 'Write'
     ? `Writing ${fileName ?? 'file'}...`
     : `Editing ${fileName ?? 'file'}...`;
+  const filePathForTitle = lastEditTool.filePath ?? '';
 
   return (
     <div className="flex items-center gap-1.5 border-t px-2 py-0.5 text-[10px] text-muted-foreground">
       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-orange-400" />
-      <span className="truncate font-mono" title={lastEditTool.filePath ?? ''}>
+      <span className="truncate font-mono" title={filePathForTitle}>
         {label}
       </span>
     </div>
@@ -648,7 +665,7 @@ export function ClaudeChatView({ tabId, onShowSlideDialog }: ClaudeChatViewProps
       )}
 
       {isStreaming && (
-        <StreamingActivityBar messages={messages} />
+        <StreamingActivityBar tabId={tabId} />
       )}
 
       {isStreaming && <div className="claude-streaming-bar" />}
@@ -683,7 +700,6 @@ export function ClaudeChatView({ tabId, onShowSlideDialog }: ClaudeChatViewProps
               placeholder="Ask Claude... (@ files, / commands, drop files)"
               aria-label="Claude prompt input"
               aria-autocomplete="list"
-              aria-expanded={mentionOpen || slashOpen}
               rows={2}
               className={`w-full resize-none rounded-md border bg-background p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring${isStreaming ? ' claude-streaming-input' : ''}`}
             />

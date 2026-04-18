@@ -236,6 +236,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
     return () => ro.disconnect();
   }, [loading, error]);
 
+
   useEffect(() => {
     const node = containerRef.current;
     if (!node) return;
@@ -310,7 +311,12 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
   if (error) return <div className="p-3 text-xs text-destructive">{error}</div>;
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-hidden">
+    <div
+      ref={containerRef}
+      className="flex-1 overflow-hidden file-tree-region"
+      role="region"
+      aria-label="File tree"
+    >
       <Tree<TreeNode>
         ref={treeApiRef}
         data={rootNodes}

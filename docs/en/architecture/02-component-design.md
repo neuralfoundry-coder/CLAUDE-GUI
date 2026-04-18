@@ -1059,3 +1059,30 @@ Tab A (project-foo)                     Tab B (project-bar)
 ### Fallback when `browserId` is missing
 
 Requests without `browserId` (e.g., old clients) fall back to the existing `ProjectContext` global singleton (ADR-016) via `getActiveRoot()`. This preserves backward compatibility.
+
+---
+
+## 2.13 Recent additions (Phase 1–3)
+
+Quick map of modules added during Phase 1–3 (ADR-028..033). See the individual ADRs for decision rationale.
+
+### Stability layer (Phase 1, ADR-028..031)
+
+- `src/components/layout/error-boundary.tsx` — `<ErrorBoundary scope>` and `<PanelErrorBoundary panelType>`. `leaf-panel.tsx::renderPanel()` wraps every mounted panel, and `app-shell.tsx` wraps the root. `registerErrorSink(fn)` exposes a plug point for Sentry or other collectors (ADR-028).
+- `src/lib/claude/request-aborter.ts` — a thin `registerAborter(fn)` / `abortRequest(id)` registry. `getClaudeClient()` registers its own `abort`, and `use-claude-store` aborts synchronously outside the Zustand reducer (ADR-029).
+- `src/stores/claude/{types,helpers,extractors}.ts` — behavior-preserving decomposition of the 1,333-line store into type declarations, pure helpers, and module-level maps. Public selectors are unchanged and types are re-exported (ADR-031).
+- `server-handlers/files-handler.mjs` — per-connection `acquired: boolean` flag; the registry listener was switched to acquire-before-release (ADR-030).
+
+### Performance layer (Phase 2, ADR-032)
+
+- `src/components/ui/relative-time.tsx` — `<RelativeTime>` owns its `now` state and pauses the timer under the Page Visibility API when the document is hidden.
+- `src/stores/use-claude-store.ts` — the `content_block_delta` branch of `handleServerMessage` now does incremental `last.content + delta` concat (amortized O(n) instead of O(n²)).
+- `src/components/panels/claude/claude-chat-view.tsx::StreamingActivityBar` — takes only `tabId` and subscribes via `useShallow` so it re-renders only when `toolName`/`filePath` actually change.
+- `src/lib/fs/rate-limit.ts` — 5-minute throttled bucket GC.
+
+### UX layer (Phase 3, ADR-033)
+
+- `src/hooks/use-panel-jump.ts` + `PANEL_JUMP_ORDER` — Ctrl/Cmd+1..5 panel focus jump, registered in `app-shell.tsx`.
+- `src/stores/use-layout-presets-store.ts` + `src/components/layout/layout-presets-menu.tsx` — three built-in presets (Editor Focus / Preview Split / Terminal Focus) plus persisted user presets.
+- `src/lib/editor/buffer-recovery.ts` + `src/hooks/use-buffer-recovery-persist.ts` + `src/stores/use-recovery-store.ts` + `src/components/modals/recovery-modal.tsx` — debounced localStorage stash of dirty buffers (256KB cap, 1s debounce) and a recovery modal on boot.
+- `src/app/api/files/replace/route.ts` + `src/lib/fs/replace-logic.ts` — dry-run-by-default Global Replace API. `resolveSafe` per target, 1MB per-file cap, 200-file batch cap.

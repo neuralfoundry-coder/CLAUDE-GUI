@@ -16,8 +16,20 @@ const WINDOW_MS = 60_000;
  */
 const MAX_REQUESTS = 6000;
 
+const GC_INTERVAL_MS = 5 * 60_000;
+let lastGcAt = 0;
+
+function gcExpired(now: number): void {
+  if (now - lastGcAt < GC_INTERVAL_MS) return;
+  lastGcAt = now;
+  for (const [key, bucket] of buckets) {
+    if (bucket.resetAt < now) buckets.delete(key);
+  }
+}
+
 export function rateLimit(key: string): { ok: boolean; remaining: number } {
   const now = Date.now();
+  gcExpired(now);
   const bucket = buckets.get(key);
   if (!bucket || bucket.resetAt < now) {
     buckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
@@ -32,4 +44,14 @@ export function clientKey(req: Request): string {
   const browserId = req.headers.get('x-browser-id');
   const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'local';
   return browserId ? `${ip}:${browserId}` : ip;
+}
+
+// Test-only hooks: allow deterministic coverage of GC behavior.
+export function __resetRateLimitForTests(): void {
+  buckets.clear();
+  lastGcAt = 0;
+}
+
+export function __rateLimitBucketCount(): number {
+  return buckets.size;
 }

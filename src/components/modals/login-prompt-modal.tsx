@@ -59,9 +59,13 @@ export function LoginPromptModal({ open, onOpenChange }: LoginPromptModalProps) 
     setSaving(true);
     setSaveError(null);
     try {
+      const { getBrowserId } = await import('@/lib/browser-session');
       const res = await fetch('/api/auth/api-key', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-browser-id': getBrowserId(),
+        },
         body: JSON.stringify({ apiKey: apiKey.trim() }),
       });
       const body = (await res.json()) as { success: boolean; error?: string };
@@ -78,7 +82,11 @@ export function LoginPromptModal({ open, onOpenChange }: LoginPromptModalProps) 
 
   const handleRemoveApiKey = async () => {
     try {
-      await fetch('/api/auth/api-key', { method: 'DELETE' });
+      const { getBrowserId } = await import('@/lib/browser-session');
+      await fetch('/api/auth/api-key', {
+        method: 'DELETE',
+        headers: { 'x-browser-id': getBrowserId() },
+      });
       await refresh();
     } catch {
       /* ignore */

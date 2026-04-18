@@ -220,6 +220,12 @@ export const terminalRegistry: TerminalRegistry;      // singleton
 
 **Principle**: Zustand store = sole authority for session metadata. Registry = runtime object lookup.
 
+### Principles
+
+- The store owns the canonical session list; the registry owns the live xterm/WebSocket instances.
+- Status transitions (idle → connecting → open → reconnecting → exited → closed) flow store → registry via subscriptions; direct mutation of live instances from outside is forbidden.
+- Session persistence uses `sessionStorage` so a page reload restores the tab list but a new tab (new browser session) starts fresh.
+
 ### Store Schema Changes
 
 ```typescript
@@ -279,15 +285,17 @@ interface TerminalSessionServerControl {
 
 ## 5. Server Handler Refactoring
 
-Key fixes in `terminal-handler.mjs`:
-- **S1**: Replace `fs.statSync()` with `fs.promises.stat()` + `fs.promises.realpath()`
-- **S2**: Send `backpressure_ack` with actual PTY state after pause/resume attempt
-- **S5**: Retry node-pty loading up to 3 times
-- **S6**: Log `ws.send()` failures
+### 5.1 `terminal-handler.mjs` fixes
 
-Key fixes in `session-registry.mjs`:
-- **S3**: Periodic ring buffer trim (every 5min) for detached sessions
-- **S4**: Remove 1s exit-to-destroy delay; cleanup on WebSocket close or explicit close frame
+- **S1**: Replace `fs.statSync()` with `fs.promises.stat()` + `fs.promises.realpath()` to avoid blocking the event loop and to resolve symlinks safely.
+- **S2**: Send `backpressure_ack` with the actual PTY state after a pause/resume attempt so the client can reconcile optimistic state.
+- **S5**: Retry node-pty loading up to 3 times; if all attempts fail, close the socket with a readable error code.
+- **S6**: Log every `ws.send()` failure with the frame type so silent drops become visible in debug output.
+
+### 5.2 `session-registry.mjs` fixes
+
+- **S3**: Periodic ring buffer trim (every 5 min) for detached sessions — prevents unbounded growth after long inactivity.
+- **S4**: Remove the legacy 1-second exit-to-destroy delay; cleanup now runs on WebSocket close or an explicit `{type:'close'}` frame.
 
 ---
 
@@ -306,7 +314,35 @@ See Korean version for full phase details.
 
 ---
 
-## 7. New File Summary
+## 7. Data Flow Diagrams
+
+### Keystrokes (user → PTY)
+
+```
+keypress → xterm.onData → TerminalInstance → TerminalConnection.send({type:'input',data})
+          → WebSocket → terminal-handler → ptyProcess.write
+```
+
+### PTY output (server → screen)
+
+```
+ptyProcess.onData → terminal-handler batch (16ms) → binary frame → WebSocket
+          → TerminalConnection.onmessage → TerminalInstance.write → xterm.screen
+```
+
+### Session lifecycle
+
+```
+createSession() → registry.ensureSession(id) → Connection.connect(?sessionId=id)
+          → server session hit → replay ring buffer → Instance.write replay frames
+          → status 'open' → keypress/output flow normally
+          → ws close (page reload) → status 'reconnecting' → retry
+          → exit frame → status 'exited' → UI shows "Restart shell"
+```
+
+---
+
+## 8. New File Summary
 
 | File | Lines | Responsibility |
 |------|-------|---------------|
@@ -316,9 +352,24 @@ See Korean version for full phase details.
 | `src/lib/terminal/terminal-registry.ts` | ~200 | Collection + store binding |
 | `src/lib/terminal/terminal-framing.ts` | ~110 | Protocol (extended) |
 | `src/lib/terminal/terminal-themes.ts` | ~134 | Themes (unchanged) |
+| `server-handlers/terminal-handler.mjs` | ~400 | Server handler (refactored) |
+| `server-handlers/terminal/session-registry.mjs` | ~210 | Session registry (improved) |
 
 **Deleted**:
 - `src/lib/terminal/terminal-manager.ts` (989 lines) → replaced by 4 modules
 - `src/lib/terminal/terminal-socket.ts` (74 lines) → absorbed into `terminal-connection.ts`
 
 **Net change**: ~1063 lines deleted, ~1010 lines created + ~610 lines modified
+
+---
+
+## 9. Testing Strategy
+
+| Module | Test approach |
+|--------|--------------|
+| `terminal-instance.ts` | Unit tests with an xterm mock: open / attach / detach / write / fit / search |
+| `terminal-connection.ts` | Unit tests with a ws mock: connect / reconnect / input queue / backpressure |
+| `terminal-session-controller.ts` | Integration tests with Instance+Connection mocks: OSC 7 / control frames / restart |
+| `terminal-registry.ts` | Unit tests with a store mock: ensureSession / closeSession / store binding |
+| Server handler | Extend the existing `terminal-handler.test.ts` with `backpressure_ack` cases |
+| E2E | Extend `terminal-ui.spec.ts` with reconnect scenarios |

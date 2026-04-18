@@ -197,3 +197,17 @@
 
 - Public APIs (REST, WebSocket) shall be documented.
 - Architecture Decision Records (ADRs) shall be maintained.
+
+### NFR-506: Panel crash isolation
+
+- A render error in one panel of the 4-panel layout shall not degrade availability of the other panels or the app as a whole.
+- Every panel shall be wrapped in a React Error Boundary; on crash, only the affected panel shall render a fallback UI (error message + retry button).
+- Errors shall be forwardable to an external collector (e.g., Sentry) via the `registerErrorSink(fn)` API. The default sink is `console.error`.
+- Reference: ADR-028, `src/components/layout/error-boundary.tsx`.
+
+### NFR-507: Request cancellation determinism
+
+- When the user closes a streaming Claude tab, the abort signal to the server shall be sent synchronously **before** the tab state is removed from the store.
+- The `requestId → tabId` routing map shall be cleared in the same frame as the abort, so late-arriving server responses cannot false-route to a missing tab.
+- Asynchronous `import()` or fetch inside a Zustand reducer is forbidden (re-entrancy hazard). Side effects shall run *outside* the reducer via the `request-aborter.ts` registry.
+- Reference: ADR-029, `src/lib/claude/request-aborter.ts`.

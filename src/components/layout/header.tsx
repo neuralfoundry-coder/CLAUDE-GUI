@@ -13,6 +13,7 @@ import { useMcpStore } from '@/stores/use-mcp-store';
 import { terminalApi } from '@/lib/api-client';
 import { AuthBadge } from './auth-badge';
 import { SettingsPopover } from './settings-popover';
+import { LayoutPresetsMenu } from './layout-presets-menu';
 
 const THEME_ICONS: Record<Theme, React.ComponentType<{ className?: string }>> = {
   dark: Moon,
@@ -121,6 +122,7 @@ export function Header({ onOpenProjectPicker, onOpenLoginPrompt }: HeaderProps) 
         >
           <Eye className="h-4 w-4" />
         </Button>
+        <LayoutPresetsMenu />
         <Button
           variant="ghost"
           size="icon"

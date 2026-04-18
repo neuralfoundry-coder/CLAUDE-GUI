@@ -86,9 +86,13 @@ export const useRemoteAccessStore = create<RemoteAccessState>((set, get) => ({
       if (options?.token !== undefined) body.remoteAccessToken = options.token;
       if (options?.generateToken) body.generateToken = true;
 
+      const { getBrowserId } = await import('@/lib/browser-session');
       const res = await fetch('/api/server/config', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-browser-id': getBrowserId(),
+        },
         body: JSON.stringify(body),
       });
       if (!res.ok) return;
@@ -127,7 +131,11 @@ export const useRemoteAccessStore = create<RemoteAccessState>((set, get) => ({
       }
 
       // Standalone mode: use HTTP API
-      const res = await fetch('/api/server/restart', { method: 'POST' });
+      const { getBrowserId } = await import('@/lib/browser-session');
+      const res = await fetch('/api/server/restart', {
+        method: 'POST',
+        headers: { 'x-browser-id': getBrowserId() },
+      });
       if (!res.ok) {
         set({ restarting: false });
         return false;

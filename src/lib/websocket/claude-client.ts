@@ -6,6 +6,7 @@ import { useConnectionStore } from '@/stores/use-connection-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { useSettingsStore } from '@/stores/use-settings-store';
 import { getBrowserId } from '@/lib/browser-session';
+import { registerAborter } from '@/lib/claude/request-aborter';
 import type { ActiveFileContext, ClaudeClientMessage, ClaudeServerMessage } from '@/types/websocket';
 
 let singleton: ClaudeClient | null = null;
@@ -152,6 +153,11 @@ class ClaudeClient {
     this.send({ type: 'abort', requestId });
   }
 
+  /** Expose abort for synchronous callers that can't take a circular dep on this module. */
+  registerAsAborter(): void {
+    registerAborter((id) => this.abort(id));
+  }
+
   close(): void {
     if (typeof window !== 'undefined' && this.boundBeforeUnload) {
       window.removeEventListener('beforeunload', this.boundBeforeUnload);
@@ -162,6 +168,9 @@ class ClaudeClient {
 }
 
 export function getClaudeClient(): ClaudeClient {
-  if (!singleton) singleton = new ClaudeClient();
+  if (!singleton) {
+    singleton = new ClaudeClient();
+    singleton.registerAsAborter();
+  }
   return singleton;
 }

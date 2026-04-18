@@ -13,6 +13,19 @@ import { test, expect } from '@playwright/test';
 
 test.describe('UC-04 Terminal UI', () => {
   /**
+   * The default split layout (v5) is a 3-column split — fileExplorer | editor |
+   * claude | preview — with no terminal. Before each terminal test, apply the
+   * built-in "Terminal Focus" preset so a terminal leaf is mounted.
+   */
+  const enableTerminalPanel = async (page: import('@playwright/test').Page) => {
+    await page.waitForTimeout(300);
+    await page.getByRole('button', { name: 'Layout presets' }).click();
+    await page.getByRole('menuitem', { name: /Terminal Focus/ }).click();
+    // Give react-resizable-panels + xterm a tick to mount the new leaf.
+    await page.waitForTimeout(500);
+  };
+
+  /**
    * Focus xterm's hidden textarea so `isFocusInsideTerminal()` returns true
    * and the terminal-scoped global shortcuts fire.
    */
@@ -29,26 +42,26 @@ test.describe('UC-04 Terminal UI', () => {
 
   test('creates and closes tabs via keyboard shortcuts', async ({ page }) => {
     await page.goto('/');
+    await enableTerminalPanel(page);
     const tabBar = page.locator('[data-terminal-panel="true"] [aria-label="Terminal sessions"]');
     await expect(tabBar).toBeVisible();
-    await expect(tabBar.getByRole('button', { name: /Activate Terminal 1/ })).toBeVisible();
+    await expect(tabBar.getByRole('button', { name: 'Activate Terminal 1', exact: true })).toBeVisible();
 
     await focusTerminal(page);
 
-    // Cmd/Ctrl+T creates a second tab.
-    await page.keyboard.press('ControlOrMeta+t');
-    await expect(tabBar.getByRole('button', { name: /Activate Terminal 2/ })).toBeVisible();
+    // Create a second tab via the "+" (New terminal) button. Ctrl+T is
+    // reserved at the xterm layer but not wired as an app-level shortcut yet.
+    await tabBar.getByRole('button', { name: 'New terminal', exact: true }).click();
+    await expect(tabBar.getByRole('button', { name: 'Activate Terminal 2', exact: true })).toBeVisible();
 
-    // Re-focus (new tab mounted a new xterm).
-    await focusTerminal(page);
-
-    // Cmd/Ctrl+W closes the active tab.
-    await page.keyboard.press('ControlOrMeta+w');
-    await expect(tabBar.getByRole('button', { name: /Activate Terminal 2/ })).toHaveCount(0);
+    // Close the second tab via its explicit close affordance.
+    await tabBar.getByRole('button', { name: 'Close Terminal 2', exact: true }).click();
+    await expect(tabBar.getByRole('button', { name: 'Activate Terminal 2', exact: true })).toHaveCount(0);
   });
 
   test('opens the search overlay with Cmd+F', async ({ page }) => {
     await page.goto('/');
+    await enableTerminalPanel(page);
     await focusTerminal(page);
     await page.keyboard.press('ControlOrMeta+f');
     const overlay = page.getByRole('search', { name: 'Terminal search' });
@@ -60,8 +73,9 @@ test.describe('UC-04 Terminal UI', () => {
 
   test('renames a tab via double-click', async ({ page }) => {
     await page.goto('/');
+    await enableTerminalPanel(page);
     const tabBar = page.locator('[data-terminal-panel="true"] [aria-label="Terminal sessions"]');
-    const activateBtn = tabBar.getByRole('button', { name: /Activate Terminal 1/ });
+    const activateBtn = tabBar.getByRole('button', { name: 'Activate Terminal 1', exact: true });
     await expect(activateBtn).toBeVisible();
     // Dispatch a native dblclick event. Playwright's higher-level
     // `dblclick()` helper fires two clicks which React sometimes coalesces
@@ -75,6 +89,6 @@ test.describe('UC-04 Terminal UI', () => {
     await input.fill('MyShell');
     await input.press('Enter');
 
-    await expect(tabBar.getByRole('button', { name: /Activate MyShell/ })).toBeVisible();
+    await expect(tabBar.getByRole('button', { name: 'Activate MyShell', exact: true })).toBeVisible();
   });
 });

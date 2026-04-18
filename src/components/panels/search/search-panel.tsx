@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useCallback } from 'react';
-import { Search, X, CaseSensitive, FileSearch } from 'lucide-react';
+import { Search, X, CaseSensitive, FileSearch, Replace, Loader2, AlertTriangle } from 'lucide-react';
 import { useSearchStore } from '@/stores/use-search-store';
 import { useEditorStore } from '@/stores/use-editor-store';
 import { cn } from '@/lib/utils';
@@ -21,6 +21,18 @@ export function SearchPanel() {
   const setOpen = useSearchStore((s) => s.setOpen);
   const openFile = useEditorStore((s) => s.openFile);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Replace state
+  const replaceMode = useSearchStore((s) => s.replaceMode);
+  const replacement = useSearchStore((s) => s.replacement);
+  const replaceLoading = useSearchStore((s) => s.replaceLoading);
+  const replacePreview = useSearchStore((s) => s.replacePreview);
+  const replaceError = useSearchStore((s) => s.replaceError);
+  const setReplaceMode = useSearchStore((s) => s.setReplaceMode);
+  const setReplacement = useSearchStore((s) => s.setReplacement);
+  const previewReplace = useSearchStore((s) => s.previewReplace);
+  const applyReplace = useSearchStore((s) => s.applyReplace);
+  const clearReplacePreview = useSearchStore((s) => s.clearReplacePreview);
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -89,7 +101,43 @@ export function SearchPanel() {
           >
             <CaseSensitive className="h-3.5 w-3.5" />
           </button>
+          <button
+            type="button"
+            onClick={() => setReplaceMode(!replaceMode)}
+            className={cn(
+              'rounded p-1',
+              replaceMode ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50',
+            )}
+            title={replaceMode ? 'Hide replace' : 'Show replace'}
+            aria-pressed={replaceMode}
+          >
+            <Replace className="h-3.5 w-3.5" />
+          </button>
         </div>
+        {replaceMode && (
+          <div className="flex items-center gap-1">
+            <div className="relative flex-1">
+              <Replace className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                value={replacement}
+                onChange={(e) => setReplacement(e.target.value)}
+                placeholder="Replace with..."
+                aria-label="Replacement text"
+                className="h-7 w-full rounded border bg-transparent pl-7 pr-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => void previewReplace()}
+              disabled={replaceLoading || results.length === 0 || !query.trim()}
+              className="h-7 rounded border px-2 text-[11px] disabled:opacity-50 hover:bg-accent/50"
+              title="Preview replacements (dry run)"
+            >
+              {replaceLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Preview'}
+            </button>
+          </div>
+        )}
         <div className="flex items-center gap-1">
           <FileSearch className="h-3 w-3 text-muted-foreground" />
           <input
@@ -101,6 +149,53 @@ export function SearchPanel() {
           />
         </div>
       </form>
+
+      {/* Replace preview / apply banner */}
+      {replaceMode && replacePreview && (
+        <div className="border-b bg-accent/20 p-2 text-[11px]">
+          <div className="flex items-center justify-between gap-2">
+            <span>
+              {replacePreview.dryRun ? (
+                <>
+                  <b>{replacePreview.totalReplacements}</b> replacements across{' '}
+                  <b>{replacePreview.filesChanged}</b>/{replacePreview.filesScanned} files.{' '}
+                  {replacePreview.filesChanged > 0 && 'Apply to write changes.'}
+                </>
+              ) : (
+                <>
+                  Applied <b>{replacePreview.totalReplacements}</b> replacements across{' '}
+                  <b>{replacePreview.filesChanged}</b> files.
+                </>
+              )}
+            </span>
+            <div className="flex shrink-0 gap-1">
+              {replacePreview.dryRun && replacePreview.filesChanged > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void applyReplace()}
+                  disabled={replaceLoading}
+                  className="rounded bg-primary px-2 py-0.5 text-primary-foreground disabled:opacity-50"
+                >
+                  {replaceLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Apply'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={clearReplacePreview}
+                className="rounded border px-2 py-0.5 hover:bg-accent/50"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {replaceError && (
+        <div className="flex items-start gap-1.5 border-b bg-destructive/10 p-2 text-[11px] text-destructive">
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+          <span>{replaceError}</span>
+        </div>
+      )}
 
       {/* Results */}
       <div className="flex-1 overflow-y-auto scrollbar-thin">

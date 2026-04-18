@@ -10,6 +10,7 @@ import { LoginPromptModal } from '@/components/modals/login-prompt-modal';
 import { ArtifactsModal } from '@/components/modals/artifacts-modal';
 import { RemoteAccessModal } from '@/components/modals/remote-access-modal';
 import { McpServersModal } from '@/components/modals/mcp-servers-modal';
+import { RecoveryModal } from '@/components/modals/recovery-modal';
 import { CommandPalette } from '@/components/command-palette/command-palette';
 import { SearchOverlay } from './search-overlay';
 import { ToastContainer } from './toast-container';
@@ -28,16 +29,21 @@ import { useTheme } from '@/hooks/use-theme';
 import { useKeyboardShortcut } from '@/hooks/use-keyboard-shortcut';
 import { useGlobalShortcuts } from '@/hooks/use-global-shortcuts';
 import { useMediaQuery } from '@/hooks/use-media-query';
+import { useJumpToPanel, PANEL_JUMP_ORDER } from '@/hooks/use-panel-jump';
+import { useBufferRecoveryPersist } from '@/hooks/use-buffer-recovery-persist';
+import { useRecoveryStore } from '@/stores/use-recovery-store';
 import { getClaudeClient } from '@/lib/websocket/claude-client';
 import { getFilesClient } from '@/lib/websocket/files-client';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { DndProvider, type DragData, type DropZone } from '@/components/dnd/dnd-provider';
 import type { SplitDirection, PanelContentType } from '@/stores/use-split-layout-store';
+import { ErrorBoundary } from './error-boundary';
 
 export function AppShell() {
   useTheme();
   useGlobalShortcuts();
+  useBufferRecoveryPersist();
   const isDesktop = useMediaQuery('(min-width: 1280px)');
   const panelRounding = useSettingsStore((s) => s.panelRounding);
   const liquidGlass = useSettingsStore((s) => s.liquidGlass);
@@ -56,6 +62,11 @@ export function AppShell() {
   // Fetch remote access status on mount
   useEffect(() => {
     useRemoteAccessStore.getState().fetchStatus();
+  }, []);
+
+  // Surface unsaved buffers from a previous session, if any.
+  useEffect(() => {
+    useRecoveryStore.getState().refresh();
   }, []);
 
   useEffect(() => {
@@ -82,11 +93,21 @@ export function AppShell() {
     return () => { unsubProject(); unsubFiles(); };
   }, []);
 
+  const jumpToPanel = useJumpToPanel();
+
   useKeyboardShortcut([
     { key: 'b', meta: true, ctrl: true, handler: () => togglePanelByType('fileExplorer') },
     { key: 'k', meta: true, ctrl: true, handler: () => togglePanelByType('claude') },
     { key: 'e', meta: true, ctrl: true, handler: () => togglePanelByType('editor') },
     { key: 'p', meta: true, ctrl: true, handler: () => togglePanelByType('preview') },
+    // Ctrl/Cmd+1..5 jumps keyboard focus to the Nth panel (fileExplorer, editor,
+    // terminal, claude, preview) and uncollapses it if hidden.
+    ...PANEL_JUMP_ORDER.map((panel, idx) => ({
+      key: String(idx + 1),
+      meta: true,
+      ctrl: true,
+      handler: () => jumpToPanel(panel),
+    })),
   ]);
 
   const handleTabDropOnLeaf = useCallback((data: DragData, targetLeafId: string, zone: DropZone) => {
@@ -118,6 +139,7 @@ export function AppShell() {
   }, []);
 
   return (
+    <ErrorBoundary scope="app-shell">
     <div className={cn(
       "flex h-screen flex-col overflow-hidden",
       !panelRounding && "no-panel-rounding",
@@ -142,12 +164,14 @@ export function AppShell() {
       <ProjectPickerModal open={projectPickerOpen} onOpenChange={setProjectPickerOpen} />
       <LoginPromptModal open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
       <ArtifactsModal />
+      <RecoveryModal />
       <RemoteAccessModalHost />
       <McpServersModalHost />
       <CommandPalette />
       <SearchOverlay />
       <ToastContainer />
     </div>
+    </ErrorBoundary>
   );
 }
 

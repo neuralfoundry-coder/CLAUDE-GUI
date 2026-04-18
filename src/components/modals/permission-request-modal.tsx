@@ -32,9 +32,33 @@ function buildAllowRule(toolName: string, args: unknown): string {
   return toolName;
 }
 
+async function parseJsonOrThrow(res: Response, label: string): Promise<unknown> {
+  // The CSRF middleware and route error paths all return JSON, but a misrouted
+  // request or an outer proxy can land on an HTML error page. Detect that and
+  // raise a human-readable error instead of a cryptic "Unexpected token '<'".
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (!res.ok) {
+      throw new Error(`${label} failed: HTTP ${res.status}`);
+    }
+    throw new Error(`${label} returned non-JSON response`);
+  }
+}
+
 async function persistAllowRule(rule: string): Promise<void> {
-  const getRes = await fetch('/api/settings');
-  const getJson = await getRes.json();
+  const { getBrowserId } = await import('@/lib/browser-session');
+  const browserId = getBrowserId();
+
+  const getRes = await fetch('/api/settings', {
+    headers: { 'x-browser-id': browserId },
+  });
+  const getJson = (await parseJsonOrThrow(getRes, 'Load settings')) as {
+    success?: boolean;
+    data?: { settings?: { permissions?: { allow?: string[]; deny?: string[] } } };
+    error?: string;
+  };
   if (!getJson?.success) {
     throw new Error(getJson?.error ?? 'Failed to load settings');
   }
@@ -52,10 +76,18 @@ async function persistAllowRule(rule: string): Promise<void> {
   };
   const putRes = await fetch('/api/settings', {
     method: 'PUT',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      // Required by the CSRF middleware for POST/PUT/DELETE; missing this
+      // header causes a 403 that looks like a plain HTTP error to the caller.
+      'x-browser-id': browserId,
+    },
     body: JSON.stringify(next),
   });
-  const putJson = await putRes.json();
+  const putJson = (await parseJsonOrThrow(putRes, 'Save settings')) as {
+    success?: boolean;
+    error?: string;
+  };
   if (!putJson?.success) {
     throw new Error(putJson?.error ?? 'Failed to save settings');
   }
