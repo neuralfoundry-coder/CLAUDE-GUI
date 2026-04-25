@@ -1514,3 +1514,52 @@ Allows switching the server binding address from `127.0.0.1` (local only) to `0.
 - Session disk persistence is disabled (`persistSession: false`) to prevent session file lock contention between multiple CLI processes on the same project. Session resume (`resume`) works within the server process lifetime only.
 - Active Query instances are tracked by `browserId` so that MCP server status queries (`getMcpServerStatus`) retrieve data from the correct Query for each browser.
 - Implementation: `server-handlers/claude-handler.mjs`, `src/app/api/mcp/status/route.ts`.
+
+---
+
+## 3.16 Local Development Runtime Modes (FR-1600)
+
+### FR-1600: Runtime selection in the single launcher script
+
+`scripts/dev.sh` (macOS / Linux) and `scripts/dev.ps1` (Windows) shall be able to launch the same codebase under one of **four runtimes**. The default is `--native` (direct host execution); the others are selected via explicit flags.
+
+| Flag | Runtime | Launch mechanism | HMR | Target environment |
+|------|---------|------------------|-----|--------------------|
+| `--native` (default) | Host Node.js | `node server.js` | ✅ Next.js dev | Developer laptop |
+| `--docker` | Single container | `docker run … claudegui:dev` | ✅ bind mount + polling | Docker Engine/Desktop |
+| `--compose` | docker-compose stack | `docker compose up dev` | ✅ named volume + bind mount | Docker Compose v2 |
+| `--k8s` | Local K8s cluster | `kubectl apply -k k8s/local/` + `port-forward` | ✅ hostPath + polling | kind / minikube / k3d / Docker Desktop K8s |
+
+**Common requirements**:
+
+- Foreground and background shall be supported for every runtime. `-b`/`--background` has the same meaning across all of them.
+- `--stop`/`--status`/`--tail`/`--restart` lifecycle commands shall **remember the last launched runtime** so the caller does not have to repeat the backend flag (state recorded at `$CLAUDEGUI_STATE_DIR/runtime`).
+- Host-side port policy is runtime-independent and has a **smart default** (`--port-policy smart`). When a port is already in use, the holder is classified as "ours" only if one of the following signals matches — otherwise the script treats it as a foreign service and **shifts to the next free port** instead of killing it:
+  1. The holder PID equals the value recorded in `$CLAUDEGUI_PID_FILE` (native / k8s port-forward).
+  2. The holder command line is `node ... server.js` and its cwd equals the repository root (native foreground leftovers).
+  3. A `docker ps` entry binding the port has a name matching `claudegui-dev` or the compose project pattern (e.g. `claudegui_dev_1`) — docker / compose.
+
+  Explicit flags force a policy:
+  - `--kill-port` (= `--reclaim-port`, `--port-policy kill`) — always kill the holder and rebind.
+  - `--next-free-port` (= `--no-kill-port`, `--port-policy shift`) — never kill; always shift.
+- `--docker`/`--compose`/`--k8s` shall build the required image (`claudegui:dev`) on demand; `--k8s` additionally loads the image into the local cluster (kind / minikube / k3d).
+- In containerized runtimes, `--clean`/`--install`/`--check`/`--lint`/`--test`/`--build` shall **warn and be skipped** (they would run on the host, not in the container). The script advises the `docker compose exec dev npm run lint` form as an alternative.
+
+**HMR preservation**:
+
+- Docker / Compose: bind-mount the repository at `/app` and override `node_modules`/`.next` with **named volumes** to avoid host↔container conflicts on native bindings (@parcel/watcher, node-pty).
+- On Docker Desktop (macOS / Windows), inotify events across the bind mount are unreliable, so `WATCHPACK_POLLING=1`/`CHOKIDAR_USEPOLLING=1` are enabled by default. No-op on native Linux.
+- K8s: a `hostPath` volume mounts the host repo into the pod; a single replica with `Recreate` strategy prevents double-mount races.
+
+**Lifecycle delegation**:
+
+| Runtime | start | stop | status | logs |
+|---------|-------|------|--------|------|
+| native | `node server.js` (fore) / `nohup+setsid` (bg) | SIGTERM → SIGKILL | PID file + `ps` | tail `-F` log file |
+| docker | `docker run --rm` (+`-d` bg) | `docker stop` + `rm` | `docker ps --filter name=…` | `docker logs -f` |
+| compose | `docker compose up` (fore) / `-d` (bg) | `docker compose down` | `docker compose ps dev` | `docker compose logs -f dev` |
+| k8s | `kubectl apply -k` + `port-forward` | `kubectl delete -k` + PID | `kubectl get deploy/svc/pod` | `kubectl logs -f deploy/claudegui` |
+
+**Implementation**: `scripts/dev.sh` §runtime helpers, §runtime dispatch. `docker-compose.yml` (service: `dev`, profile `prod`). `k8s/local/` (`namespace`, `configmap`, `deployment`, `service`, `kustomization`). `Dockerfile` `dev` stage.
+
+**Notes**: `--k8s` is intended for a **local** development cluster only. Remote / production deployment is out of scope here (covered by FR-1300 remote access and ADR-018 Tauri native installer).

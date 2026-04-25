@@ -109,10 +109,21 @@ Each module is auto-assigned a distinct ANSI color. Log lines are formatted as `
 |----------|---------|
 | Preparation | `--clean` `--install` `--check` `--lint` `--test` `--build` `--all-checks` |
 | Run mode | `--dev` (default) `--prod` (NODE_ENV=production, requires a build) |
-| Server | `--host <addr>` `--port <n>` `--project <path>` `--kill-port` |
+| Runtime (FR-1600) | `--native` (default) `--docker` `--compose` `--k8s` |
+| Server | `--host <addr>` `--port <n>` `--project <path>` `--port-policy <smart\|kill\|shift>` (default: smart) `--kill-port` (=policy kill) `--next-free-port` (=policy shift) |
 | Debug | `--debug <list>` `--verbose` `--trace` `--log-level <lvl>` `--inspect` `--inspect-brk` `--log-file <path>` `--log-truncate` `--no-color` |
 | Background / lifecycle | `--background` / `-b` `--stop` `--restart` `--status` `--tail` `--pid-file <path>` `--force-kill` |
 | Convenience | `--open` `-h` / `--help` |
+
+**Port policy (smart default)**: when the port is busy, the script does **not** kill unconditionally. It first decides whether the holder is an instance we spawned previously. If yes, reclaim (kill → rebind); if it's a foreign service (e.g. a dev server the user started separately), **shift to the next free port**. Classification signals:
+
+1. The holder PID equals the value recorded in `$CLAUDEGUI_PID_FILE` (native / k8s port-forward).
+2. The holder command line is `node ... server.js` and its cwd equals the repository root (native leftovers).
+3. A `docker ps` entry binding the port has a name matching `claudegui-dev` or the compose project pattern (docker / compose).
+
+To force the old "always kill" behavior use `--kill-port` (= `--port-policy kill`); to forbid killing entirely use `--next-free-port` (= `--port-policy shift`).
+
+**Runtime flags** (FR-1600): see [§6.3](#63-container-runtimes-docker--compose--k8s) for details.
 
 **State paths** (overridable via environment variables):
 
@@ -217,7 +228,100 @@ package.json
 
 ---
 
-## 6.3 Docker Deployment
+## 6.3 Container Runtimes (Docker / Compose / K8s)
+
+The local launcher script (`scripts/dev.sh`) supports **three containerized runtimes** in addition to native, per FR-1600. The selected runtime is recorded in `$CLAUDEGUI_STATE_DIR/runtime`, so `--stop` / `--status` / `--tail` / `--restart` automatically target the correct backend.
+
+| Flag | Launch command | Stop | Logs |
+|------|----------------|------|------|
+| `--docker` | `docker run … claudegui:dev` (bind mount + named volumes) | `docker stop && docker rm` | `docker logs -f` |
+| `--compose` | `docker compose up [-d] dev` (prod via `--profile prod`) | `docker compose down` | `docker compose logs -f` |
+| `--k8s` | `kubectl apply -k k8s/local/` + `kubectl port-forward` | `kubectl delete -k` + PF termination | `kubectl logs -f deploy/claudegui` |
+
+All containerized runtimes **preserve HMR** by bind-mounting the repo at `/app`, while overlaying `node_modules` and `.next` with named volumes to prevent host↔container native-binding conflicts (@parcel/watcher, node-pty). To work around unreliable inotify propagation on Docker Desktop (macOS / Windows), `WATCHPACK_POLLING=1` and `CHOKIDAR_USEPOLLING=1` are enabled by default.
+
+### 6.3.0 Dockerfile multi-stage layout
+
+```
+Dockerfile
+├── dev      → node:20-bookworm + build-essential, expects bind mount, install-on-boot
+├── builder  → npm ci + next build
+└── runner   → node:20-bookworm-slim + runtime artifacts only, non-root user (prod)
+```
+
+### 6.3.1 Single container (`--docker`)
+
+```bash
+# Manual
+docker build --target dev -t claudegui:dev .
+docker run --rm -it --name claudegui-dev \
+  -p 127.0.0.1:3000:3000 \
+  -v "$PWD":/app:cached \
+  -v claudegui_node_modules:/app/node_modules \
+  -v claudegui_next_cache:/app/.next \
+  -e NODE_ENV=development \
+  claudegui:dev
+
+# Via dev.sh (recommended)
+./scripts/dev.sh --docker
+./scripts/dev.sh --docker --background --tail
+./scripts/dev.sh --docker --stop
+```
+
+### 6.3.2 Docker Compose (`--compose`)
+
+`docker-compose.yml` services:
+- `dev` (default) — HMR dev mode
+- `prod` (`profile: prod`) — production image
+
+```bash
+# Manual
+docker compose up                  # dev
+docker compose --profile prod up   # prod
+
+# Via dev.sh
+./scripts/dev.sh --compose
+./scripts/dev.sh --compose --background
+./scripts/dev.sh --compose --prod
+./scripts/dev.sh --compose --stop
+```
+
+Environment substitutions: `CLAUDEGUI_HOST_PORT` (default 3000), `CLAUDEGUI_DEBUG`, `LOG_LEVEL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`.
+
+### 6.3.3 Local Kubernetes (`--k8s`)
+
+`k8s/local/` manifests (Kustomize):
+
+| File | Role |
+|------|------|
+| `namespace.yaml` | `claudegui-dev` namespace |
+| `configmap.yaml` | `LOG_LEVEL`, `CLAUDEGUI_DEBUG` |
+| `deployment.yaml` | `claudegui:dev` pod + `hostPath` source mount + single replica + `Recreate` strategy |
+| `service.yaml` | NodePort 30030 → 3000 |
+| `kustomization.yaml` | Entry point |
+
+```bash
+# Manual
+docker build --target dev -t claudegui:dev .
+kind load docker-image claudegui:dev       # kind
+# minikube image load claudegui:dev        # minikube
+# k3d image import claudegui:dev -c <c>    # k3d
+kubectl kustomize k8s/local/ \
+  | sed "s|__REPO_ROOT__|$PWD|g" \
+  | kubectl apply -f -
+kubectl -n claudegui-dev port-forward svc/claudegui 3000:3000
+
+# Via dev.sh (build + load + kustomize + port-forward all at once)
+./scripts/dev.sh --k8s
+./scripts/dev.sh --k8s --background
+./scripts/dev.sh --k8s --stop
+```
+
+**Limitations**:
+- Local clusters only. `hostPath` exposes the developer's laptop path to the pod, so remote clusters cannot use these manifests.
+- Single replica + `Recreate` strategy is enforced to prevent a double-bind race on the host path. Production-grade deployment (ReplicaSet, rolling updates) is out of scope here.
+
+### 6.3.4 (Reference) Legacy prod Docker deployment
 
 ### Dockerfile (multi-stage)
 

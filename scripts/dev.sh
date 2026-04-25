@@ -28,7 +28,16 @@ DO_BUILD=0
 DO_CHECK=0
 DO_LINT=0
 DO_TEST=0
-KILL_PORT=0
+# Port conflict policy:
+#   smart = detect ownership. Reclaim (kill) only if the holder is our own
+#           previous instance (PID file match, or `node server.js` with
+#           cwd==$ROOT, or our docker/compose container). For foreign
+#           services, shift to the next free port instead of killing
+#           someone else's process. DEFAULT.
+#   kill  = force-kill whatever holds the port (old behavior).
+#   shift = never kill; always increment to the next free port.
+# Flip with --kill-port / --next-free-port / --port-policy <name>.
+PORT_POLICY="smart"
 OPEN_BROWSER=0
 NO_COLOR_FLAG=0
 INSPECT=0
@@ -54,6 +63,15 @@ STATE_DIR="${CLAUDEGUI_STATE_DIR:-$HOME/.claudegui}"
 PID_FILE="${CLAUDEGUI_PID_FILE:-$STATE_DIR/claudegui.pid}"
 DEFAULT_LOG_DIR="${CLAUDEGUI_LOG_DIR:-$STATE_DIR/logs}"
 DEFAULT_LOG_FILE="$DEFAULT_LOG_DIR/claudegui.log"
+RUNTIME_STATE_FILE="$STATE_DIR/runtime"
+
+# Runtime: native (default) | docker | compose | k8s
+RUNTIME=""                        # empty = not specified; resolves to native
+DOCKER_CONTAINER_NAME="${CLAUDEGUI_DOCKER_CONTAINER:-claudegui-dev}"
+DOCKER_IMAGE_TAG="${CLAUDEGUI_DOCKER_IMAGE:-claudegui:dev}"
+COMPOSE_PROJECT_NAME="${CLAUDEGUI_COMPOSE_PROJECT:-claudegui}"
+K8S_NAMESPACE="${CLAUDEGUI_K8S_NAMESPACE:-claudegui-dev}"
+K8S_DIR="$ROOT/k8s/local"
 
 show_help() {
 cat <<'EOF'
@@ -76,12 +94,39 @@ RUN MODE:
   --dev                Development mode (default, Next.js HMR active)
   --prod               Production mode (NODE_ENV=production, implies --build)
 
+RUNTIME (pick one; native if omitted):
+  --native             Run `node server.js` on the host (default). No
+                       containers. Fastest iteration, uses host Node/npm.
+  --docker             Run via `docker run` against the `dev` stage of
+                       Dockerfile. Source tree is bind-mounted; HMR works.
+                       Image is built on demand (claudegui:dev). --stop removes
+                       the container.
+  --compose            Run via `docker compose up` (docker-compose.yml). Uses
+                       the `dev` service with HMR. Background mode adds -d.
+                       --stop runs `docker compose down`.
+  --k8s                Apply k8s/local/ to the current kubectl context and
+                       `kubectl port-forward` to the host. Pod uses the
+                       claudegui:dev image (built + loaded on demand for
+                       kind/minikube/k3d). --stop deletes the kustomization.
+                       Only intended for local clusters (kind / minikube /
+                       k3d / Docker Desktop).
+
 SERVER OPTIONS:
   --host <addr>        Bind host (default: 127.0.0.1, env: HOST)
   --port <n>           Bind port (default: 3000, env: PORT)
   --project <path>     Initial PROJECT_ROOT (absolute, ~ expansion supported)
-  --kill-port          Kill the existing process on the port instead of
-                       incrementing to the next free port (default: increment)
+  --port-policy <p>    Port conflict policy (default: smart):
+                         smart  Detect who holds the port. Reclaim only if
+                                it's our own previous instance; shift to
+                                the next free port for foreign services.
+                         kill   Always kill the holder and rebind. Alias:
+                                --kill-port / --reclaim-port.
+                         shift  Never kill. Always pick the next free port.
+                                Alias: --next-free-port / --no-kill-port.
+  --kill-port          Shortcut for --port-policy kill. Use only when you
+                       know the port holder is disposable.
+  --next-free-port     Shortcut for --port-policy shift. Use when you want
+                       multiple dev servers running side by side.
 
 DEBUG OPTIONS:
   --debug <modules>    Comma-separated module filter. Available modules:
@@ -174,10 +219,22 @@ while [[ $# -gt 0 ]]; do
     --all-checks)   DO_CHECK=1; DO_LINT=1; DO_TEST=1; shift ;;
     --dev)          MODE="dev"; shift ;;
     --prod)         MODE="prod"; DO_BUILD=1; shift ;;
+    --native)       RUNTIME="native"; shift ;;
+    --docker)       RUNTIME="docker"; shift ;;
+    --compose)      RUNTIME="compose"; shift ;;
+    --k8s)          RUNTIME="k8s"; shift ;;
     --host)         HOST_OPT="$2"; shift 2 ;;
     --port)         PORT_OPT="$2"; shift 2 ;;
     --project)      PROJECT_OPT="$2"; shift 2 ;;
-    --kill-port)    KILL_PORT=1; shift ;;
+    --kill-port|--reclaim-port)      PORT_POLICY="kill"; shift ;;
+    --next-free-port|--no-kill-port) PORT_POLICY="shift"; shift ;;
+    --port-policy)
+      case "$2" in
+        smart|kill|shift) PORT_POLICY="$2" ;;
+        *) die "--port-policy expects smart|kill|shift, got: $2" ;;
+      esac
+      shift 2
+      ;;
     --debug)        DEBUG_MODULES="$2"; shift 2 ;;
     --verbose)      VERBOSE=1; shift ;;
     --trace)        TRACE=1; shift ;;
@@ -331,7 +388,246 @@ cmd_tail_standalone() {
   exec tail -n 100 -F "$target"
 }
 
+# ----- runtime helpers ------------------------------------------------------
+read_runtime_state() {
+  [ -f "$RUNTIME_STATE_FILE" ] || { echo ""; return; }
+  cat "$RUNTIME_STATE_FILE" 2>/dev/null | tr -d '[:space:]'
+}
+
+write_runtime_state() {
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$1" > "$RUNTIME_STATE_FILE"
+}
+
+clear_runtime_state() {
+  rm -f "$RUNTIME_STATE_FILE"
+}
+
+resolve_runtime() {
+  # Explicit flag wins. Otherwise, for lifecycle-only commands (--stop/--status/
+  # --tail/--restart), fall back to the runtime recorded on last launch so the
+  # caller doesn't have to remember which backend is live. Default: native.
+  if [ -n "$RUNTIME" ]; then
+    return
+  fi
+  if [ "$DO_STOP" -eq 1 ] || [ "$DO_STATUS" -eq 1 ] || [ "$DO_TAIL" -eq 1 ] || [ "$DO_RESTART" -eq 1 ]; then
+    local recorded
+    recorded="$(read_runtime_state)"
+    if [ -n "$recorded" ]; then
+      RUNTIME="$recorded"
+      return
+    fi
+  fi
+  RUNTIME="native"
+}
+
+docker_cli() {
+  command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
+  docker "$@"
+}
+
+compose_cli() {
+  command -v docker >/dev/null 2>&1 || die "docker is not on PATH"
+  # Prefer the v2 plugin (`docker compose`); fall back to legacy v1 binary.
+  if docker compose version >/dev/null 2>&1; then
+    docker compose -p "$COMPOSE_PROJECT_NAME" "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose -p "$COMPOSE_PROJECT_NAME" "$@"
+  else
+    die "neither 'docker compose' nor 'docker-compose' available"
+  fi
+}
+
+kubectl_cli() {
+  command -v kubectl >/dev/null 2>&1 || die "kubectl is not on PATH"
+  kubectl "$@"
+}
+
+is_port_holder_ours() {
+  # Return 0 if $1 (a PID listening on the target port) is an instance we
+  # spawned previously, 1 otherwise. Used by --port-policy smart to decide
+  # between reclaim (our own leftover) and shift (foreign service).
+  local holder_pid="$1"
+  [ -n "$holder_pid" ] || return 1
+
+  # Signal 1 — tracked PID file for native/k8s port-forward matches exactly.
+  local tracked_pid
+  tracked_pid="$(read_pid)"
+  if [ -n "$tracked_pid" ] && [ "$tracked_pid" = "$holder_pid" ]; then
+    return 0
+  fi
+
+  # Signal 2 — a native `node server.js` process whose cwd is this repo.
+  local holder_cmd
+  holder_cmd="$(ps -p "$holder_pid" -o command= 2>/dev/null || true)"
+  case "$holder_cmd" in
+    *node*server.js*)
+      local holder_cwd=""
+      if [ -r "/proc/$holder_pid/cwd" ]; then
+        holder_cwd="$(readlink "/proc/$holder_pid/cwd" 2>/dev/null || echo '')"
+      elif command -v lsof >/dev/null 2>&1; then
+        holder_cwd="$(lsof -a -d cwd -p "$holder_pid" -Fn 2>/dev/null \
+          | awk '/^n/ { sub(/^n/, ""); print; exit }')"
+      fi
+      if [ -n "$holder_cwd" ] && [ "$holder_cwd" = "$ROOT" ]; then
+        return 0
+      fi
+      ;;
+  esac
+
+  # Signal 3 — a docker container of ours currently binds this host port.
+  # The host PID will be a docker-proxy or vpnkit helper (never matches our
+  # tracked PID file), so we ask docker directly.
+  if command -v docker >/dev/null 2>&1; then
+    local bound
+    bound="$(docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null || true)"
+    if [ -n "$bound" ]; then
+      # Match "<name>|...:<PORT>->..." where name is our dev container or
+      # a compose-project-owned service.
+      if printf '%s\n' "$bound" \
+        | grep -E "^(${DOCKER_CONTAINER_NAME}|${COMPOSE_PROJECT_NAME}[-_][a-z0-9]+[-_][0-9]+|${COMPOSE_PROJECT_NAME}-dev-[0-9]+)\|.*:${PORT_OPT}->" \
+        >/dev/null; then
+        return 0
+      fi
+    fi
+  fi
+
+  return 1
+}
+
+runtime_status() {
+  case "$RUNTIME" in
+    native) cmd_status; return $? ;;
+    docker)
+      if command -v docker >/dev/null 2>&1 && \
+         docker ps --filter "name=^${DOCKER_CONTAINER_NAME}$" --format '{{.ID}}' 2>/dev/null | grep -q .; then
+        ok "running (docker)"
+        printf '  %bcontainer%b %s\n' "$C_DIM" "$C_RESET" "$DOCKER_CONTAINER_NAME"
+        docker ps --filter "name=^${DOCKER_CONTAINER_NAME}$" \
+          --format '  image:    {{.Image}}\n  ports:    {{.Ports}}\n  status:   {{.Status}}'
+        return 0
+      fi
+      step "not running (docker)"
+      return 1
+      ;;
+    compose)
+      if command -v docker >/dev/null 2>&1 && \
+         compose_cli ps -q dev 2>/dev/null | grep -q .; then
+        ok "running (compose)"
+        compose_cli ps
+        return 0
+      fi
+      step "not running (compose)"
+      return 1
+      ;;
+    k8s)
+      if command -v kubectl >/dev/null 2>&1 && \
+         kubectl_cli -n "$K8S_NAMESPACE" get deploy claudegui >/dev/null 2>&1; then
+        ok "running (k8s)"
+        kubectl_cli -n "$K8S_NAMESPACE" get deploy,svc,pod
+        return 0
+      fi
+      step "not running (k8s)"
+      return 1
+      ;;
+  esac
+}
+
+runtime_stop() {
+  case "$RUNTIME" in
+    native) cmd_stop ;;
+    docker)
+      if command -v docker >/dev/null 2>&1 && \
+         docker ps -a --filter "name=^${DOCKER_CONTAINER_NAME}$" --format '{{.ID}}' 2>/dev/null | grep -q .; then
+        step "stopping docker container $DOCKER_CONTAINER_NAME"
+        if [ "$FORCE_KILL" -eq 1 ]; then
+          docker kill "$DOCKER_CONTAINER_NAME" >/dev/null 2>&1 || true
+        else
+          docker stop -t 10 "$DOCKER_CONTAINER_NAME" >/dev/null 2>&1 || true
+        fi
+        docker rm -f "$DOCKER_CONTAINER_NAME" >/dev/null 2>&1 || true
+        ok "stopped"
+      else
+        warn "no docker container named $DOCKER_CONTAINER_NAME"
+      fi
+      clear_runtime_state
+      ;;
+    compose)
+      if command -v docker >/dev/null 2>&1; then
+        step "docker compose down"
+        compose_cli down --remove-orphans || true
+        ok "stopped"
+      fi
+      clear_runtime_state
+      ;;
+    k8s)
+      if command -v kubectl >/dev/null 2>&1; then
+        step "kubectl delete -k $K8S_DIR"
+        # Clean up any port-forward we started
+        if [ -f "$PID_FILE" ]; then
+          local pf_pid
+          pf_pid="$(read_pid)"
+          if is_alive "$pf_pid"; then
+            kill -TERM "$pf_pid" 2>/dev/null || true
+          fi
+          rm -f "$PID_FILE"
+        fi
+        kubectl_cli delete -k "$K8S_DIR" --ignore-not-found=true || true
+        ok "stopped"
+      fi
+      clear_runtime_state
+      ;;
+  esac
+}
+
+k8s_load_image_into_cluster() {
+  # Best-effort: detect kind/minikube/k3d from the current context and push
+  # the locally-built image into the cluster. Docker Desktop Kubernetes shares
+  # the host docker daemon, so no load is required.
+  local ctx
+  ctx="$(kubectl_cli config current-context 2>/dev/null || echo '')"
+  case "$ctx" in
+    kind-*)
+      if command -v kind >/dev/null 2>&1; then
+        step "loading $DOCKER_IMAGE_TAG into kind cluster ($ctx)"
+        kind load docker-image "$DOCKER_IMAGE_TAG" --name "${ctx#kind-}" || \
+          warn "kind load failed — image may already be present"
+      else
+        warn "kind CLI not found; skipping image load (assume preloaded)"
+      fi
+      ;;
+    minikube|minikube-*)
+      if command -v minikube >/dev/null 2>&1; then
+        step "loading $DOCKER_IMAGE_TAG into minikube"
+        minikube image load "$DOCKER_IMAGE_TAG" || \
+          warn "minikube image load failed — image may already be present"
+      else
+        warn "minikube CLI not found; skipping image load"
+      fi
+      ;;
+    k3d-*)
+      if command -v k3d >/dev/null 2>&1; then
+        step "importing $DOCKER_IMAGE_TAG into k3d cluster"
+        k3d image import "$DOCKER_IMAGE_TAG" -c "${ctx#k3d-}" || \
+          warn "k3d image import failed — image may already be present"
+      else
+        warn "k3d CLI not found; skipping image load"
+      fi
+      ;;
+    docker-desktop|docker-for-desktop|rancher-desktop)
+      # Shares host docker daemon — nothing to do.
+      ;;
+    *)
+      warn "unrecognized kube context '$ctx'; assuming image is already reachable"
+      ;;
+  esac
+}
+
 # ----- preconditions --------------------------------------------------------
+# Resolve runtime early so we can gate node/npm checks to native launches.
+resolve_runtime
+
+if [ "$RUNTIME" = "native" ]; then
 command -v node >/dev/null 2>&1 || die "node is not on PATH"
 NODE_MAJOR=$(node -e 'console.log(process.versions.node.split(".")[0])')
 if [ "${NODE_MAJOR:-0}" -lt 20 ]; then
@@ -358,29 +654,45 @@ if [ "${NODE_MAJOR:-0}" -ge 23 ]; then
 fi
 
 command -v npm >/dev/null 2>&1 || die "npm is not on PATH"
+else
+  # Non-native: require the relevant runtime CLI. Node/npm are container-side.
+  case "$RUNTIME" in
+    docker)   command -v docker >/dev/null 2>&1 || die "docker is not on PATH" ;;
+    compose)  command -v docker >/dev/null 2>&1 || die "docker is not on PATH" ;;
+    k8s)      command -v kubectl >/dev/null 2>&1 || die "kubectl is not on PATH"
+              command -v docker  >/dev/null 2>&1 || die "docker is not on PATH (required to build claudegui:dev)"
+              ;;
+    *)        die "unknown runtime: $RUNTIME" ;;
+  esac
+fi
 
 # ----- standalone lifecycle commands (no prep, no launch) ------------------
 if [ "$DO_STATUS" -eq 1 ]; then
-  cmd_status
+  runtime_status
   exit $?
 fi
 
 if [ "$DO_STOP" -eq 1 ] && [ "$DO_RESTART" -eq 0 ]; then
-  cmd_stop
+  runtime_stop
   exit 0
 fi
 
 if [ "$DO_TAIL" -eq 1 ] && [ "$BACKGROUND" -eq 0 ] && [ "$DO_RESTART" -eq 0 ]; then
-  cmd_tail_standalone
+  case "$RUNTIME" in
+    native)  cmd_tail_standalone ;;
+    docker)  exec docker logs -f --tail 100 "$DOCKER_CONTAINER_NAME" ;;
+    compose) compose_cli logs -f --tail 100 dev; exit 0 ;;
+    k8s)     kubectl_cli -n "$K8S_NAMESPACE" logs -f --tail=100 deploy/claudegui; exit 0 ;;
+  esac
 fi
 
 # --restart: stop first, then fall through to start (BACKGROUND already set)
 if [ "$DO_RESTART" -eq 1 ]; then
-  cmd_stop || true
+  runtime_stop || true
 fi
 
 # Guard: stop any existing background instance before launching a new one
-if [ "$BACKGROUND" -eq 1 ]; then
+if [ "$BACKGROUND" -eq 1 ] && [ "$RUNTIME" = "native" ]; then
   EXISTING_PID=$(read_pid)
   if is_alive "$EXISTING_PID"; then
     warn "stopping existing instance (pid $EXISTING_PID) for clean start"
@@ -394,68 +706,114 @@ if [ "$BACKGROUND" -eq 1 ] && [ "$INSPECT_BRK" -eq 1 ]; then
   warn "--inspect-brk with --background: debugger will wait silently for attach"
 fi
 
-# ----- resolve port (find free port) ----------------------------------------
-# If the target port is already in use, increment until a free one is found.
-# Use --kill-port to revert to the old behavior of killing the existing process.
+# ----- resolve port (host-side) ---------------------------------------------
+# Policy (see PORT_POLICY):
+#   smart (default) — detect whether the port holder is our own previous
+#                     instance. If yes, reclaim (kill) it. If it's a foreign
+#                     service, shift to the next free port so we don't kill
+#                     someone else's dev server.
+#   kill            — always kill whatever holds the port.
+#   shift           — always leave the holder alone and pick the next free port.
+# Applies to all runtimes; the host port is the same whether node runs
+# natively or through docker/compose/k8s.
+shift_to_next_free_port() {
+  while lsof -ti tcp:"$PORT_OPT" >/dev/null 2>&1; do
+    local next=$((PORT_OPT + 1))
+    warn "port $PORT_OPT is in use, trying $next"
+    PORT_OPT=$next
+  done
+}
+
+reclaim_port() {
+  local pids="$1"
+  warn "reclaiming port $PORT_OPT from pid(s): $pids"
+  # shellcheck disable=SC2086
+  kill -TERM $pids 2>/dev/null || true
+  sleep 0.5
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
+  sleep 0.3
+}
+
 if command -v lsof >/dev/null 2>&1; then
-  if [ "$KILL_PORT" -eq 1 ]; then
-    PIDS=$(lsof -ti tcp:"$PORT_OPT" 2>/dev/null || true)
-    if [ -n "$PIDS" ]; then
-      warn "killing existing process on port $PORT_OPT: $PIDS"
-      # shellcheck disable=SC2086
-      kill -TERM $PIDS 2>/dev/null || true
-      sleep 0.5
-      # shellcheck disable=SC2086
-      kill -KILL $PIDS 2>/dev/null || true
-      sleep 0.3
-    fi
-  else
-    while lsof -ti tcp:"$PORT_OPT" >/dev/null 2>&1; do
-      warn "port $PORT_OPT is in use, trying $((PORT_OPT + 1))"
-      PORT_OPT=$((PORT_OPT + 1))
-    done
+  HOLDER_PIDS="$(lsof -ti tcp:"$PORT_OPT" 2>/dev/null || true)"
+  if [ -n "$HOLDER_PIDS" ]; then
+    case "$PORT_POLICY" in
+      kill)
+        reclaim_port "$HOLDER_PIDS"
+        ;;
+      shift)
+        shift_to_next_free_port
+        ;;
+      smart)
+        # Evaluate ownership against the first (usually only) holder PID.
+        HOLDER_HEAD="$(printf '%s\n' "$HOLDER_PIDS" | head -n1)"
+        if is_port_holder_ours "$HOLDER_HEAD"; then
+          step "port $PORT_OPT is held by our previous instance (pid $HOLDER_HEAD) — reclaiming"
+          reclaim_port "$HOLDER_PIDS"
+        else
+          HOLDER_DESC="$(ps -p "$HOLDER_HEAD" -o command= 2>/dev/null | head -c 80 || echo '?')"
+          warn "port $PORT_OPT is held by a foreign process (pid $HOLDER_HEAD: $HOLDER_DESC) — shifting"
+          shift_to_next_free_port
+        fi
+        ;;
+    esac
   fi
 else
   warn "lsof not available, cannot check for existing process on port $PORT_OPT"
 fi
 export PORT="$PORT_OPT"
 
-# ----- clean ----------------------------------------------------------------
-if [ "$DO_CLEAN" -eq 1 ]; then
-  step "cleaning build artifacts"
-  rm -rf .next tsconfig.tsbuildinfo node_modules/.cache playwright-report test-results
-  ok "cleaned .next, tsconfig.tsbuildinfo, node_modules/.cache, playwright-report, test-results"
-  DO_INSTALL=1
-fi
-
-# ----- install --------------------------------------------------------------
-if [ "$DO_INSTALL" -eq 1 ] || [ ! -d node_modules ]; then
-  step "npm install"
-  npm install --no-audit --no-fund
-  ok "dependencies installed"
-elif [ -f package-lock.json ] && [ -f node_modules/.package-lock.json ]; then
-  if [ package-lock.json -nt node_modules/.package-lock.json ]; then
-    warn "package-lock.json is newer than node_modules — re-running npm install"
-    npm install --no-audit --no-fund
+# ----- host-side prep (native runtime only) ---------------------------------
+# Clean/install/check/lint/test/build run inside the container for docker/
+# compose/k8s. When those runtimes are selected, warn once if the user passed
+# host-targeted prep flags so they can drop them or switch to --native.
+if [ "$RUNTIME" != "native" ]; then
+  if [ "$DO_CLEAN$DO_INSTALL$DO_CHECK$DO_LINT$DO_TEST$DO_BUILD" != "000000" ]; then
+    warn "--clean/--install/--check/--lint/--test/--build run on the host and are skipped for runtime=$RUNTIME"
+    warn "Run them with --native, or exec into the container (e.g. 'docker compose exec dev npm run lint')"
   fi
-fi
+else
+  # ----- clean --------------------------------------------------------------
+  if [ "$DO_CLEAN" -eq 1 ]; then
+    step "cleaning build artifacts"
+    rm -rf .next tsconfig.tsbuildinfo node_modules/.cache playwright-report test-results
+    ok "cleaned .next, tsconfig.tsbuildinfo, node_modules/.cache, playwright-report, test-results"
+    DO_INSTALL=1
+  fi
 
-# ----- checks + tests -------------------------------------------------------
-[ "$DO_CHECK" -eq 1 ] && { step "type-check"; npm run type-check; ok "type-check passed"; }
-[ "$DO_LINT"  -eq 1 ] && { step "lint";       npm run lint;       ok "lint passed"; }
-[ "$DO_TEST"  -eq 1 ] && { step "unit tests"; npm test;           ok "unit tests passed"; }
+  # ----- install ------------------------------------------------------------
+  if [ "$DO_INSTALL" -eq 1 ] || [ ! -d node_modules ]; then
+    step "npm install"
+    npm install --no-audit --no-fund
+    ok "dependencies installed"
+  elif [ -f package-lock.json ] && [ -f node_modules/.package-lock.json ]; then
+    if [ package-lock.json -nt node_modules/.package-lock.json ]; then
+      warn "package-lock.json is newer than node_modules — re-running npm install"
+      npm install --no-audit --no-fund
+    fi
+  fi
 
-# ----- build ----------------------------------------------------------------
-if [ "$DO_BUILD" -eq 1 ]; then
-  step "next build"
-  npm run build
-  ok "build complete"
+  # ----- checks + tests -----------------------------------------------------
+  [ "$DO_CHECK" -eq 1 ] && { step "type-check"; npm run type-check; ok "type-check passed"; }
+  [ "$DO_LINT"  -eq 1 ] && { step "lint";       npm run lint;       ok "lint passed"; }
+  [ "$DO_TEST"  -eq 1 ] && { step "unit tests"; npm test;           ok "unit tests passed"; }
+
+  # ----- build --------------------------------------------------------------
+  if [ "$DO_BUILD" -eq 1 ]; then
+    step "next build"
+    npm run build
+    ok "build complete"
+  fi
 fi
 
 # ----- env setup ------------------------------------------------------------
 if [ "$MODE" = "prod" ]; then
   export NODE_ENV=production
-  [ -d .next ] || die ".next/ not found — production mode requires a build. Re-run with --build."
+  # Native prod needs a host build; container runtimes build inside the image.
+  if [ "$RUNTIME" = "native" ]; then
+    [ -d .next ] || die ".next/ not found — production mode requires a build. Re-run with --build."
+  fi
 else
   export NODE_ENV=development
 fi
@@ -524,6 +882,8 @@ if [ "$BACKGROUND" -eq 1 ]; then
   printf '  %bpidfile %b %s\n' "$C_DIM" "$C_RESET" "$PID_FILE"
 fi
 
+printf '  %bruntime %b %s\n' "$C_DIM" "$C_RESET" "$RUNTIME"
+
 # ----- post-boot browser open (background launcher) -----------------------
 if [ "$OPEN_BROWSER" -eq 1 ]; then
   (
@@ -540,6 +900,151 @@ if [ "$OPEN_BROWSER" -eq 1 ]; then
     done
   ) &
 fi
+
+# ----- runtime dispatch (docker / compose / k8s) ---------------------------
+# For non-native runtimes, everything from here to EOF is handled in its own
+# branch and the script exits. Native launch continues below.
+if [ "$RUNTIME" = "docker" ]; then
+  # Build the dev image if missing.
+  if ! docker_cli image inspect "$DOCKER_IMAGE_TAG" >/dev/null 2>&1; then
+    step "building $DOCKER_IMAGE_TAG (dev target)"
+    docker_cli build --target dev -t "$DOCKER_IMAGE_TAG" "$ROOT"
+    ok "image built"
+  fi
+
+  # Remove any prior container so port re-bind is clean.
+  if docker_cli ps -a --filter "name=^${DOCKER_CONTAINER_NAME}$" --format '{{.ID}}' | grep -q .; then
+    step "removing stale container $DOCKER_CONTAINER_NAME"
+    docker_cli rm -f "$DOCKER_CONTAINER_NAME" >/dev/null 2>&1 || true
+  fi
+
+  write_runtime_state docker
+
+  DOCKER_RUN_ARGS=(
+    --name "$DOCKER_CONTAINER_NAME"
+    --init
+    --rm
+    -p "${HOST_OPT}:${PORT_OPT}:3000"
+    -v "${ROOT}:/app:cached"
+    -v "claudegui_node_modules:/app/node_modules"
+    -v "claudegui_next_cache:/app/.next"
+    -e "NODE_ENV=${NODE_ENV}"
+    -e "HOST=0.0.0.0"
+    -e "PORT=3000"
+    -e "LOG_LEVEL=${LOG_LEVEL_OPT}"
+    -e "CLAUDEGUI_DEBUG=${DEBUG_MODULES}"
+    -e "CLAUDEGUI_TRACE=${CLAUDEGUI_TRACE:-}"
+  )
+  [ -n "${PROJECT_ROOT:-}" ]        && DOCKER_RUN_ARGS+=(-e "PROJECT_ROOT=${PROJECT_ROOT}")
+  [ -n "${ANTHROPIC_API_KEY:-}" ]   && DOCKER_RUN_ARGS+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
+  [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]&& DOCKER_RUN_ARGS+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
+
+  if [ "$BACKGROUND" -eq 1 ]; then
+    step "starting detached container $DOCKER_CONTAINER_NAME"
+    docker_cli run -d "${DOCKER_RUN_ARGS[@]}" "$DOCKER_IMAGE_TAG" >/dev/null
+    ok "started"
+    printf '  %burl     %b %s\n' "$C_DIM" "$C_RESET" "http://$HOST_OPT:$PORT_OPT"
+    printf '  %blogs    %b %s --tail\n' "$C_DIM" "$C_RESET" "$0"
+    if [ "$DO_TAIL" -eq 1 ]; then
+      exec docker logs -f --tail 50 "$DOCKER_CONTAINER_NAME"
+    fi
+    exit 0
+  else
+    step "docker run (foreground, Ctrl+C stops)"
+    DOCKER_ATTACH_FLAGS="-i"
+    [ -t 0 ] && [ -t 1 ] && DOCKER_ATTACH_FLAGS="-it"
+    exec docker run $DOCKER_ATTACH_FLAGS "${DOCKER_RUN_ARGS[@]}" "$DOCKER_IMAGE_TAG"
+  fi
+fi
+
+if [ "$RUNTIME" = "compose" ]; then
+  write_runtime_state compose
+
+  # Pass host env into compose substitutions.
+  export CLAUDEGUI_HOST_PORT="$PORT_OPT"
+  export LOG_LEVEL="$LOG_LEVEL_OPT"
+  export CLAUDEGUI_DEBUG="${DEBUG_MODULES:-}"
+  [ "$TRACE" -eq 1 ] && export CLAUDEGUI_TRACE=1
+
+  if [ "$MODE" = "prod" ]; then
+    SERVICE="prod"
+    COMPOSE_UP_ARGS=(--profile prod up --build)
+  else
+    SERVICE="dev"
+    COMPOSE_UP_ARGS=(up --build)
+  fi
+
+  if [ "$BACKGROUND" -eq 1 ]; then
+    step "docker compose up -d ($SERVICE)"
+    compose_cli "${COMPOSE_UP_ARGS[@]}" -d "$SERVICE"
+    ok "started"
+    printf '  %burl     %b %s\n' "$C_DIM" "$C_RESET" "http://$HOST_OPT:$PORT_OPT"
+    printf '  %blogs    %b %s --tail\n' "$C_DIM" "$C_RESET" "$0"
+    if [ "$DO_TAIL" -eq 1 ]; then
+      compose_cli logs -f --tail 50 "$SERVICE"
+    fi
+    exit 0
+  else
+    step "docker compose up ($SERVICE, Ctrl+C stops)"
+    exec docker compose -p "$COMPOSE_PROJECT_NAME" "${COMPOSE_UP_ARGS[@]}" "$SERVICE"
+  fi
+fi
+
+if [ "$RUNTIME" = "k8s" ]; then
+  # 1. Build dev image.
+  step "building $DOCKER_IMAGE_TAG (dev target)"
+  docker_cli build --target dev -t "$DOCKER_IMAGE_TAG" "$ROOT"
+
+  # 2. Load into local cluster (best effort).
+  k8s_load_image_into_cluster
+
+  # 3. Render kustomization with host repo root substituted and apply.
+  step "applying $K8S_DIR to $(kubectl_cli config current-context 2>/dev/null || echo '?')"
+  kubectl_cli kustomize "$K8S_DIR" \
+    | sed "s|__REPO_ROOT__|${ROOT}|g" \
+    | kubectl_cli apply -f -
+
+  # 4. Wait for rollout.
+  step "waiting for deployment rollout"
+  kubectl_cli -n "$K8S_NAMESPACE" rollout status deploy/claudegui --timeout=120s || \
+    warn "rollout did not complete in 120s — continuing anyway"
+
+  write_runtime_state k8s
+
+  # 5. Port-forward from host.
+  if [ "$BACKGROUND" -eq 1 ]; then
+    resolve_log_file
+    mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$PID_FILE")"
+    step "port-forwarding ${HOST_OPT}:${PORT_OPT} → svc/claudegui:3000 (detached)"
+    # shellcheck disable=SC2086
+    nohup kubectl -n "$K8S_NAMESPACE" port-forward \
+      --address "$HOST_OPT" svc/claudegui "${PORT_OPT}:3000" \
+      >>"$LOG_FILE" 2>&1 < /dev/null &
+    PF_PID=$!
+    echo "$PF_PID" > "$PID_FILE"
+    disown "$PF_PID" 2>/dev/null || true
+    sleep 0.8
+    if ! is_alive "$PF_PID"; then
+      rm -f "$PID_FILE"
+      die "port-forward died immediately — check $LOG_FILE"
+    fi
+    ok "started"
+    printf '  %bpid     %b %s (port-forward)\n' "$C_DIM" "$C_RESET" "$PF_PID"
+    printf '  %burl     %b %s\n' "$C_DIM" "$C_RESET" "http://$HOST_OPT:$PORT_OPT"
+    printf '  %blogfile %b %s\n' "$C_DIM" "$C_RESET" "$LOG_FILE"
+    if [ "$DO_TAIL" -eq 1 ]; then
+      exec kubectl -n "$K8S_NAMESPACE" logs -f --tail=50 deploy/claudegui
+    fi
+    exit 0
+  else
+    step "port-forwarding ${HOST_OPT}:${PORT_OPT} → svc/claudegui:3000 (Ctrl+C stops)"
+    exec kubectl -n "$K8S_NAMESPACE" port-forward \
+      --address "$HOST_OPT" svc/claudegui "${PORT_OPT}:3000"
+  fi
+fi
+
+# Everything below is native-runtime only.
+write_runtime_state native
 
 # ----- background run -------------------------------------------------------
 if [ "$BACKGROUND" -eq 1 ]; then

@@ -106,10 +106,21 @@ NODE_ENV=development
 |---------|------|
 | 준비 | `--clean` `--install` `--check` `--lint` `--test` `--build` `--all-checks` |
 | 실행 모드 | `--dev` (기본) `--prod` (NODE_ENV=production, 빌드 필수) |
-| 서버 | `--host <addr>` `--port <n>` `--project <path>` `--kill-port` |
+| 런타임 (FR-1600) | `--native` (기본) `--docker` `--compose` `--k8s` |
+| 서버 | `--host <addr>` `--port <n>` `--project <path>` `--port-policy <smart\|kill\|shift>` (기본: smart) `--kill-port` (=policy kill) `--next-free-port` (=policy shift) |
 | 디버그 | `--debug <list>` `--verbose` `--trace` `--log-level <lvl>` `--inspect` `--inspect-brk` `--log-file <path>` `--log-truncate` `--no-color` |
 | 백그라운드/라이프사이클 | `--background` / `-b` `--stop` `--restart` `--status` `--tail` `--pid-file <path>` `--force-kill` |
 | 편의 | `--open` `-h` / `--help` |
+
+**포트 정책 (smart 기본)**: 포트가 사용 중일 때 **무조건 kill하지 않고**, 점유자가 이 스크립트가 띄웠던 인스턴스인지 먼저 판정한다. "우리 것"이면 reclaim(kill→rebind), "남의 서비스"(예: 사용자가 별도로 띄운 dev 서버)이면 **다음 빈 포트로 시프트**한다. 판정 신호:
+
+1. 점유 PID가 `$CLAUDEGUI_PID_FILE`의 기록 값과 일치 (native / k8s port-forward)
+2. 점유 프로세스의 커맨드라인이 `node ... server.js`이고 cwd가 저장소 루트와 동일 (native 레거시)
+3. `docker ps` 상 점유 포트를 바인딩한 컨테이너 이름이 `claudegui-dev` 또는 compose 프로젝트와 매칭 (docker / compose)
+
+예전처럼 무조건 kill하려면 `--kill-port`(= `--port-policy kill`), 반대로 절대 kill 금지는 `--next-free-port`(= `--port-policy shift`)를 사용한다.
+
+**런타임 플래그** (FR-1600): 상세 동작은 [§6.3](#63-컨테이너-런타임-docker--compose--k8s) 참조.
 
 **상태 경로** (환경변수로 오버라이드 가능):
 | 경로 | 기본값 | 환경변수 |
@@ -213,7 +224,100 @@ package.json
 
 ---
 
-## 6.3 Docker 배포
+## 6.3 컨테이너 런타임 (Docker / Compose / K8S)
+
+로컬 구동 스크립트(`scripts/dev.sh`)는 FR-1600에 따라 네이티브 외에 **3종의 컨테이너 런타임**을 지원한다. 선택한 런타임 종류는 `$CLAUDEGUI_STATE_DIR/runtime` 파일에 기록되어, `--stop`/`--status`/`--tail`/`--restart` 호출 시 자동으로 올바른 백엔드가 선택된다.
+
+| 플래그 | 기동 커맨드 | stop | logs |
+|--------|------------|------|------|
+| `--docker` | `docker run … claudegui:dev` (bind mount + named volumes) | `docker stop && docker rm` | `docker logs -f` |
+| `--compose` | `docker compose up [-d] dev` (prod 모드는 `--profile prod`) | `docker compose down` | `docker compose logs -f` |
+| `--k8s` | `kubectl apply -k k8s/local/` + `kubectl port-forward` | `kubectl delete -k` + PF 종료 | `kubectl logs -f deploy/claudegui` |
+
+모든 컨테이너화 런타임은 **HMR이 유지되도록** 저장소를 `/app`에 바인드 마운트하며, `node_modules`·`.next`는 네임드 볼륨으로 덮어써 호스트-컨테이너 네이티브 바인딩 충돌(@parcel/watcher, node-pty)을 방지한다. Docker Desktop(macOS/Windows)에서 inotify 이벤트 전파가 불안정한 경우에 대비해 `WATCHPACK_POLLING=1`·`CHOKIDAR_USEPOLLING=1`가 기본 활성화된다.
+
+### 6.3.0 Dockerfile 멀티 스테이지 구조
+
+```
+Dockerfile
+├── dev      → node:20-bookworm + build-essential, 바인드 마운트 전제, install-on-boot
+├── builder  → npm ci + next build
+└── runner   → node:20-bookworm-slim + 실행 아티팩트만, non-root user (prod)
+```
+
+### 6.3.1 단일 컨테이너 (`--docker`)
+
+```bash
+# 수동 실행
+docker build --target dev -t claudegui:dev .
+docker run --rm -it --name claudegui-dev \
+  -p 127.0.0.1:3000:3000 \
+  -v "$PWD":/app:cached \
+  -v claudegui_node_modules:/app/node_modules \
+  -v claudegui_next_cache:/app/.next \
+  -e NODE_ENV=development \
+  claudegui:dev
+
+# dev.sh를 통한 실행 (권장)
+./scripts/dev.sh --docker
+./scripts/dev.sh --docker --background --tail
+./scripts/dev.sh --docker --stop
+```
+
+### 6.3.2 Docker Compose (`--compose`)
+
+`docker-compose.yml` 정의:
+- `dev` 서비스 (기본) — HMR dev 모드
+- `prod` 서비스 (`profile: prod`) — 프로덕션 이미지
+
+```bash
+# 수동 실행
+docker compose up                  # dev
+docker compose --profile prod up   # prod
+
+# dev.sh를 통한 실행
+./scripts/dev.sh --compose
+./scripts/dev.sh --compose --background
+./scripts/dev.sh --compose --prod
+./scripts/dev.sh --compose --stop
+```
+
+환경 변수 치환: `CLAUDEGUI_HOST_PORT`(기본 3000), `CLAUDEGUI_DEBUG`, `LOG_LEVEL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`.
+
+### 6.3.3 로컬 Kubernetes (`--k8s`)
+
+`k8s/local/` 매니페스트 집합 (Kustomize):
+
+| 파일 | 역할 |
+|------|------|
+| `namespace.yaml` | `claudegui-dev` 네임스페이스 |
+| `configmap.yaml` | `LOG_LEVEL`, `CLAUDEGUI_DEBUG` |
+| `deployment.yaml` | `claudegui:dev` 파드 + `hostPath` 저장소 마운트 + 단일 replica + `Recreate` 전략 |
+| `service.yaml` | NodePort 30030 → 3000 |
+| `kustomization.yaml` | 엔트리포인트 |
+
+```bash
+# 수동 실행
+docker build --target dev -t claudegui:dev .
+kind load docker-image claudegui:dev       # kind
+# minikube image load claudegui:dev        # minikube
+# k3d image import claudegui:dev -c <c>    # k3d
+kubectl kustomize k8s/local/ \
+  | sed "s|__REPO_ROOT__|$PWD|g" \
+  | kubectl apply -f -
+kubectl -n claudegui-dev port-forward svc/claudegui 3000:3000
+
+# dev.sh를 통한 실행 (이미지 빌드/로드/kustomize/port-forward 일괄 수행)
+./scripts/dev.sh --k8s
+./scripts/dev.sh --k8s --background
+./scripts/dev.sh --k8s --stop
+```
+
+**제약**:
+- 로컬 클러스터 전용. `hostPath`가 개발자 laptop의 실제 경로를 파드에 노출하므로 원격 클러스터에서는 동작하지 않는다.
+- 단일 replica + `Recreate` 전략은 이중 바인드 마운트 레이스 방지를 위해 강제된다. 프로덕션급 배포(ReplicaSet, rolling update)는 본 매니페스트의 범위를 벗어난다.
+
+### 6.3.4 (참고) 레거시 prod Docker 배포
 
 ### Dockerfile (Multi-stage)
 

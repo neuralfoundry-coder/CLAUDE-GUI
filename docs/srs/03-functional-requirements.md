@@ -1502,3 +1502,52 @@
 - 세션 디스크 영속화를 비활성화(`persistSession: false`)하여 동일 프로젝트에서 여러 CLI 프로세스 간의 세션 파일 잠금 충돌을 방지한다. 세션 이어쓰기(`resume`)는 서버 프로세스 생애주기 내에서만 동작한다.
 - 활성 Query 인스턴스는 `browserId` 기준으로 추적되어 MCP 서버 상태 조회(`getMcpServerStatus`)가 브라우저별로 올바른 Query에서 데이터를 가져온다.
 - 구현: `server-handlers/claude-handler.mjs`, `src/app/api/mcp/status/route.ts`.
+
+---
+
+## 3.16 로컬 개발 런타임 모드 (FR-1600)
+
+### FR-1600: 단일 런처 스크립트의 런타임 선택
+
+`scripts/dev.sh`(macOS/Linux)와 `scripts/dev.ps1`(Windows)는 동일한 코드 베이스를 **네 가지 런타임** 중 하나로 기동할 수 있어야 한다. 기본값은 `--native`(호스트 직접 실행)이며, 나머지는 명시 플래그로 선택한다.
+
+| 플래그 | 런타임 | 기동 방식 | HMR | 대상 환경 |
+|--------|--------|----------|-----|----------|
+| `--native` (기본) | 호스트 Node.js | `node server.js` | ✅ Next.js dev | 개발자 로컬 |
+| `--docker` | 단일 컨테이너 | `docker run … claudegui:dev` | ✅ 바인드 마운트 + 폴링 | Docker Engine/Desktop |
+| `--compose` | docker-compose 스택 | `docker compose up dev` | ✅ 네임드 볼륨 + 바인드 마운트 | Docker Compose v2 |
+| `--k8s` | 로컬 K8S 클러스터 | `kubectl apply -k k8s/local/` + `port-forward` | ✅ hostPath + 폴링 | kind / minikube / k3d / Docker Desktop K8S |
+
+**공통 요구사항**:
+
+- 포그라운드/백그라운드 모두 지원해야 한다. `-b`/`--background`가 모든 런타임에서 같은 의미를 가진다.
+- `--stop`/`--status`/`--tail`/`--restart` 라이프사이클 커맨드는 **마지막으로 시작된 런타임을 기억**하여 플래그 없이도 올바른 백엔드를 대상으로 동작해야 한다 (`$CLAUDEGUI_STATE_DIR/runtime`에 기록).
+- 호스트 포트 정책은 런타임과 무관하며 **스마트 기본값**을 갖는다 (`--port-policy smart`). 포트 점유 프로세스가 발견되면 다음 세 가지 신호 중 하나라도 일치할 때만 "우리 것"으로 판정하여 정리(kill)하고, 그 외에는 남의 서비스로 간주해 **다음 빈 포트로 시프트**한다:
+  1. 점유 프로세스 PID가 `$CLAUDEGUI_PID_FILE`의 기록 값과 일치 (native / k8s port-forward)
+  2. 점유 프로세스가 `node ... server.js`이고 그 cwd가 저장소 루트와 동일 (native foreground 레거시)
+  3. `docker ps`에서 점유 포트를 바인딩 중인 컨테이너 이름이 `claudegui-dev` 또는 compose 프로젝트(`claudegui_dev_1` 등)와 매칭 (docker / compose)
+
+  명시 플래그로 정책을 강제할 수 있다:
+  - `--kill-port` (=`--reclaim-port`, `--port-policy kill`) — 항상 kill 후 재바인딩
+  - `--next-free-port` (=`--no-kill-port`, `--port-policy shift`) — 절대 kill하지 않고 항상 시프트
+- `--docker`/`--compose`/`--k8s`는 필요한 이미지(`claudegui:dev`)를 자동으로 빌드해야 하며, `--k8s`는 로컬 클러스터(kind/minikube/k3d)에 이미지 로드까지 수행해야 한다.
+- 컨테이너화된 런타임에서 `--clean`/`--install`/`--check`/`--lint`/`--test`/`--build`를 지정하면 **경고 후 무시**한다(호스트가 아닌 컨테이너 내부에서 수행해야 하므로). 사용자에게 `docker compose exec dev npm run lint` 형태의 대안을 안내한다.
+
+**HMR 유지 방법**:
+
+- Docker/Compose: 저장소를 `/app`에 바인드 마운트하고, `node_modules`·`.next`는 **네임드 볼륨**으로 덮어써서 호스트-컨테이너 간 네이티브 바인딩(@parcel/watcher, node-pty) 충돌을 방지한다.
+- Docker Desktop(macOS/Windows)에서는 바인드 마운트 상의 inotify 전파가 불안정하므로 `WATCHPACK_POLLING=1`/`CHOKIDAR_USEPOLLING=1`을 기본 활성화한다. 네이티브 Linux에서는 무해한 no-op이다.
+- K8S: `hostPath` 볼륨으로 호스트 저장소를 파드에 마운트하고 단일 replica + `Recreate` 전략을 강제한다 (이중 마운트 레이스 방지).
+
+**라이프사이클 위임**:
+
+| 런타임 | start | stop | status | logs |
+|--------|-------|------|--------|------|
+| native | `node server.js`(fore) / `nohup+setsid`(bg) | SIGTERM → SIGKILL | PID 파일 + `ps` | tail `-F` log file |
+| docker | `docker run --rm` (+`-d` bg) | `docker stop` + `rm` | `docker ps --filter name=…` | `docker logs -f` |
+| compose | `docker compose up`(fore) / `-d`(bg) | `docker compose down` | `docker compose ps dev` | `docker compose logs -f dev` |
+| k8s | `kubectl apply -k` + `port-forward` | `kubectl delete -k` + PID | `kubectl get deploy/svc/pod` | `kubectl logs -f deploy/claudegui` |
+
+**구현**: `scripts/dev.sh` §runtime helpers, §runtime dispatch. `docker-compose.yml` (서비스: `dev`, 프로파일 `prod`). `k8s/local/` (`namespace`, `configmap`, `deployment`, `service`, `kustomization`). `Dockerfile` `dev` 스테이지.
+
+**비고**: `--k8s`는 개발용 로컬 클러스터 전용이다. 원격/프로덕션 배포는 FR-1300(원격 접근)과 ADR-018(Tauri 네이티브 인스톨러) 범위이며 본 요구사항에서 제외된다.

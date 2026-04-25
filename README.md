@@ -148,21 +148,30 @@ npm run build
 NODE_ENV=production node server.js
 ```
 
-### Docker
+### 컨테이너 런타임 (Docker / Compose / K8S) — FR-1600
+
+`scripts/dev.sh` 하나로 네이티브 외에 3가지 런타임을 선택할 수 있다. 모두 **HMR이 유지**되어 호스트에서 저장한 코드 변경이 즉시 적용된다.
 
 ```bash
-docker build -t claudegui:latest .
+# 단일 컨테이너 (docker run)
+./scripts/dev.sh --docker
 
-docker run -d \
-  --name claudegui \
-  -p 127.0.0.1:3000:3000 \
-  -v /Users/dev/myproject:/workspace:rw \
-  -e PROJECT_ROOT=/workspace \
-  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  claudegui:latest
+# Docker Compose (dev 서비스, prod는 --prod로 profile 전환)
+./scripts/dev.sh --compose
+./scripts/dev.sh --compose --prod
+
+# 로컬 Kubernetes (kind / minikube / k3d / Docker Desktop)
+./scripts/dev.sh --k8s
+
+# 라이프사이클 — 마지막 시작된 런타임이 자동 선택됨
+./scripts/dev.sh --status
+./scripts/dev.sh --tail
+./scripts/dev.sh --stop
 ```
 
-자세한 배포 가이드는 [docs/architecture/06-deployment.md](./docs/architecture/06-deployment.md) 참조.
+- 이미지(`claudegui:dev`)는 최초 실행 시 자동 빌드된다.
+- 컨테이너/파드의 `node_modules`·`.next`는 네임드 볼륨(docker/compose) 또는 `emptyDir`(k8s)에 격리되어 호스트-컨테이너 네이티브 바인딩 충돌이 발생하지 않는다.
+- 전통적인 prod 배포(`docker build && docker run`)는 [docs/architecture/06-deployment.md §6.3.4](./docs/architecture/06-deployment.md) 참조.
 
 ## 환경 변수
 

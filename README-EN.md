@@ -150,21 +150,30 @@ npm run build
 NODE_ENV=production node server.js
 ```
 
-### Docker
+### Container runtimes (Docker / Compose / K8s) — FR-1600
+
+A single launcher (`scripts/dev.sh`) picks one of three containerized runtimes in addition to the native one. All of them **preserve HMR** — edits saved on the host apply immediately.
 
 ```bash
-docker build -t claudegui:latest .
+# Single container (docker run)
+./scripts/dev.sh --docker
 
-docker run -d \
-  --name claudegui \
-  -p 127.0.0.1:3000:3000 \
-  -v /Users/dev/myproject:/workspace:rw \
-  -e PROJECT_ROOT=/workspace \
-  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-  claudegui:latest
+# Docker Compose (dev service by default; --prod switches to the prod profile)
+./scripts/dev.sh --compose
+./scripts/dev.sh --compose --prod
+
+# Local Kubernetes (kind / minikube / k3d / Docker Desktop)
+./scripts/dev.sh --k8s
+
+# Lifecycle — the last launched runtime is selected automatically
+./scripts/dev.sh --status
+./scripts/dev.sh --tail
+./scripts/dev.sh --stop
 ```
 
-For the full deployment guide see [docs/en/architecture/06-deployment.md](./docs/en/architecture/06-deployment.md).
+- The image (`claudegui:dev`) is built on first run.
+- The container/pod `node_modules` and `.next` live in named volumes (docker/compose) or `emptyDir` (k8s), so host↔container native-binding conflicts never materialize.
+- For the traditional prod flow (`docker build && docker run`) see [docs/en/architecture/06-deployment.md §6.3.4](./docs/en/architecture/06-deployment.md).
 
 ## Environment Variables
 

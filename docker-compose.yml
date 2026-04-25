@@ -1,0 +1,98 @@
+# docker-compose.yml
+# ---------------------------------------------------------------------------
+# Local development runtime for ClaudeGUI on Docker / Docker Compose.
+# Invoked by `scripts/dev.sh --compose`, or directly:
+#
+#   docker compose up                    # dev (HMR, bind-mounted source)
+#   docker compose --profile prod up     # prod image (built from ./Dockerfile)
+#
+# The `dev` service bind-mounts the repo into /app so file edits on the host
+# trigger Next.js HMR inside the container. node_modules is kept in a named
+# volume so native bindings (@parcel/watcher, node-pty) are installed against
+# the container's arch, not the host's.
+# ---------------------------------------------------------------------------
+
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    image: claudegui:dev
+    container_name: claudegui-dev
+    init: true
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CLAUDEGUI_DEBUG: ${CLAUDEGUI_DEBUG:-}
+      CLAUDEGUI_TRACE: ${CLAUDEGUI_TRACE:-}
+      # Watched by PROJECT_OPT in dev.sh — defaults to /workspace when set.
+      PROJECT_ROOT: ${PROJECT_ROOT:-}
+      # Pass through Claude CLI auth if present on the host.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+    ports:
+      - "${CLAUDEGUI_HOST_PORT:-3000}:3000"
+      # Optional: Node inspector. Exposed only when dev.sh --inspect sets
+      # NODE_OPTIONS=--inspect=0.0.0.0:9229 via the container env.
+      - "${CLAUDEGUI_INSPECT_PORT:-9229}:9229"
+    volumes:
+      # Source tree — live edit for HMR.
+      - .:/app:cached
+      # Named volume for node_modules so native bindings match the container
+      # architecture and host node_modules (likely macOS) don't shadow them.
+      - claudegui_node_modules:/app/node_modules
+      # Persist Next.js build cache across restarts.
+      - claudegui_next_cache:/app/.next
+      # To edit a separate host project as PROJECT_ROOT, add a
+      # docker-compose.override.yml (gitignored) with an extra bind mount and
+      # set PROJECT_ROOT=/workspace in the environment.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 5
+    stop_grace_period: 10s
+    restart: unless-stopped
+
+  prod:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    image: claudegui:latest
+    container_name: claudegui-prod
+    init: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PROJECT_ROOT: ${PROJECT_ROOT:-/workspace}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+    ports:
+      - "${CLAUDEGUI_HOST_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  claudegui_node_modules:
+  claudegui_next_cache:

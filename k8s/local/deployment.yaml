@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claudegui
+  namespace: claudegui-dev
+  labels:
+    app.kubernetes.io/name: claudegui
+    app.kubernetes.io/component: server
+spec:
+  replicas: 1
+  # HMR requires exactly one pod holding the source mount; parallel rollouts
+  # would double-bind the hostPath and race on node_modules writes.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: claudegui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: claudegui
+        app.kubernetes.io/component: server
+    spec:
+      # The dev image is built locally (by scripts/dev.sh --k8s or
+      # `docker build --target dev -t claudegui:dev .`) and must be loaded
+      # into the local cluster:
+      #   kind load docker-image claudegui:dev          (kind)
+      #   minikube image load claudegui:dev             (minikube)
+      #   k3d image import claudegui:dev -c <cluster>   (k3d)
+      containers:
+        - name: server
+          image: claudegui:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: development
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "3000"
+            - name: WATCHPACK_POLLING
+              value: "true"
+            - name: CHOKIDAR_USEPOLLING
+              value: "1"
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: claudegui-config
+                  key: LOG_LEVEL
+                  optional: true
+            - name: CLAUDEGUI_DEBUG
+              valueFrom:
+                configMapKeyRef:
+                  name: claudegui-config
+                  key: CLAUDEGUI_DEBUG
+                  optional: true
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: claudegui-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: ANTHROPIC_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: claudegui-secrets
+                  key: ANTHROPIC_AUTH_TOKEN
+                  optional: true
+          volumeMounts:
+            - name: source
+              mountPath: /app
+            - name: node-modules
+              mountPath: /app/node_modules
+            - name: next-cache
+              mountPath: /app/.next
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 5
+      volumes:
+        - name: source
+          hostPath:
+            # Replace at apply time via kustomize vars or `sed`:
+            # e.g. `sed "s|__REPO_ROOT__|$PWD|g" deployment.yaml | kubectl apply -f -`
+            # scripts/dev.sh --k8s does this automatically.
+            path: __REPO_ROOT__
+            type: Directory
+        - name: node-modules
+          emptyDir: {}
+        - name: next-cache
+          emptyDir: {}

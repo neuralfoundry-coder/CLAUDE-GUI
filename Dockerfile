@@ -1,4 +1,43 @@
 # syntax=docker/dockerfile:1
+
+# =============================================================================
+# dev stage — for `scripts/dev.sh --docker` / `--compose` with HMR.
+# Source tree is bind-mounted at /app by the caller; node_modules lives in a
+# named volume so native bindings (@parcel/watcher, node-pty) match the
+# container architecture rather than the host's.
+# =============================================================================
+FROM node:20-bookworm AS dev
+
+RUN apt-get update && apt-get install -y \
+    python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV NODE_ENV=development
+ENV HOST=0.0.0.0
+ENV PORT=3000
+# Next.js / webpack: poll filesystem when inotify events don't propagate
+# through the host→container bind mount (mainly Docker Desktop on macOS /
+# Windows). Harmless on native Linux where inotify works.
+ENV WATCHPACK_POLLING=true
+ENV CHOKIDAR_USEPOLLING=1
+
+EXPOSE 3000
+
+# Install-on-boot: first launch populates the node_modules volume with the
+# correct per-arch native bindings; subsequent launches short-circuit.
+CMD ["sh", "-lc", "\
+  if [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then \
+    echo '[dev] installing deps inside container...'; \
+    npm install --no-audit --no-fund; \
+  fi; \
+  exec node server.js \
+"]
+
+# =============================================================================
+# prod build stages
+# =============================================================================
 FROM node:20-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \

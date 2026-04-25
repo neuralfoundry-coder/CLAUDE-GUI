@@ -272,6 +272,25 @@ npm run build && NODE_ENV=production node server.js
 # Default port: 3000 (override with PORT env var)
 ```
 
+**Unified launcher (`scripts/dev.sh`, FR-1600)** — prefer this over raw `node server.js`.
+It supports four runtimes with identical lifecycle semantics (foreground/background/`--stop`/`--status`/`--tail`):
+
+```bash
+./scripts/dev.sh                     # --native (default): node server.js on host
+./scripts/dev.sh --docker            # docker run claudegui:dev (bind-mount HMR)
+./scripts/dev.sh --compose           # docker compose up dev
+./scripts/dev.sh --k8s               # kubectl apply -k k8s/local/ + port-forward
+```
+
+Port conflicts default to **smart**: the script checks whether the port
+holder is our own previous instance (PID file match, `node server.js` with
+cwd==repo root, or a `claudegui-dev`/compose container). If ours, it reclaims
+(kill → rebind); if foreign, it shifts to the next free port. Force with
+`--kill-port` or `--next-free-port`.
+
+The selected runtime is recorded in `$CLAUDEGUI_STATE_DIR/runtime`, so
+`--stop`/`--status`/`--tail` automatically target the right backend.
+
 ## Git Conventions
 
 - **Commits**: Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`)
