@@ -163,7 +163,7 @@ Related global stores:
 
 1. **Data loading**: the `useFileTree` hook calls `/api/files?path=<root>` to build the tree nodes.
 2. **Virtualization**: `react-arborist`'s built-in virtual scrolling.
-3. **Git status**: call `/api/git/status` to build a per-file status map → overlay.
+3. **Git status**: call `/api/git/status` to build a per-file status map → overlay. `useGitStatus` uses a single module-level cache + single-flight + **1500 ms debounce** to absorb `/ws/files` event bursts (HMR, `tsc --watch`, large git checkouts). Any extra events fired during an in-flight request collapse into a single trailing refresh.
 4. **Live updates**: receive `/ws/files` WebSocket events to update tree nodes (debounced + rAF batched).
 5. **Context menu (FR-206)**: the node renderer does **not** carry its own `<ContextMenu>`. Instead its `onContextMenu` calls `useFileContextMenuStore.openAtNode()` with the click coordinates, target node, and current selection paths. A single `<FileContextMenu>` mounted at the panel root opens a Radix DropdownMenu via a controlled `open` prop and an invisible fixed-position trigger that is repositioned at the click coordinates. Because the menu lives outside the virtualized list, react-arborist's row reconciliation and per-node hover re-renders cannot affect menu state — fixing the known dismissal glitch where moving the mouse after right-clicking would close the menu. Dismissal happens through exactly three paths: `Esc`, click outside the menu, or right-clicking another node.
 6. **Selection model (FR-210)**: react-arborist's built-in selection is used. `Tree.onSelect` emits the selected node array; the panel container holds it in `selection`/`selectionRef` state and feeds it to the keyboard hook and the context menu.

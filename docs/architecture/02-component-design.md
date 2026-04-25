@@ -159,7 +159,7 @@ src/components/panels/file-explorer/
 
 1. **데이터 로딩**: `useFileTree` 훅이 `/api/files?path=<root>`를 호출하여 트리 노드 생성.
 2. **가상화**: `react-arborist`의 내장 가상 스크롤.
-3. **Git 상태**: `/api/git/status` 호출로 파일별 상태 맵 생성 → 오버레이.
+3. **Git 상태**: `/api/git/status` 호출로 파일별 상태 맵 생성 → 오버레이. `useGitStatus`는 단일 모듈 캐시 + single-flight + **1500ms 디바운스**로 `/ws/files` 이벤트 폭주(HMR · `tsc --watch` · 대용량 git checkout)를 흡수한다. 디바운스 중 추가 이벤트는 trailing refresh 한 번으로 합쳐진다.
 4. **실시간 갱신**: `/ws/files` WebSocket 이벤트로 트리 노드 갱신 (디바운스 + rAF 배치).
 5. **컨텍스트 메뉴 (FR-206)**: 노드 렌더러는 `<ContextMenu>`를 직접 들지 않고, `onContextMenu`에서 `useFileContextMenuStore.openAtNode()`를 호출하여 좌표·target·selectionPaths를 발행한다. 패널 루트의 단일 `<FileContextMenu>`가 controlled `open`과 invisible fixed-position trigger로 Radix DropdownMenu를 anchor한다. 가상화 리스트 재조정이나 노드 hover 리렌더가 메뉴 상태에 영향을 주지 않으므로, 우클릭 직후 마우스 이동만으로 메뉴가 닫히는 react-arborist + 노드 단위 ContextMenu의 알려진 결함이 해소된다. 해제는 `Esc`/바깥 클릭/다른 노드 우클릭 세 가지 경로뿐이다.
 6. **선택 모델 (FR-210)**: react-arborist 내장 selection을 사용한다. `Tree.onSelect`가 노드 배열을 발화하면 패널 컨테이너가 `selection`/`selectionRef` 상태로 보관해 키보드 훅과 컨텍스트 메뉴에 공급한다.

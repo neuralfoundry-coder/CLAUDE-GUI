@@ -17,9 +17,11 @@ const listeners = new Set<(data: GitStatusData) => void>();
  * file change events (dev server writing `.next/`, large git checkouts,
  * formatters running across many files) collapse into one request. Without
  * this guard a build could fire 100+ calls in a few seconds and trip the
- * `/api/files` rate limiter.
+ * `/api/files` rate limiter. The 1500ms window is tuned to absorb HMR /
+ * tsc-watch bursts (which can fire several events per second for many
+ * minutes) while keeping the visible status indicator latency acceptable.
  */
-const REFRESH_DEBOUNCE_MS = 400;
+const REFRESH_DEBOUNCE_MS = 1500;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> | null = null;
 let pendingWhileInFlight = false;
