@@ -718,36 +718,31 @@
 ### FR-516: 슬래시 명령어 시스템
 
 - Claude 채팅 입력창에서 `/`로 시작하는 텍스트를 입력하면 사용 가능한 슬래시 명령어 목록을 팝오버로 표시해야 한다.
-- 슬래시 명령어는 두 유형으로 분류된다:
-  - **클라이언트 명령어**: GUI 내에서 직접 처리
-  - **패스스루 명령어**: 입력 전체를 Claude CLI에 전달
-- 패스스루 명령어는 `requiresSession` 플래그에 따라 세션 필수 여부가 결정된다:
-  - `requiresSession: true` (기본): 활성 세션이 없으면 실행 차단 (`/compact`, `/context`)
-  - `requiresSession: false`: 세션 없이도 실행 가능하며 새 세션 자동 생성 (`/init`, `/plan`, `/review`, `/pr-comments`)
+- 슬래시 명령어는 세 유형으로 분류된다:
+  - **`client`**: GUI 셸 의미를 갖는 명령(채팅 탭 비우기·CLAUDE.md 에디터에 열기 등). 프론트엔드에서 직접 처리한다.
+  - **`cli`**: 실제 `claude` 바이너리에 위임. `POST /api/claude/cli` 엔드포인트가 `claude --print '<command>'`를 spawn하여 stdout/stderr을 캡처해 채팅창에 시스템 메시지로 렌더한다. 그 결과 모델·effort·세션 상태 같은 CLI 고유 동작을 GUI가 흉내내지 않고 진본 그대로 보여준다.
+  - **`passthrough`** (레거시): 입력 전체를 Agent SDK 세션에 프롬프트로 전달. SDK가 슬래시 명령을 해석하지 않기 때문에 대부분의 기존 `passthrough` 항목은 `cli`로 이동했다.
+- **`cli` 폴백**: 레지스트리에 없는 `/xxx` 입력도 일반 프롬프트로 보내지 않고 `handleCliPassthrough`가 같은 엔드포인트로 전달한다. 사용자는 우리가 미리 등록하지 않은 CLI 명령(예: `/security-review`, 사용자 지정 skill 명령)도 즉시 사용할 수 있다.
 - 팝오버는 입력이 `/`로 시작하고 공백이 없는 동안 표시되며, 타이핑에 따라 prefix 매칭으로 필터링된다.
 - 키보드 조작: `ArrowUp`/`ArrowDown`으로 후보 이동, `Enter`로 즉시 실행, `Tab`으로 입력창에 명령어 이름을 채움, `Escape`로 닫기.
 - 명령어 카테고리별 그룹핑 (6개):
-  - **Session**: `/clear`, `/new`, `/compact`
-  - **Info**: `/usage`, `/context`, `/cost`, `/model`, `/help`
-  - **Mode**: `/plan`, `/review`
-  - **System**: `/bug`, `/config`, `/doctor`, `/login`, `/logout`, `/status`, `/vim`, `/terminal-setup`
-  - **Tools**: `/permissions`, `/approved-tools`, `/mcp`
-  - **Project**: `/init`, `/memory`, `/pr-comments`, `/add-dir`
-- 총 25개 슬래시 명령어를 지원하여 Claude Code CLI와 동일한 명령어 경험을 제공한다.
+  - **Session** (`client`/`cli` 혼합): `/clear`(client), `/new`(client), `/compact`(cli)
+  - **Info**: `/usage`(cli), `/context`(cli), `/cost`(cli), `/model`(cli), `/effort`(cli), `/help`(client)
+  - **Mode**: `/plan`(cli), `/review`(cli)
+  - **System**: `/bug`(client), `/config`(cli), `/doctor`(cli), `/login`(client), `/logout`(client), `/status`(cli), `/vim`(client), `/terminal-setup`(client)
+  - **Tools**: `/permissions`(client), `/approved-tools`(client), `/mcp`(client)
+  - **Project**: `/init`(cli), `/memory`(client), `/pr-comments`(cli), `/add-dir`(client)
 - 클라이언트 명령어는 채팅 영역에 시스템 메시지(`role: 'system'`, `kind: 'system'`)로 결과를 표시한다.
-- `/help`는 `SLASH_COMMANDS` 레지스트리에서 동적으로 생성된 전체 명령어 마크다운 테이블을 표시한다.
-- `/usage`, `/context`, `/cost`는 `useClaudeStore.sessionStats`의 현재 활성 세션 데이터를 조회하여 표시한다.
-- `/model`은 현재 모델 정보와 `src/lib/claude/model-specs.ts` 스펙을 조회하여 표시한다.
-- `/doctor`는 서버 상태, CLI 설치 여부, 인증 상태, WebSocket 연결, MCP 서버를 종합 진단한다.
-- `/config`, `/permissions`, `/approved-tools`는 `/api/settings`에서 설정을 조회하여 표시한다.
-- `/mcp`는 MCP 서버 상태를 조회하고 MCP 서버 관리 모달을 연다.
+- `/help`는 `SLASH_COMMANDS` 레지스트리에서 동적으로 생성된 전체 명령어 마크다운 테이블을 표시한다 (`cli` 표시 포함).
 - `/memory`는 프로젝트 루트의 `CLAUDE.md`를 에디터에서 연다.
 - `/vim`은 Monaco 에디터의 vim 키바인딩 모드를 토글한다 (`useSettingsStore.editorVimMode`).
-- `/login`, `/logout`는 인증 상태를 확인/변경한다 (`/api/auth/status`, `/api/auth/logout`).
+- `/login`, `/logout`은 인증 상태를 확인/변경한다 (`/api/auth/status`, `/api/auth/logout`).
 - `/bug`는 GitHub Issues 페이지를 새 탭에서 연다.
 - `/add-dir <path>`는 프로젝트 컨텍스트에 디렉토리를 추가한다 (`POST /api/project`).
+- `/permissions`, `/approved-tools`, `/mcp`는 `/api/settings` 또는 `/api/mcp/status`에서 설정을 조회하여 표시하고 해당 모달을 연다.
 - 별칭(alias) 지원: `/reset`은 `/new`의 별칭이다.
-- 구현: `src/lib/claude/slash-commands.ts`, `src/lib/claude/slash-command-handlers.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+- **CLI 엔드포인트 보안**: `POST /api/claude/cli`는 (a) 입력이 `/<영문 시작 토큰>`으로 시작하는지 정규식으로 검증, (b) `execFile`로만 실행해 셸 메타문자 인젝션 차단, (c) cwd는 `browserSessionRegistry.getRoot(browserId) ?? getActiveRoot()`, (d) 30초 타임아웃과 64KB 출력 캡, (e) `rateLimit`로 분당 호출 제한. CLI 바이너리는 Tauri-local 설치 → `~/.local/bin/claude` → `/usr/local/bin/claude` → `/opt/homebrew/bin/claude` → PATH 순으로 탐색한다.
+- 구현: `src/lib/claude/slash-commands.ts`, `src/lib/claude/slash-command-handlers.ts` (`handleCliPassthrough`), `src/app/api/claude/cli/route.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-view.tsx`.
 
 ### FR-517: 파일/이미지 드래그 앤 드롭 입력
 

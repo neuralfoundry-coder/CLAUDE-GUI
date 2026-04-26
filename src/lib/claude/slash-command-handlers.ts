@@ -29,6 +29,37 @@ async function fetchJson<T = unknown>(url: string): Promise<T | null> {
   }
 }
 
+// ─── CLI passthrough ──────────────────────────────────────
+
+/**
+ * Forward a slash command to the local Claude CLI via `POST /api/claude/cli`.
+ * Used for any command whose registry entry is `handler: 'cli'`, plus any
+ * unknown `/xxx` input that should reach the CLI rather than be treated as a
+ * plain prompt. The captured output is rendered as a system message.
+ */
+export async function handleCliPassthrough(command: string, push: PushFn): Promise<void> {
+  try {
+    const res = await fetch('/api/claude/cli', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-browser-id': getBrowserId(),
+      },
+      body: JSON.stringify({ command }),
+    });
+    const json = await res.json();
+    if (!json.success) {
+      push(`**CLI error:** ${json.error ?? 'Unknown error'}`);
+      return;
+    }
+    const { output, exitCode } = json.data as { output: string; exitCode: number };
+    const header = `**\`${command}\`** _(exit ${exitCode})_`;
+    push(`${header}\n\n\`\`\`\n${output}\n\`\`\``);
+  } catch (err) {
+    push(`**CLI error:** ${String(err)}`);
+  }
+}
+
 // ─── /bug ─────────────────────────────────────────────────
 
 export function handleBug(push: PushFn): void {

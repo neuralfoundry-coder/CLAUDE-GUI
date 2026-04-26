@@ -729,36 +729,31 @@
 ### FR-516: Slash Command System
 
 - When the user types text starting with `/` in the Claude chat input, the system shall display a popover listing available slash commands.
-- Slash commands are classified into two types:
-  - **Client commands**: handled directly within the GUI
-  - **Passthrough commands**: the entire input is forwarded to Claude CLI
-- Passthrough commands respect the `requiresSession` flag:
-  - `requiresSession: true` (default): execution is blocked when no active session exists (`/compact`, `/context`)
-  - `requiresSession: false`: execution proceeds without an active session; a new session is created automatically (`/init`, `/plan`, `/review`, `/pr-comments`)
+- Slash commands are classified into three types:
+  - **`client`**: handled by the GUI for shell-level semantics (clear the chat tab, open `CLAUDE.md` in the editor, …).
+  - **`cli`**: delegated to the local `claude` binary. The `POST /api/claude/cli` endpoint spawns `claude --print '<command>'`, captures stdout/stderr, and renders it as a system message — so model/effort/session-state behavior is shown verbatim from the CLI rather than faked by the GUI.
+  - **`passthrough`** (legacy): the entire input is forwarded to the active Agent SDK session as a prompt. Most former `passthrough` entries have been migrated to `cli` because the SDK does not interpret slash commands itself.
+- **`cli` fallback**: any `/xxx` input that is not in the registry is also routed through `handleCliPassthrough` rather than being sent as a plain prompt, so the user can invoke any command the CLI binary supports (including `/security-review` and user-defined skill commands) without the GUI having to pre-register it.
 - The popover is shown while the input starts with `/` and contains no spaces; candidates are filtered by prefix matching as the user types.
 - Keyboard navigation: `ArrowUp`/`ArrowDown` to move between candidates, `Enter` to execute immediately, `Tab` to fill the command name into the input, `Escape` to dismiss.
 - Commands are grouped into 6 categories:
-  - **Session**: `/clear`, `/new`, `/compact`
-  - **Info**: `/usage`, `/context`, `/cost`, `/model`, `/help`
-  - **Mode**: `/plan`, `/review`
-  - **System**: `/bug`, `/config`, `/doctor`, `/login`, `/logout`, `/status`, `/vim`, `/terminal-setup`
-  - **Tools**: `/permissions`, `/approved-tools`, `/mcp`
-  - **Project**: `/init`, `/memory`, `/pr-comments`, `/add-dir`
-- A total of 25 slash commands are supported, providing full parity with the Claude Code CLI command set.
+  - **Session** (mixed `client`/`cli`): `/clear` (client), `/new` (client), `/compact` (cli)
+  - **Info**: `/usage` (cli), `/context` (cli), `/cost` (cli), `/model` (cli), `/effort` (cli), `/help` (client)
+  - **Mode**: `/plan` (cli), `/review` (cli)
+  - **System**: `/bug` (client), `/config` (cli), `/doctor` (cli), `/login` (client), `/logout` (client), `/status` (cli), `/vim` (client), `/terminal-setup` (client)
+  - **Tools**: `/permissions` (client), `/approved-tools` (client), `/mcp` (client)
+  - **Project**: `/init` (cli), `/memory` (client), `/pr-comments` (cli), `/add-dir` (client)
 - Client commands display results as system messages (`role: 'system'`, `kind: 'system'`) in the chat area.
-- `/help` dynamically generates a full command table from the `SLASH_COMMANDS` registry.
-- `/usage`, `/context`, `/cost` query the active session data from `useClaudeStore.sessionStats`.
-- `/model` displays current model information and specs from `src/lib/claude/model-specs.ts`.
-- `/doctor` runs comprehensive diagnostics: server health, CLI installation, authentication, WebSocket connections, and MCP servers.
-- `/config`, `/permissions`, `/approved-tools` fetch and display settings from `/api/settings`.
-- `/mcp` fetches MCP server status and opens the MCP server management modal.
+- `/help` dynamically generates a full command table from the `SLASH_COMMANDS` registry (with `cli` markers).
 - `/memory` opens the project root's `CLAUDE.md` in the editor.
 - `/vim` toggles vim keybindings in the Monaco editor (`useSettingsStore.editorVimMode`).
 - `/login`, `/logout` check and modify authentication state (`/api/auth/status`, `/api/auth/logout`).
 - `/bug` opens the GitHub Issues page in a new tab.
 - `/add-dir <path>` adds a directory to the project context (`POST /api/project`).
+- `/permissions`, `/approved-tools`, `/mcp` fetch settings from `/api/settings` or `/api/mcp/status` and open the corresponding modal.
 - Alias support: `/reset` is an alias for `/new`.
-- Implementation: `src/lib/claude/slash-commands.ts`, `src/lib/claude/slash-command-handlers.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-panel.tsx`.
+- **CLI endpoint security**: `POST /api/claude/cli` (a) validates the input matches `^/<alpha-token>` via regex, (b) executes via `execFile` only (no shell interpolation), (c) uses `browserSessionRegistry.getRoot(browserId) ?? getActiveRoot()` as cwd, (d) enforces a 30 s timeout and 64 KB output cap, (e) is rate-limited per client. The CLI binary is resolved in this order: Tauri-local install → `~/.local/bin/claude` → `/usr/local/bin/claude` → `/opt/homebrew/bin/claude` → PATH lookup.
+- Implementation: `src/lib/claude/slash-commands.ts`, `src/lib/claude/slash-command-handlers.ts` (`handleCliPassthrough`), `src/app/api/claude/cli/route.ts`, `src/components/panels/claude/slash-command-popover.tsx`, `src/components/panels/claude/claude-chat-view.tsx`.
 
 ### FR-517: File/Image Drag-and-Drop Input
 

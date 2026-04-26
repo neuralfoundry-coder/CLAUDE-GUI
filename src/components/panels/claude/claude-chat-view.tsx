@@ -27,16 +27,11 @@ import {
   type SlashCommand,
 } from '@/lib/claude/slash-commands';
 import { SlashCommandPopover } from './slash-command-popover';
-import { useSettingsStore } from '@/stores/use-settings-store';
 import { useEditorStore } from '@/stores/use-editor-store';
-import { findModelSpec } from '@/lib/claude/model-specs';
 import {
   handleBug,
-  handleConfig,
-  handleDoctor,
   handleLogin,
   handleLogout,
-  handleStatus,
   handleVim,
   handleTerminalSetup,
   handlePermissions,
@@ -44,6 +39,7 @@ import {
   handleMcp,
   handleMemory,
   handleAddDir,
+  handleCliPassthrough,
 } from '@/lib/claude/slash-command-handlers';
 import { useChatDrop } from './use-chat-drop';
 import { DropOverlay } from './drop-overlay';
@@ -224,6 +220,11 @@ export function ClaudeChatView({ tabId, onShowSlideDialog }: ClaudeChatViewProps
         return;
       }
 
+      if (cmd.handler === 'cli') {
+        await handleCliPassthrough(fullInput, pushSystemMessage);
+        return;
+      }
+
       try {
         switch (cmd.name) {
           case '/clear': {
@@ -257,96 +258,14 @@ export function ClaudeChatView({ tabId, onShowSlideDialog }: ClaudeChatViewProps
             pushSystemMessage(lines.join('\n'));
             break;
           }
-          case '/usage': {
-            const sid = getActiveSessionId();
-            const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
-            const fmt = (n: number) =>
-              n >= 1_000_000
-                ? `${(n / 1_000_000).toFixed(1)}M`
-                : n >= 1_000
-                  ? `${(n / 1_000).toFixed(1)}k`
-                  : String(n);
-            if (!stats) {
-              const lines = [
-                '**Token Usage**',
-                '',
-                '- **Input tokens:** 0',
-                '- **Output tokens:** 0',
-                '- **Cache read:** 0',
-                '- **Total tokens:** 0',
-                '- **Turns:** -',
-                '',
-                '_No conversation yet. Send a message to start tracking usage._',
-              ];
-              pushSystemMessage(lines.join('\n'));
-              break;
-            }
-            const lines = [
-              `**Token Usage** (session \`${sid?.slice(0, 8)}…\`)`,
-              '',
-              `- **Input tokens:** ${fmt(stats.inputTokens)}`,
-              `- **Output tokens:** ${fmt(stats.outputTokens)}`,
-              `- **Cache read:** ${fmt(stats.cacheReadTokens)}`,
-              `- **Total tokens:** ${fmt(stats.inputTokens + stats.outputTokens)}`,
-              `- **Turns:** ${stats.numTurns ?? '-'}`,
-            ];
-            pushSystemMessage(lines.join('\n'));
-            break;
-          }
-          case '/cost': {
-            const sid = getActiveSessionId();
-            const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
-            const totalCost = useClaudeStore.getState().totalCost;
-            const lines = [
-              '**Cost Summary**',
-              '',
-              `- **Session cost:** $${(stats?.costUsd ?? 0).toFixed(4)}`,
-              `- **Total cost (all sessions):** $${totalCost.toFixed(4)}`,
-            ];
-            pushSystemMessage(lines.join('\n'));
-            break;
-          }
-          case '/model': {
-            const sid = getActiveSessionId();
-            const stats = sid ? useClaudeStore.getState().sessionStats[sid] : null;
-            const selectedModel = useSettingsStore.getState().selectedModel;
-            const modelId = stats?.model ?? selectedModel ?? 'auto';
-            const spec = findModelSpec(modelId);
-            const lines = [
-              `**Current Model:** \`${modelId}\``,
-              '',
-            ];
-            if (spec) {
-              lines.push(
-                `- **Context window:** ${(spec.contextWindow / 1000)}k tokens`,
-                `- **Max output:** ${(spec.maxOutput / 1000)}k tokens`,
-                `- **Price:** $${spec.inputPricePer1M}/M input, $${spec.outputPricePer1M}/M output`,
-              );
-              if (spec.capabilities.length > 0) {
-                lines.push(`- **Capabilities:** ${spec.capabilities.join(', ')}`);
-              }
-            }
-            lines.push('', 'Use the model selector in the header to change models.');
-            pushSystemMessage(lines.join('\n'));
-            break;
-          }
           case '/bug':
             handleBug(pushSystemMessage);
-            break;
-          case '/config':
-            await handleConfig(pushSystemMessage);
-            break;
-          case '/doctor':
-            await handleDoctor(pushSystemMessage);
             break;
           case '/login':
             await handleLogin(pushSystemMessage);
             break;
           case '/logout':
             await handleLogout(pushSystemMessage);
-            break;
-          case '/status':
-            await handleStatus(pushSystemMessage);
             break;
           case '/vim':
             handleVim(pushSystemMessage);
@@ -490,6 +409,19 @@ export function ClaudeChatView({ tabId, onShowSlideDialog }: ClaudeChatViewProps
       closeSlash();
       closeMention();
       executeSlashCommand(cmd, trimmed);
+      return;
+    }
+
+    // Unknown `/xxx` input → forward to Claude CLI rather than treat as a
+    // prompt, so users get true CLI behavior for any command the binary
+    // supports (e.g. /security-review, /skill-name) without us needing to
+    // pre-register it. Only the leading token is checked so that quoted args
+    // (`/some-cmd "with spaces"`) still match.
+    if (/^\/[a-zA-Z][a-zA-Z0-9_-]*(\s|$)/.test(trimmed)) {
+      setInput('');
+      closeSlash();
+      closeMention();
+      void handleCliPassthrough(trimmed, pushSystemMessage);
       return;
     }
 

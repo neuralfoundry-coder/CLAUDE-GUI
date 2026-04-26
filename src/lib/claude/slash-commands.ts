@@ -1,9 +1,16 @@
 /**
  * Slash command registry for the Claude chat panel.
  *
- * Commands are split into two categories:
- * - `client`: handled entirely on the frontend (e.g. /clear, /usage)
- * - `passthrough`: forwarded to Claude CLI via the WebSocket query (e.g. /compact, /plan)
+ * Commands are split into three categories:
+ * - `client`: handled entirely on the frontend (GUI shell semantics —
+ *   e.g. /clear empties the chat tab, /memory opens CLAUDE.md in the editor)
+ * - `cli`: forwarded to the local `claude` binary via `POST /api/claude/cli`
+ *   so that real CLI behavior (model/effort/status/usage/etc.) is preserved
+ *   instead of being faked by the GUI
+ * - `passthrough` (legacy): the entire input is sent as a prompt through the
+ *   active Agent SDK session — kept for completeness but most former
+ *   passthrough entries have migrated to `cli` since the SDK does not
+ *   interpret slash commands itself
  */
 
 export interface SlashCommand {
@@ -15,9 +22,12 @@ export interface SlashCommand {
   category: 'session' | 'info' | 'mode' | 'system' | 'tools' | 'project';
   /**
    * - `client`      — handled by the GUI without sending to Claude CLI.
-   * - `passthrough`  — the entire input line is sent to Claude CLI as a prompt.
+   * - `cli`         — spawns `claude --print '<command>'` server-side and
+   *                   renders the captured output as a system message.
+   * - `passthrough` — sends the entire input line through the active Agent
+   *                   SDK session as a prompt (legacy).
    */
-  handler: 'client' | 'passthrough';
+  handler: 'client' | 'cli' | 'passthrough';
   /** Optional aliases that also trigger this command. */
   aliases?: string[];
   /**
@@ -46,41 +56,45 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: '/compact',
-    description: 'Compact conversation context',
+    description: 'Compact conversation context (CLI)',
     category: 'session',
-    handler: 'passthrough',
-    requiresSession: true,
+    handler: 'cli',
   },
 
   // ── Info ────────────────────────────────────────────────
   {
     name: '/usage',
-    description: 'Show token usage and cost summary',
+    description: 'Show token usage from Claude CLI',
     category: 'info',
-    handler: 'client',
+    handler: 'cli',
   },
   {
     name: '/context',
-    description: 'Show context window usage',
+    description: 'Show context window usage (CLI)',
     category: 'info',
-    handler: 'passthrough',
-    requiresSession: true,
+    handler: 'cli',
   },
   {
     name: '/cost',
-    description: 'Show session cost breakdown',
+    description: 'Show session cost breakdown (CLI)',
     category: 'info',
-    handler: 'client',
+    handler: 'cli',
   },
   {
     name: '/model',
-    description: 'Show current model info',
+    description: 'Show or change Claude model (CLI)',
     category: 'info',
-    handler: 'client',
+    handler: 'cli',
+  },
+  {
+    name: '/effort',
+    description: 'Show or change reasoning effort level (CLI)',
+    category: 'info',
+    handler: 'cli',
   },
   {
     name: '/help',
-    description: 'Show available slash commands',
+    description: 'Show available slash commands (GUI registry)',
     category: 'info',
     handler: 'client',
   },
@@ -88,17 +102,15 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   // ── Mode ───────────────────────────────────────────────
   {
     name: '/plan',
-    description: 'Ask Claude to create a plan before coding',
+    description: 'Ask Claude to create a plan before coding (CLI)',
     category: 'mode',
-    handler: 'passthrough',
-    requiresSession: false,
+    handler: 'cli',
   },
   {
     name: '/review',
-    description: 'Ask Claude to review current changes',
+    description: 'Ask Claude to review current changes (CLI)',
     category: 'mode',
-    handler: 'passthrough',
-    requiresSession: false,
+    handler: 'cli',
   },
 
   // ── System ─────────────────────────────────────────────
@@ -110,15 +122,15 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: '/config',
-    description: 'Show current configuration',
+    description: 'Show CLI configuration',
     category: 'system',
-    handler: 'client',
+    handler: 'cli',
   },
   {
     name: '/doctor',
-    description: 'Run health diagnostics',
+    description: 'Run CLI diagnostics',
     category: 'system',
-    handler: 'client',
+    handler: 'cli',
   },
   {
     name: '/login',
@@ -134,9 +146,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: '/status',
-    description: 'Show comprehensive status',
+    description: 'Show CLI comprehensive status',
     category: 'system',
-    handler: 'client',
+    handler: 'cli',
   },
   {
     name: '/vim',
@@ -174,10 +186,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   // ── Project ────────────────────────────────────────────
   {
     name: '/init',
-    description: 'Initialize CLAUDE.md in project',
+    description: 'Initialize CLAUDE.md in project (CLI)',
     category: 'project',
-    handler: 'passthrough',
-    requiresSession: false,
+    handler: 'cli',
   },
   {
     name: '/memory',
@@ -187,10 +198,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: '/pr-comments',
-    description: 'View pull request comments',
+    description: 'View pull request comments (CLI)',
     category: 'project',
-    handler: 'passthrough',
-    requiresSession: false,
+    handler: 'cli',
   },
   {
     name: '/add-dir',

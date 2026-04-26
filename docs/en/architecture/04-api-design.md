@@ -343,6 +343,46 @@ Changes the project root. When the `X-Browser-Id` header is present, only that t
 { "success": true, "data": { "root": "/Users/dev/other-project" } }
 ```
 
+### 4.1.5 Claude CLI Passthrough API
+
+#### `POST /api/claude/cli`
+
+Delegates slash commands marked `handler: 'cli'` (and any unknown `/xxx` input) from the Claude chat panel to the local `claude` binary (FR-516). The server invokes `execFile(<claude>, ['--print', command])` only — the input never goes through a shell.
+
+**Request headers**:
+- `Content-Type: application/json`
+- `X-Browser-Id` (optional): cwd is resolved as `browserSessionRegistry.getRoot(browserId)`, falling back to `getActiveRoot()`.
+
+**Request body**:
+```json
+{ "command": "/status" }
+```
+
+**Validation**:
+- `command` must match `^/[A-Za-z][A-Za-z0-9_-]{0,63}(\s.*)?$` (`4400`).
+- Length > 4096 bytes is rejected (`4400`).
+- An active project root is required (`4412`).
+- Per-client rate limit (`/lib/fs/rate-limit`) applies (`4429`).
+
+**Binary lookup order**: Tauri-local install (`~/Library/Application Support/ClaudeGUI/node-prefix/bin/claude`) → `~/.local/bin/claude` → `/usr/local/bin/claude` → `/opt/homebrew/bin/claude` → PATH.
+
+**Response** (both success and non-zero exit return 200 with stdout/stderr captured):
+```json
+{
+  "success": true,
+  "data": {
+    "output": "/status isn't available in this environment.\n",
+    "exitCode": 0,
+    "durationMs": 5630
+  }
+}
+```
+
+**Limits**:
+- 30 s timeout (`5408 / HTTP 504`)
+- 64 KB output cap (excess is truncated with a marker)
+- CLI not installed → `5404 / HTTP 500`
+
 ---
 
 ## 4.2 WebSocket Protocol

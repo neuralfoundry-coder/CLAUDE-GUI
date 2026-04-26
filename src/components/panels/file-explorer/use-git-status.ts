@@ -22,11 +22,14 @@ const listeners = new Set<(data: GitStatusData) => void>();
  * minutes) while keeping the visible status indicator latency acceptable.
  */
 const REFRESH_DEBOUNCE_MS = 1500;
+const MIN_INTERVAL_MS = 3000;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight: Promise<void> | null = null;
 let pendingWhileInFlight = false;
+let lastRefreshAt = 0;
 
 async function doRefresh(): Promise<void> {
+  lastRefreshAt = Date.now();
   try {
     const res = await fetch('/api/git/status');
     const json = await res.json();
@@ -59,10 +62,14 @@ async function runRefresh(): Promise<void> {
 
 function scheduleRefresh(): void {
   if (refreshTimer) return;
+  // Honor both the debounce window and a hard minimum interval since the last
+  // request, so even multi-instance modules / stale bundles can't spam the API.
+  const elapsed = Date.now() - lastRefreshAt;
+  const wait = Math.max(REFRESH_DEBOUNCE_MS, MIN_INTERVAL_MS - elapsed);
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     void runRefresh();
-  }, REFRESH_DEBOUNCE_MS);
+  }, wait);
 }
 
 export function useGitStatus(): { statusMap: Record<string, string>; branch: string | null } {
