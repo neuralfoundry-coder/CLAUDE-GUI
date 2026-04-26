@@ -388,6 +388,90 @@ cmd_tail_standalone() {
   exec tail -n 100 -F "$target"
 }
 
+find_our_native_instances() {
+  # Print one PID per line for any `node server.js` process whose cwd is $ROOT.
+  # Matches by process identity rather than port, so orphans on any bound port
+  # — or instances with a missing/stale PID file — are still detected.
+  command -v ps >/dev/null 2>&1 || return 0
+
+  local self_pid="$$"
+  local pids
+  pids="$(ps -ax -o pid=,command= 2>/dev/null \
+    | awk '/server\.js/ && /node/ {print $1}' || true)"
+  [ -z "$pids" ] && return 0
+
+  local pid cwd
+  for pid in $pids; do
+    [ -z "$pid" ] && continue
+    [ "$pid" = "$self_pid" ] && continue
+
+    cwd=""
+    if [ -r "/proc/$pid/cwd" ]; then
+      cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || echo '')"
+    elif command -v lsof >/dev/null 2>&1; then
+      cwd="$(lsof -a -d cwd -p "$pid" -Fn 2>/dev/null \
+        | awk '/^n/ { sub(/^n/, ""); print; exit }' || true)"
+    fi
+
+    if [ -n "$cwd" ] && [ "$cwd" = "$ROOT" ]; then
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+cleanup_native_instances() {
+  # Stop every native ClaudeGUI instance of THIS repo before we start a new one.
+  # Combines two signals so we don't miss anything:
+  #   1. process-name + cwd match (find_our_native_instances)
+  #   2. the PID recorded in $PID_FILE (covers hosts where cwd lookup fails,
+  #      e.g. macOS without lsof permissions)
+  local pids tracked all
+  pids="$(find_our_native_instances || true)"
+  tracked="$(read_pid)"
+  if [ -n "$tracked" ] && ! is_alive "$tracked"; then
+    tracked=""
+  fi
+  all="$(printf '%s\n%s\n' "$pids" "${tracked:-}" \
+    | awk 'NF && !seen[$0]++' || true)"
+
+  if [ -z "$all" ]; then
+    [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
+    return 0
+  fi
+
+  local count
+  count=$(printf '%s\n' "$all" | wc -l | tr -d '[:space:]')
+  step "found $count existing ClaudeGUI instance(s) of this repo — cleaning up"
+
+  local pid cmd
+  for pid in $all; do
+    is_alive "$pid" || continue
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null | head -c 80 | tr -d '\n' || true)"
+    step "  pid $pid: SIGTERM (${cmd:-?})"
+    kill -TERM "$pid" 2>/dev/null || true
+  done
+
+  local i still_alive
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    still_alive=0
+    for pid in $all; do
+      is_alive "$pid" && still_alive=1
+    done
+    [ "$still_alive" -eq 0 ] && break
+    sleep 0.3
+  done
+
+  for pid in $all; do
+    if is_alive "$pid"; then
+      warn "pid $pid still alive after 3s, escalating to SIGKILL"
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+
+  [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
+  ok "cleaned up existing instance(s)"
+}
+
 # ----- runtime helpers ------------------------------------------------------
 read_runtime_state() {
   [ -f "$RUNTIME_STATE_FILE" ] || { echo ""; return; }
@@ -691,14 +775,13 @@ if [ "$DO_RESTART" -eq 1 ]; then
   runtime_stop || true
 fi
 
-# Guard: stop any existing background instance before launching a new one
-if [ "$BACKGROUND" -eq 1 ] && [ "$RUNTIME" = "native" ]; then
-  EXISTING_PID=$(read_pid)
-  if is_alive "$EXISTING_PID"; then
-    warn "stopping existing instance (pid $EXISTING_PID) for clean start"
-    cmd_stop || true
-  fi
-  [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
+# Guard: clean up any existing native instance(s) of THIS repo before launching
+# a new one. We match by process name + cwd (rather than port) so orphans on
+# other ports — or instances whose PID file went missing — are also reclaimed,
+# guaranteeing a clean start. --restart already ran runtime_stop above; calling
+# again is idempotent and also catches anything it missed.
+if [ "$RUNTIME" = "native" ]; then
+  cleanup_native_instances
 fi
 
 # Warn on incompatible combinations
