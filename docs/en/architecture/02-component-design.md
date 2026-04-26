@@ -71,6 +71,8 @@
 
 **Responsive mobile layout**: the `useMediaQuery('(min-width: 1280px)')` hook detects viewport width. Below 1280px, `<MobileShell />` renders a bottom tab bar with a single-panel view. It has 5 tabs (Files, Editor, Terminal, Claude, Preview) and `useLayoutStore.mobileActivePanel` tracks the active tab.
 
+**SSR/CSR mount gate**: `AppShell` returns a placeholder (`<div className="h-screen w-screen bg-background" />`) on the first render and mounts the real tree (`<Header />`, `<SplitLayoutRenderer />`, modal hosts) only after a `useEffect` flips `mounted=true`. This is necessary because `useSplitLayoutStore` and `useLayoutStore` (both `persist`) plus `useMediaQuery` use default state / desktop-true on the server but the localStorage-restored tree / actual viewport on the client. When the two trees differ in shape, `useId()` counters drift, causing Radix DropdownMenu trigger IDs (`radix-_R_*`) and `react-resizable-panels` PanelGroup registration IDs to mismatch between SSR and CSR — surfacing as hydration warnings together with `No group found for id "..."` assertions. With the gate, server and client first renders are identical (the placeholder), and the real tree mounts only on the client where ID generation is consistent.
+
 **New files**:
 - `src/hooks/use-media-query.ts` — `useMediaQuery` hook. Tracks viewport changes via `window.matchMedia` listener. Returns `true` (desktop-first) during SSR.
 - `src/components/layout/mobile-shell.tsx` — Mobile tab layout. Switches between 5 `PanelId` tabs via a bottom tab bar.

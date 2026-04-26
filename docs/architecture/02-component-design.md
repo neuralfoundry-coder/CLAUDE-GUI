@@ -69,6 +69,8 @@
 
 **반응형 모바일 레이아웃**: `useMediaQuery('(min-width: 1280px)')` 훅이 뷰포트 너비를 감지한다. 1280px 미만에서는 `<MobileShell />`이 하단 탭 바와 단일 패널 뷰를 렌더링한다. 5개 탭(Files, Editor, Terminal, Claude, Preview)으로 구성되며 `useLayoutStore.mobileActivePanel`이 현재 활성 탭을 관리한다.
 
+**SSR/CSR 마운트 게이트**: `AppShell`은 첫 렌더에서 placeholder(`<div className="h-screen w-screen bg-background" />`)만 반환하고, `useEffect`가 `mounted=true`로 플립한 다음 렌더부터 실제 트리(`<Header />`, `<SplitLayoutRenderer />`, 모달 호스트들)를 마운트한다. 이는 `useSplitLayoutStore`·`useLayoutStore`(둘 다 `persist`)와 `useMediaQuery`가 SSR에서는 default state·desktop-true를, CSR에서는 localStorage 복원 트리·실제 viewport를 사용하기 때문이다. 두 트리 모양이 달라지면 `useId()` 카운터가 어긋나 Radix DropdownMenu 트리거(`radix-_R_*`)와 `react-resizable-panels`의 PanelGroup 등록 ID가 SSR/CSR 사이에서 mismatch → hydration 경고와 `No group found for id "..."` assertion이 동시에 발생한다. 게이트 덕분에 서버와 클라이언트 첫 렌더가 동일(placeholder)해지고, 실제 트리는 클라이언트에서만 마운트되어 ID 일관성이 자연스럽게 보장된다.
+
 **새 파일**:
 - `src/hooks/use-media-query.ts` — `useMediaQuery` 훅. `window.matchMedia` 리스너로 뷰포트 변경을 추적. SSR에서는 `true`(데스크톱 우선) 반환.
 - `src/components/layout/mobile-shell.tsx` — 모바일 탭 레이아웃. 5개 `PanelId` 탭과 각 패널 컴포넌트를 하단 탭 바로 전환.

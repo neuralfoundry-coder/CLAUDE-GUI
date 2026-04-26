@@ -41,6 +41,10 @@ import type { SplitDirection, PanelContentType } from '@/stores/use-split-layout
 import { ErrorBoundary } from './error-boundary';
 
 export function AppShell() {
+  // Mount gate: SSR shows a placeholder so persisted layout + matchMedia don't shift useId() counters and break Radix/PanelGroup IDs.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
   useTheme();
   useGlobalShortcuts();
   useBufferRecoveryPersist();
@@ -137,6 +141,10 @@ export function AppShell() {
       }
     }
   }, []);
+
+  if (!mounted) {
+    return <div className="h-screen w-screen bg-background" aria-hidden="true" />;
+  }
 
   return (
     <ErrorBoundary scope="app-shell">
